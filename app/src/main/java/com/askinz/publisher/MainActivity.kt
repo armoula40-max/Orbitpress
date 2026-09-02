@@ -94,8 +94,15 @@ class MainActivity : Activity() {
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
     if (requestCode == PINTEREST_SCAN_REQUEST) {
-      val raw = data?.getStringExtra(PinterestScanActivity.EXTRA_RESULT) ?: JSONObject().put("ok", false).put("message", "Pinterest scan returned no result.").toString()
-      webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
+      val raw = data?.getStringExtra(PinterestScanActivity.EXTRA_RESULT)
+        ?: data?.getStringExtra(SocialScanActivity.EXTRA_RESULT)
+        ?: JSONObject().put("ok", false).put("message", "Social scan returned no result.").toString()
+      val platform = runCatching { JSONObject(raw).optString("platform").lowercase() }.getOrDefault("")
+      if (platform == "facebook" || platform == "reddit") {
+        webView.evaluateJavascript("window.__socialScanResult(${JSONObject.quote(raw)})", null)
+      } else {
+        webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
+      }
       return
     }
     if (requestCode != FILE_PICKER_REQUEST) return

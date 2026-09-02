@@ -4,31 +4,42 @@ import android.app.Activity
 import android.os.Bundle
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import org.json.JSONArray
 import org.json.JSONObject
 
 class PinterestScanActivity : Activity() {
   private lateinit var webView: WebView
-  private var maxPins = 20
-  private var scrolls = 6
+  private var scanStarted = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    val url = intent.getStringExtra(EXTRA_URL).orEmpty()
-    maxPins = intent.getIntExtra(EXTRA_MAX_PINS, 20).coerceIn(1, 40)
-    scrolls = intent.getIntExtra(EXTRA_SCROLLS, 6).coerceIn(1, 10)
-    if (!url.startsWith("https://www.pinterest.com/")) return finishWithError("Only Pinterest HTTPS URLs are supported.")
+    val url = intent.getStringExtra(EXTRA_URL).orEmpty().trim()
+    if (!isPinterestUrl(url)) return finishWithError("Only public Pinterest HTTPS URLs are supported.")
     webView = WebView(this).apply {
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
       settings.allowFileAccess = false
       settings.allowContentAccess = false
+      settings.javaScriptCanOpenWindowsAutomatically = false
       webChromeClient = WebChromeClient()
       webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+          val target = request?.url?.toString().orEmpty()
+          return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
+        }
+        @Suppress("DEPRECATION")
+        override fun shouldOverrideUrlLoading(view: WebView?, target: String?): Boolean {
+          val urlTarget = target.orEmpty()
+          return urlTarget.isNotBlank() && !urlTarget.startsWith("http://") && !urlTarget.startsWith("https://")
+        }
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
-          view?.postDelayed({ collectVisiblePins() }, 1800)
+          if (!scanStarted) {
+            scanStarted = true
+            view?.postDelayed({ collectVisiblePins() }, 3500)
+          }
         }
       }
       addJavascriptInterface(ResultBridge(), "OrbitPressScan")
@@ -36,25 +47,63 @@ class PinterestScanActivity : Activity() {
     setContentView(webView)
     webView.loadUrl(url)
   }
+
+  private fun isPinterestUrl(url: String): Boolean {
+    val parsed = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return false
+    val host = parsed.host.orEmpty().lowercase()
+    return url.startsWith("https://") && (host == "pinterest.com" || host.endsWith(".pinterest.com"))
+  }
+
   private fun collectVisiblePins() {
+    val maxPins = intent.getIntExtra(EXTRA_MAX_PINS, 20).coerceIn(1, 40)
+    val maxScrolls = intent.getIntExtra(EXTRA_SCROLLS, 6).coerceIn(1, 10)
     val script = """
       (() => {
-        let n=0; const max=$maxPins, scrolls=$scrolls;
-        const clean=v=>String(v||'').replace(/\\s+/g,' ').trim().slice(0,1200);
-        const extract=()=>Array.from(document.querySelectorAll('a[href*="/pin/"]')).map(a=>{
-          const card=a.closest('[data-test-id],article,div')||a;
-          const text=clean(card.innerText||a.innerText); const url=a.href;
-          const title=clean(a.getAttribute('aria-label')||a.getAttribute('title')||text.split('\\n')[0]);
-          return {url,title,text,publishedAt:null,saves:null,comments:null,shares:null};
-        }).filter(x=>x.url&&x.title);
-        const all=[]; const merge=rows=>rows.forEach(x=>{if(!all.some(y=>y.url===x.url)&&all.length<max)all.push(x)});
-        const tick=()=>{merge(extract());if(n++<$scrolls){scrollTo(0,document.body.scrollHeight);setTimeout(tick,700)}else{all.forEach(x=>x.viralScore=null);OrbitPressScan.done(JSON.stringify({ok:true,source:document.title||location.hostname,posts:all,collectionMethod:'visible_webview',completeness:'partial'}))}};
+        let pass = 0;
+        const maxPins = $maxPins;
+        const maxScrolls = $maxScrolls;
+        const clean = value => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 1800);
+        const pinUrl = value => { try { const u = new URL(value, location.href); return u.pathname.includes('/pin/') ? u.href.split('?')[0] : ''; } catch (_) { return ''; } };
+        const extract = () => {
+          const found = new Map();
+          const anchors = Array.from(document.querySelectorAll('a[href*="/pin/"], [data-test-id="pin"] a, [data-test-id="pin"]'));
+          anchors.forEach(anchor => {
+            const url = pinUrl(anchor.href || anchor.getAttribute('href') || '');
+            if (!url || found.has(url)) return;
+            const card = anchor.closest('[data-test-id="pin"], [data-test-id="pinWrapper"], article, [role="listitem"], div') || anchor;
+            const image = card.querySelector('img');
+            const text = clean(card.innerText || card.textContent || image?.alt || '');
+            const title = clean(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || image?.alt || text.split('\\n')[0] || 'Pinterest Pin');
+            found.set(url, {url, title, text, imageUrl: image?.src || image?.getAttribute('src') || null, publishedAt:null, saves:null, comments:null, shares:null, viralScore:null});
+          });
+          return Array.from(found.values());
+        };
+        const all = [];
+        const merge = rows => rows.forEach(pin => { if (!all.some(item => item.url === pin.url) && all.length < maxPins) all.push(pin); });
+        const tick = () => {
+          merge(extract());
+          if (pass++ < maxScrolls) { window.scrollTo(0, document.body.scrollHeight); window.setTimeout(tick, 900); }
+          else { OrbitPressScan.done(JSON.stringify({ok:true, source:document.title || location.hostname, posts:all, collectionMethod:'visible_webview', completeness:all.length?'partial':'empty', diagnostics:{anchors:document.querySelectorAll('a[href*="/pin/"], [data-test-id="pin"]').length, pageUrl:location.href}})); }
+        };
         tick();
       })();
     """.trimIndent()
     webView.evaluateJavascript(script, null)
   }
-  private fun finishWithError(message: String) { setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, JSONObject().put("ok",false).put("message",message).toString())); finish() }
-  inner class ResultBridge { @JavascriptInterface fun done(json: String) { setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT,json)); finish() } }
-  companion object { const val EXTRA_URL="url"; const val EXTRA_MAX_PINS="maxPins"; const val EXTRA_SCROLLS="scrolls"; const val EXTRA_RESULT="result" }
+
+  private fun finishWithError(message: String) {
+    setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, JSONObject().put("ok", false).put("message", message).toString()))
+    finish()
+  }
+
+  inner class ResultBridge {
+    @JavascriptInterface fun done(json: String) { setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, json)); finish() }
+  }
+
+  companion object {
+    const val EXTRA_URL = "url"
+    const val EXTRA_MAX_PINS = "maxPins"
+    const val EXTRA_SCROLLS = "scrolls"
+    const val EXTRA_RESULT = "result"
+  }
 }
