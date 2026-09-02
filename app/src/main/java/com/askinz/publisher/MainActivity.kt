@@ -36,6 +36,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 private const val PUBLISH_NOTIFICATION_CHANNEL_ID = "publish_results"
+private const val PINTEREST_SCAN_REQUEST = 7101
 
 class MainActivity : Activity() {
   private lateinit var webView: WebView
@@ -92,6 +93,11 @@ class MainActivity : Activity() {
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == PINTEREST_SCAN_REQUEST) {
+      val raw = data?.getStringExtra(PinterestScanActivity.EXTRA_RESULT) ?: JSONObject().put("ok", false).put("message", "Pinterest scan returned no result.").toString()
+      webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
+      return
+    }
     if (requestCode != FILE_PICKER_REQUEST) return
     val callback = fileCallback ?: return
     fileCallback = null
@@ -116,6 +122,21 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     )
   }
 
+  @JavascriptInterface fun openSocialScanner(requestJson: String) {
+    val request=try{JSONObject(requestJson)}catch(_:Exception){JSONObject()}
+    val intent=android.content.Intent(activity, SocialScanActivity::class.java).apply{putExtra(SocialScanActivity.EXTRA_PLATFORM,request.optString("platform"));putExtra(SocialScanActivity.EXTRA_URL,request.optString("url"));putExtra(SocialScanActivity.EXTRA_MAX,request.optInt("maxPosts",20));putExtra(SocialScanActivity.EXTRA_SCROLLS,request.optInt("scrolls",6))}
+    activity.startActivityForResult(intent, PINTEREST_SCAN_REQUEST)
+  }
+  @JavascriptInterface fun openPinterestScanner(requestJson: String) {
+    val request = try { JSONObject(requestJson) } catch (_: Exception) { JSONObject() }
+    val url = request.optString("url").trim()
+    val intent = android.content.Intent(activity, PinterestScanActivity::class.java).apply {
+      putExtra(PinterestScanActivity.EXTRA_URL, url)
+      putExtra(PinterestScanActivity.EXTRA_MAX_PINS, request.optInt("maxPins", 20))
+      putExtra(PinterestScanActivity.EXTRA_SCROLLS, request.optInt("scrolls", 6))
+    }
+    activity.startActivityForResult(intent, PINTEREST_SCAN_REQUEST)
+  }
   @JavascriptInterface fun loadSettingsLock(): String = JSONObject()
     .put("enabled", preferences.getString("settingsLockHash", "").orEmpty().isNotBlank())
     .toString()
@@ -211,6 +232,8 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     Thread {
       val result = try {
         when (request.getString("type")) {
+          "analyzeSocialKeywords" -> analyzeSocialKeywords(request)
+          "analyzePinterestKeywords" -> analyzePinterestKeywords(request)
           "generate" -> generate(request)
           "categories" -> categories(request)
           "syncPublishedPosts" -> syncPublishedPosts(request)
@@ -235,6 +258,29 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     }.start()
   }
 
+  private fun analyzeSocialKeywords(request: JSONObject): JSONObject {
+    val copy=JSONObject(request.toString()).put("task", "Analyze supplied social posts and return strict JSON with summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Separate extracted keywords from suggestions and do not copy posts verbatim.")
+    return analyzePinterestKeywords(copy)
+  }
+  private fun analyzePinterestKeywords(request: JSONObject): JSONObject {
+    val settings = requireStoredSettings(request)
+    val posts = request.optJSONArray("posts") ?: JSONArray()
+    require(posts.length() in 1..20) { "Select between 1 and 20 social posts." }
+    val compact = JSONArray()
+    for (i in 0 until posts.length()) {
+      val post = posts.getJSONObject(i)
+      compact.put(JSONObject().put("title", post.optString("title").take(500)).put("text", post.optString("text").take(1800)).put("url", post.optString("url")).put("viralScore", post.optDouble("viralScore", 0.0)).put("saves", post.opt("saves")).put("comments", post.opt("comments")))
+    }
+    val platform = request.optString("platform", "pinterest").lowercase().ifBlank { "pinterest" }
+    val system = "You are a $platform content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim."
+    val user = JSONObject().put("platform", platform).put("task", "Extract keywords and explain winning content patterns from the ranked posts.").put("posts", compact).toString()
+    val provider = ProviderCompatibilityContract.normalize(settings.getString("articleBaseUrl"), settings.getString("articleModel"))
+    val body = JSONObject().put("model", provider.model).put("temperature", 0.2).put("response_format", JSONObject().put("type", "json_object")).put("messages", JSONArray().put(JSONObject().put("role", "system").put("content", system)).put(JSONObject().put("role", "user").put("content", user)))
+    val raw = JSONObject(http(chatEndpoint(provider.baseUrl), "POST", mapOf("Authorization" to "Bearer ${settings.getString("articleApiKey")}", "Content-Type" to "application/json"), body.toString().toByteArray()))
+    val content = raw.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
+    val report = try { JSONObject(content) } catch (_: Exception) { JSONObject().put("summary", content).put("primaryKeywords", JSONArray()) }
+    return JSONObject().put("ok", true).put("report", report)
+  }
   private fun generate(request: JSONObject): JSONObject {
     val settings = requireStoredSettings(request)
     val keyword = request.getString("keyword").trim()
