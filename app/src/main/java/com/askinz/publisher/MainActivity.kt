@@ -177,6 +177,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       .put("wordpressConfigured", saved.optString("wordpressAppPassword").isNotBlank())
       .put("imageConfigured", saved.optString("imageApiToken").isNotBlank())
       .put("pinterestConfigured", saved.optString("pinterestAccessToken").isNotBlank() && saved.optString("pinterestBoardId").isNotBlank())
+      .put("facebookConfigured", saved.optString("facebookAccessToken").isNotBlank())
       .put("textPrompt", saved.optString("textPrompt"))
       .put("imagePrompt", saved.optString("imagePrompt"))
       .put("pinterestPrompt", saved.optString("pinterestPrompt"))
@@ -241,6 +242,8 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         when (request.getString("type")) {
           "analyzeSocialKeywords" -> analyzeSocialKeywords(request)
           "analyzePinterestKeywords" -> analyzePinterestKeywords(request)
+          "facebookGraphScan" -> facebookGraphScan(request)
+          "pinterestApiScan" -> pinterestApiScan(request)
           "generate" -> generate(request)
           "categories" -> categories(request)
           "syncPublishedPosts" -> syncPublishedPosts(request)
@@ -263,6 +266,42 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         webView.evaluateJavascript("window.__nativeResult(${JSONObject.quote(id)}, ${JSONObject.quote(result.toString())})", null)
       }
     }.start()
+  }
+
+  private fun facebookGraphScan(request: JSONObject): JSONObject {
+    val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
+    val token = settings.optString("facebookAccessToken").trim()
+    require(token.isNotBlank()) { "Configure a Facebook access token before using Graph API." }
+    val type = request.optString("sourceType", "page").lowercase()
+    require(type == "page") { "Facebook Groups Graph API is not available in the current supported API versions." }
+    val pageId = request.optString("pageId").trim()
+    require(pageId.isNotBlank() && pageId.all { it.isDigit() }) { "Provide a numeric Facebook Page ID." }
+    val version = settings.optString("facebookGraphVersion").trim().ifBlank { "v23.0" }
+    val page = JSONObject(http(SocialApiContracts.facebookGraphUrl(version, pageId, mapOf("fields" to "id,name,username,about,category,followers_count,fan_count,link,picture.type(large)")), "GET", mapOf("Authorization" to "Bearer $token"), null))
+    val feedResponse = JSONObject(http(SocialApiContracts.facebookPageFeed(version, pageId, request.optInt("limit", 25)), "GET", mapOf("Authorization" to "Bearer $token"), null))
+    val posts = JSONArray()
+    val rows = feedResponse.optJSONArray("data") ?: JSONArray()
+    for (i in 0 until rows.length()) posts.put(SocialApiContracts.normalizeFacebookPost(rows.getJSONObject(i)))
+    return JSONObject().put("ok", true).put("platform", "facebook").put("sourceType", "page").put("source", SocialApiContracts.normalizeFacebookPage(page)).put("posts", posts).put("paging", feedResponse.optJSONObject("paging") ?: JSONObject()).put("collectionMethod", "facebook_graph_api")
+  }
+
+  private fun pinterestApiScan(request: JSONObject): JSONObject {
+    val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
+    val token = settings.optString("pinterestAccessToken").trim()
+    require(token.isNotBlank()) { "Configure a Pinterest access token before using Pinterest API." }
+    val boardId = request.optString("boardId").trim().ifBlank { settings.optString("pinterestBoardId").trim() }
+    val headers = mapOf("Authorization" to "Bearer $token", "Content-Type" to "application/json")
+    val account = JSONObject(http(SocialApiContracts.pinterestUserAccount(), "GET", headers, null))
+    val pinsResponse = if (boardId.isBlank()) JSONObject(http(SocialApiContracts.pinterestBoards(request.optInt("pageSize", 50)), "GET", headers, null)) else JSONObject(http(SocialApiContracts.pinterestBoardPins(boardId, request.optInt("pageSize", 50)), "GET", headers, null))
+    val rawPins = pinsResponse.optJSONArray("items") ?: pinsResponse.optJSONArray("data") ?: JSONArray()
+    val pins = JSONArray()
+    for (i in 0 until rawPins.length()) pins.put(SocialApiContracts.normalizePinterestPin(rawPins.getJSONObject(i)))
+    val analytics = if (request.optBoolean("includeAnalytics", true)) {
+      val end = java.time.LocalDate.now(java.time.ZoneOffset.UTC)
+      val start = end.minusDays(request.optInt("days", 30).coerceIn(1, 90).toLong())
+      runCatching { SocialApiContracts.normalizePinterestAnalytics(JSONObject(http(SocialApiContracts.pinterestTopPins(start.toString(), end.toString(), request.optString("sortBy", "ENGAGEMENT"), request.optInt("topPins", 50)), "GET", headers, null))) }.getOrElse { JSONArray() }
+    } else JSONArray()
+    return JSONObject().put("ok", true).put("platform", "pinterest").put("source", account).put("boardId", boardId).put("posts", pins).put("analytics", analytics).put("paging", pinsResponse.optJSONObject("bookmark") ?: JSONObject()).put("collectionMethod", "pinterest_api_v5")
   }
 
   private fun analyzeSocialKeywords(request: JSONObject): JSONObject {
