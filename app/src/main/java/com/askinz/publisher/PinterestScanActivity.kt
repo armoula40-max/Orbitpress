@@ -70,11 +70,17 @@ class PinterestScanActivity : Activity() {
           anchors.forEach(anchor => {
             const url = pinUrl(anchor.href || anchor.getAttribute('href') || '');
             if (!url || found.has(url)) return;
-            const card = anchor.closest('[data-test-id="pin"], [data-test-id="pinWrapper"], article, [role="listitem"], div') || anchor;
+            const card = anchor.closest('[data-test-id="pin"], [data-test-id="pinWrapper"], [data-test-id*="pin"], article, [role="listitem"]') || anchor.parentElement || anchor;
             const image = card.querySelector('img');
-            const text = clean(card.innerText || card.textContent || image?.alt || '');
-            const title = clean(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || image?.alt || text.split('\\n')[0] || 'Pinterest Pin');
-            found.set(url, {url, title, text, imageUrl: image?.src || image?.getAttribute('src') || null, publishedAt:null, saves:null, comments:null, shares:null, viralScore:null});
+            const heading = card.querySelector('h1,h2,h3,[role="heading"],[data-test-id*="title"],[title]');
+            const metaTitle = card.querySelector('meta[property="og:title"],meta[name="title"]');
+            const rawText = card.innerText || card.textContent || '';
+            const lines = rawText.split('\\n').map(clean).filter(line => line && line.toLowerCase() !== 'pin' && !/^open pin$/i.test(line));
+            const text = clean(rawText || image?.alt || '');
+            const title = clean(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || heading?.textContent || heading?.getAttribute('title') || metaTitle?.content || image?.alt || lines[0] || 'Pinterest Pin');
+            const description = clean(card.querySelector('[data-test-id*="description"],meta[property="og:description"]')?.textContent || card.querySelector('meta[property="og:description"]')?.content || lines.slice(1,3).join(' '));
+            const combinedText = clean([title, description, text].filter(Boolean).join(' '));
+            found.set(url, {url, title, text:combinedText, description, imageUrl: image?.currentSrc || image?.src || image?.getAttribute('src') || null, publishedAt:null, saves:null, comments:null, shares:null, viralScore:null});
           });
           return Array.from(found.values());
         };
@@ -83,7 +89,7 @@ class PinterestScanActivity : Activity() {
         const tick = () => {
           merge(extract());
           if (pass++ < maxScrolls) { window.scrollTo(0, document.body.scrollHeight); window.setTimeout(tick, 900); }
-          else { OrbitPressScan.done(JSON.stringify({ok:true, source:document.title || location.hostname, posts:all, collectionMethod:'visible_webview', completeness:all.length?'partial':'empty', diagnostics:{anchors:document.querySelectorAll('a[href*="/pin/"], [data-test-id="pin"]').length, pageUrl:location.href}})); }
+          else { OrbitPressScan.done(JSON.stringify({ok:true, source:document.title || location.hostname, posts:all, collectionMethod:'visible_webview', completeness:all.length?'partial':'empty', diagnostics:{anchors:document.querySelectorAll('a[href*="/pin/"], [data-test-id="pin"]').length, pageUrl:location.href, fields:'Pinterest profile pages may expose Pin URLs without title or analytics; open individual Pins or use API for complete metadata.'}})); }
         };
         tick();
       })();

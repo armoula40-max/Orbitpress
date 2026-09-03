@@ -13,6 +13,8 @@ class SocialScanActivity : Activity() {
   private lateinit var webView: WebView
   private lateinit var platform: String
   private var scanStarted = false
+  private var facebookDeepLinkHandled = false
+  private var scanGeneration = 0
 
   override fun onCreate(state: Bundle?) {
     super.onCreate(state)
@@ -33,8 +35,12 @@ class SocialScanActivity : Activity() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
           val target = request?.url?.toString().orEmpty()
           if (target.startsWith("fb://")) {
-            scanStarted = false
-            view?.loadUrl(facebookDeepLinkToHttps(target))
+            if (facebookDeepLinkHandled) {
+              finishWithError("Facebook keeps redirecting this source to its app link. Try a public Page URL or use the official API.")
+            } else {
+              facebookDeepLinkHandled = true
+              view?.loadUrl(facebookDeepLinkToHttps(target))
+            }
             return true
           }
           return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
@@ -44,8 +50,12 @@ class SocialScanActivity : Activity() {
         override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
           val target = url.orEmpty()
           if (target.startsWith("fb://")) {
-            scanStarted = false
-            view?.loadUrl(facebookDeepLinkToHttps(target))
+            if (facebookDeepLinkHandled) {
+              finishWithError("Facebook keeps redirecting this source to its app link. Try a public Page URL or use the official API.")
+            } else {
+              facebookDeepLinkHandled = true
+              view?.loadUrl(facebookDeepLinkToHttps(target))
+            }
             return true
           }
           return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
@@ -53,9 +63,10 @@ class SocialScanActivity : Activity() {
 
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
-          if (!scanStarted) {
+          if (!scanStarted && loadedUrl.orEmpty().startsWith("http")) {
             scanStarted = true
-            view?.postDelayed({ collectVisiblePosts() }, 2200)
+            val generation = ++scanGeneration
+            view?.postDelayed({ if (generation == scanGeneration) collectVisiblePosts() }, 5000)
           }
         }
       }
@@ -82,6 +93,12 @@ class SocialScanActivity : Activity() {
     val path = parsed.path.orEmpty().trim('/').removePrefix("profile/").removePrefix("page/")
     val id = path.substringBefore('/').takeIf { it.all(Char::isDigit) }
     return if (id != null) "https://www.facebook.com/profile.php?id=$id" else "https://www.facebook.com/"
+  }
+
+  override fun onDestroy() {
+    scanGeneration++
+    if (::webView.isInitialized) webView.stopLoading()
+    super.onDestroy()
   }
 
   private fun collectVisiblePosts() {
