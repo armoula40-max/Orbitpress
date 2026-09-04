@@ -9,7 +9,7 @@
       android:roundIcon="@drawable/ic_orbitpress"
       android:supportsRtl="true"
       android:theme="@style/AppTheme"
-      android:usesCleartextTraffic="false">
+      android:usesCleartextTraffic="true">
     <activity android:name=".PinterestScanActivity" android:exported="false" />
     <activity android:name=".SocialScanActivity" android:exported="false" />
     <activity

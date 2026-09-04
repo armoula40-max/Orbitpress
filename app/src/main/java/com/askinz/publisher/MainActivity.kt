@@ -182,6 +182,8 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       .put("imagePrompt", saved.optString("imagePrompt"))
       .put("pinterestPrompt", saved.optString("pinterestPrompt"))
       .put("articleImageCount", saved.optInt("articleImageCount", 0))
+      .put("scraperApiBaseUrl", saved.optString("scraperApiBaseUrl"))
+      .put("scraperApiConfigured", saved.optString("scraperApiKey").isNotBlank())
       .toString()
   }
 
@@ -244,6 +246,8 @@ private class NativeBridge(private val activity: Activity, private val webView: 
           "analyzePinterestKeywords" -> analyzePinterestKeywords(request)
           "facebookGraphScan" -> facebookGraphScan(request)
           "pinterestApiScan" -> pinterestApiScan(request)
+          "scraperFacebook" -> scraperScan(request, "facebook")
+          "scraperPinterest" -> scraperScan(request, "pinterest")
           "generate" -> generate(request)
           "categories" -> categories(request)
           "syncPublishedPosts" -> syncPublishedPosts(request)
@@ -266,6 +270,20 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         webView.evaluateJavascript("window.__nativeResult(${JSONObject.quote(id)}, ${JSONObject.quote(result.toString())})", null)
       }
     }.start()
+  }
+
+  private fun scraperScan(request: JSONObject, platform: String): JSONObject {
+    val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
+    val base = settings.optString("scraperApiBaseUrl").trim().trimEnd('/')
+    val key = settings.optString("scraperApiKey").trim()
+    require(base.isNotBlank() && key.isNotBlank()) { "Configure the VPS Scraper API URL and key first." }
+    require(base.startsWith("https://") || base.startsWith("http://")) { "Scraper API URL must start with http:// or https://." }
+    val url = request.optString("url").trim()
+    require(url.startsWith("https://")) { "Only HTTPS social URLs are accepted." }
+    val limit = request.optInt("limit", 20).coerceIn(1, 200)
+    val endpoint = "$base/api/$platform/scrape"
+    val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit)
+    return JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8)))
   }
 
   private fun facebookGraphScan(request: JSONObject): JSONObject {
