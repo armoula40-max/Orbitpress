@@ -377,7 +377,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       Requested format: $type
       Requested complete recipe count: ${if (requestedRecipeCount > 0) requestedRecipeCount else "not explicitly numbered"}
       If the keyword contains a number of recipes, generate exactly that many distinct, fully populated recipes. For example, “5 fall recipes” means exactly 5 recipes. Never list recipe names only and never replace a requested roundup with a single recipe or summary.
-      Preferred category: ${category.ifBlank { "Choose the best existing food category" }}
+      Preferred category: ${category.ifBlank { "Choose the best existing WordPress category" }}
       Existing site titles to avoid duplicating: ${titleList.ifBlank { "None supplied" }}
 
       Return valid JSON only with this exact structure:
@@ -388,7 +388,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       - Provide 3 to 6 outline H2 sections. htmlContent starts with a concise benefit-led introduction, uses H2 sections, and provides useful substitutions, storage, or variations where appropriate.
       - For food content or an explicit recipe keyword, select recipe only when it is genuinely a cookable dish. Otherwise select article.
       - For a cookable dish, recipe must contain sensible ingredients, 4 to 9 concrete steps, ISO 8601 durations such as PT15M, yield, cuisine, and 1 to 3 useful notes. Do not put a recipe card inside htmlContent.
-      - For non-food niches such as crochet, pets nails, furniture, home decor, DIY, beauty, or gardening, select article; recipe.isRecipe must be false, recipes must be empty, and provide practical niche-specific steps, materials, safety notes, maintenance, or buying guidance as appropriate.
+      - For non-food niches such as crochet, pets, nails, furniture, home decor, DIY, beauty, or gardening, select article; recipe.isRecipe must be false, recipes must be empty, and provide practical niche-specific steps, materials, safety notes, maintenance, or buying guidance as appropriate.
       - Offer 2 to 4 internal-link anchor suggestions but never invent URLs.
       - Create only a concise natural Pinterest SEO title and image alt text. Do not create a Pinterest description or hashtags.
       - Do not include Markdown, CSS, scripts, iframes, ratings, reviews, calories, nutrition values, image URLs, medical claims, citations, affiliate claims, ranking promises, or unsupported facts.
@@ -398,7 +398,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       .put("model", provider.model)
       .put("max_tokens", provider.maxOutputTokens)
       .put("messages", JSONArray()
-        .put(JSONObject().put("role", "system").put("content", "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original cooking content for practical search intent. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body."))
+        .put(JSONObject().put("role", "system").put("content", "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the requested niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body."))
         .put(JSONObject().put("role", "user").put("content", prompt)))
       .put("temperature", 0.7)
       .put("response_format", articleResponseFormat())
@@ -447,7 +447,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         "additionalProperties":false
       }""".trimIndent()
     )
-    return JSONObject().put("type", "json_schema").put("json_schema", JSONObject().put("name", "askinz_food_article").put("strict", true).put("schema", schema))
+    return JSONObject().put("type", "json_schema").put("json_schema", JSONObject().put("name":"askinz_niche_article").put("strict", true).put("schema", schema))
   }
 
   private fun generateImage(request: JSONObject): JSONObject {
