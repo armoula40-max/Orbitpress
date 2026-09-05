@@ -350,6 +350,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val keyword = request.getString("keyword").trim()
     require(keyword.length in 2..160) { "Enter a keyword between 2 and 160 characters." }
     val type = request.optString("requestedType", "auto")
+    val niche = request.optString("niche", "food").trim().ifBlank { "food" }
     val provider = ProviderCompatibilityContract.normalize(settings.getString("articleBaseUrl"), settings.getString("articleModel"))
     val endpoint = chatEndpoint(provider.baseUrl)
     val category = request.optString("categoryName").trim()
@@ -357,9 +358,10 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val titleList = (0 until minOf(existingTitles.length(), 20)).joinToString(" | ") { existingTitles.optString(it).take(255) }
     val requestedRecipeCount = RecipeRequestContract.requestedCount(keyword)
     val customizedTextPrompt = settings.optString("textPrompt").trim()
-      .replace("{{keyword}}", keyword).replace("{{category}}", category)
+      .replace("{{keyword}}", keyword).replace("{{category}}", category).replace("{{niche}}", niche)
     val prompt = """
-      Create a complete, long-form English food article from this keyword: $keyword
+      Create a complete, long-form English article for the $niche niche from this keyword: $keyword
+      Requested niche: $niche
       Requested format: $type
       Requested complete recipe count: ${if (requestedRecipeCount > 0) requestedRecipeCount else "not explicitly numbered"}
       If the keyword contains a number of recipes, generate exactly that many distinct, fully populated recipes. For example, “5 fall recipes” means exactly 5 recipes. Never list recipe names only and never replace a requested roundup with a single recipe or summary.
@@ -372,9 +374,9 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       Requirements:
       - Infer practical search intent, create a distinct title, a concise meta description under 160 characters, and a lower-case canonical-friendly slug.
       - Provide 3 to 6 outline H2 sections. htmlContent starts with a concise benefit-led introduction, uses H2 sections, and provides useful substitutions, storage, or variations where appropriate.
-      - For one specific cookable dish, select recipe. recipe must contain sensible ingredients, 4 to 9 concrete steps, ISO 8601 durations such as PT15M, yield, cuisine, and 1 to 3 useful notes. Do not put a recipe card inside htmlContent.
-      - For a roundup or any request containing multiple recipes, select article, return one fully populated object in recipes for every recipe, give every object its own title, complete ingredient quantities, 4 to 9 concrete numbered instructions, ISO 8601 durations, yield, cuisine, and 1 to 3 useful notes, and write detailed sections in htmlContent for the collection. Do not put recipe cards inside htmlContent; the app adds one complete card per recipes object.
-      - For informational content with no recipes, select article; recipe.isRecipe must be false and every other recipe field must be empty or an empty array, and recipes must be an empty array.
+      - For food content or an explicit recipe keyword, select recipe only when it is genuinely a cookable dish. Otherwise select article.
+      - For a cookable dish, recipe must contain sensible ingredients, 4 to 9 concrete steps, ISO 8601 durations such as PT15M, yield, cuisine, and 1 to 3 useful notes. Do not put a recipe card inside htmlContent.
+      - For non-food niches such as crochet, pets nails, furniture, home decor, DIY, beauty, or gardening, select article; recipe.isRecipe must be false, recipes must be empty, and provide practical niche-specific steps, materials, safety notes, maintenance, or buying guidance as appropriate.
       - Offer 2 to 4 internal-link anchor suggestions but never invent URLs.
       - Create only a concise natural Pinterest SEO title and image alt text. Do not create a Pinterest description or hashtags.
       - Do not include Markdown, CSS, scripts, iframes, ratings, reviews, calories, nutrition values, image URLs, medical claims, citations, affiliate claims, ranking promises, or unsupported facts.
@@ -384,7 +386,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       .put("model", provider.model)
       .put("max_tokens", provider.maxOutputTokens)
       .put("messages", JSONArray()
-        .put(JSONObject().put("role", "system").put("content", "You are Askinz's exacting English food editor and SEO strategist. Produce genuinely helpful original cooking content for practical search intent. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body."))
+        .put(JSONObject().put("role", "system").put("content", "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original cooking content for practical search intent. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body."))
         .put(JSONObject().put("role", "user").put("content", prompt)))
       .put("temperature", 0.7)
       .put("response_format", articleResponseFormat())
