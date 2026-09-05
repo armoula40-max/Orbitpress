@@ -283,11 +283,17 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     require(url.startsWith("https://")) { "Only HTTPS social URLs are accepted." }
     val limit = request.optInt("limit", 20).coerceIn(1, 200)
     val endpoint = "$base/api/$platform/scrape"
-    val cookies = JSONArray()
-    CookieManager.getInstance().getCookie(url).orEmpty().split(';').forEach { part ->
-      val separator = part.indexOf('=')
-      if (separator > 0) cookies.put(JSONObject().put("name", part.substring(0, separator).trim()).put("value", part.substring(separator + 1).trim()))
+    CookieManager.getInstance().flush()
+    val cookieSources = if (platform == "facebook") listOf("https://www.facebook.com/", "https://facebook.com/", "https://m.facebook.com/", url) else listOf("https://www.pinterest.com/", "https://pinterest.com/", url)
+    val cookieValues = linkedMapOf<String, String>()
+    cookieSources.forEach { source ->
+      CookieManager.getInstance().getCookie(source).orEmpty().split(';').forEach { part ->
+        val separator = part.indexOf('=')
+        if (separator > 0) cookieValues[part.substring(0, separator).trim()] = part.substring(separator + 1).trim()
+      }
     }
+    val cookies = JSONArray()
+    cookieValues.forEach { (name, value) -> cookies.put(JSONObject().put("name", name).put("value", value)) }
     val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies)
     return JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8)))
   }
