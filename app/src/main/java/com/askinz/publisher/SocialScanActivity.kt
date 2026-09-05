@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -62,7 +63,6 @@ class SocialScanActivity : Activity() {
     webView = WebView(this).apply {
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
-      settings.thirdPartyCookiesEnabled = true
       settings.allowFileAccess = false
       settings.allowContentAccess = false
       settings.javaScriptCanOpenWindowsAutomatically = false
@@ -102,6 +102,8 @@ class SocialScanActivity : Activity() {
       }
       addJavascriptInterface(ResultBridge(), "OrbitPressSocial")
     }
+
+    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
     val root = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
