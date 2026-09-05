@@ -1,19 +1,30 @@
 package com.askinz.publisher
 
 import android.app.Activity
+import android.graphics.Color
 import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import org.json.JSONObject
 
 class SocialScanActivity : Activity() {
   private lateinit var webView: WebView
+  private lateinit var statusView: TextView
+  private lateinit var scanButton: Button
   private lateinit var platform: String
   private var scanStarted = false
-  private var facebookDeepLinkHandled = false
+  private var pageReady = false
+  private var facebookDeepLinkSeen = false
   private var scanGeneration = 0
 
   override fun onCreate(state: Bundle?) {
@@ -24,56 +35,91 @@ class SocialScanActivity : Activity() {
     val httpsUrl = normalizeStartUrl(platform, requestedUrl)
       ?: return finishWithError("Enter a valid public HTTPS URL for this platform.")
 
+    statusView = TextView(this).apply {
+      text = "Loading ${platform.replaceFirstChar { it.uppercase() }}…"
+      setTextColor(Color.DKGRAY)
+      setPadding(24, 18, 24, 18)
+      textSize = 14f
+    }
+    scanButton = Button(this).apply {
+      text = if (platform == "facebook") "Page loaded — start scan" else "Start scan"
+      isEnabled = false
+      setOnClickListener {
+        if (!pageReady || scanStarted) return@setOnClickListener
+        scanStarted = true
+        scanButton.isEnabled = false
+        statusView.text = "Scanning visible content…"
+        collectVisiblePosts()
+      }
+    }
+    val controls = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setBackgroundColor(Color.WHITE)
+      addView(statusView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+      addView(scanButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
     webView = WebView(this).apply {
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
+      settings.thirdPartyCookiesEnabled = true
       settings.allowFileAccess = false
       settings.allowContentAccess = false
       settings.javaScriptCanOpenWindowsAutomatically = false
       webChromeClient = WebChromeClient()
       webViewClient = object : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-          val target = request?.url?.toString().orEmpty()
-          if (target.startsWith("fb://")) {
-            if (facebookDeepLinkHandled) {
-              finishWithError("Facebook keeps redirecting this source to its app link. Try a public Page URL or use the official API.")
-            } else {
-              facebookDeepLinkHandled = true
-              view?.loadUrl(facebookDeepLinkToHttps(target))
-            }
-            return true
-          }
-          return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
-        }
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = handleNavigation(request?.url?.toString().orEmpty(), view)
 
         @Suppress("DEPRECATION")
-        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-          val target = url.orEmpty()
-          if (target.startsWith("fb://")) {
-            if (facebookDeepLinkHandled) {
-              finishWithError("Facebook keeps redirecting this source to its app link. Try a public Page URL or use the official API.")
-            } else {
-              facebookDeepLinkHandled = true
-              view?.loadUrl(facebookDeepLinkToHttps(target))
-            }
-            return true
-          }
-          return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
-        }
+        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = handleNavigation(url.orEmpty(), view)
 
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
-          if (!scanStarted && loadedUrl.orEmpty().startsWith("http")) {
-            scanStarted = true
-            val generation = ++scanGeneration
-            view?.postDelayed({ if (generation == scanGeneration) collectVisiblePosts() }, 5000)
+          if (loadedUrl.orEmpty().startsWith("http")) {
+            pageReady = true
+            scanButton.isEnabled = true
+            statusView.text = if (facebookDeepLinkSeen) {
+              "Page loaded. Facebook app-link was blocked; you can now start the scan."
+            } else {
+              "Page ready. Review or sign in, then start the scan."
+            }
+            if (platform == "reddit" && !scanStarted) {
+              val generation = ++scanGeneration
+              view?.postDelayed({
+                if (generation == scanGeneration && pageReady && !scanStarted) scanButton.performClick()
+              }, 3500)
+            }
+          }
+        }
+
+        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+          if (request?.isForMainFrame == true) {
+            pageReady = false
+            scanButton.isEnabled = false
+            statusView.text = "Page could not be loaded: ${error?.description ?: "network error"}"
           }
         }
       }
       addJavascriptInterface(ResultBridge(), "OrbitPressSocial")
     }
-    setContentView(webView)
+
+    val root = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setBackgroundColor(Color.WHITE)
+      addView(controls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+      addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+    setContentView(root)
     webView.loadUrl(httpsUrl)
+  }
+
+  private fun handleNavigation(target: String, view: WebView?): Boolean {
+    if (target.startsWith("fb://") || target.startsWith("intent://")) {
+      facebookDeepLinkSeen = true
+      statusView.text = "Facebook app-link blocked. Remain in the browser view and start the scan when ready."
+      return true
+    }
+    return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
   }
 
   private fun normalizeStartUrl(source: String, url: String): String? {
@@ -88,16 +134,13 @@ class SocialScanActivity : Activity() {
     return url.takeIf { allowed }
   }
 
-  private fun facebookDeepLinkToHttps(url: String): String {
-    val parsed = android.net.Uri.parse(url)
-    val path = parsed.path.orEmpty().trim('/').removePrefix("profile/").removePrefix("page/")
-    val id = path.substringBefore('/').takeIf { it.all(Char::isDigit) }
-    return if (id != null) "https://www.facebook.com/profile.php?id=$id" else "https://www.facebook.com/"
-  }
-
   override fun onDestroy() {
     scanGeneration++
-    if (::webView.isInitialized) webView.stopLoading()
+    if (::webView.isInitialized) {
+      webView.stopLoading()
+      webView.removeJavascriptInterface("OrbitPressSocial")
+      webView.destroy()
+    }
     super.onDestroy()
   }
 
@@ -145,9 +188,13 @@ class SocialScanActivity : Activity() {
   }
 
   inner class ResultBridge {
-    @JavascriptInterface fun done(raw: String) {
-      setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, raw))
-      finish()
+    @JavascriptInterface
+    fun done(raw: String) {
+      runOnUiThread {
+        statusView.text = "Scan complete. Returning results…"
+        setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, raw))
+        finish()
+      }
     }
   }
 

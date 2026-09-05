@@ -835,19 +835,38 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   }
 
   private fun http(url: String, method: String, headers: Map<String, String>, body: ByteArray?): String {
-    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-      requestMethod = method
-      connectTimeout = 25_000
-      readTimeout = 90_000
-      instanceFollowRedirects = false
-      headers.forEach { (key, value) -> setRequestProperty(key, value) }
-      if (body != null) { doOutput = true; outputStream.use { it.write(body) } }
+    var currentUrl = url
+    var currentMethod = method
+    var currentBody = body
+    repeat(4) { hop ->
+      val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = currentMethod
+        connectTimeout = 25_000
+        readTimeout = 90_000
+        instanceFollowRedirects = false
+        headers.forEach { (key, value) -> setRequestProperty(key, value) }
+        if (currentBody != null) { doOutput = true; outputStream.use { it.write(currentBody!!) } }
+      }
+      val status = connection.responseCode
+      if (status in 300..399) {
+        val location = connection.getHeaderField("Location")?.trim().orEmpty()
+        if (location.isBlank()) throw IllegalStateException("Request failed ($status): redirect without Location")
+        val next = URL(URL(currentUrl), location).toString()
+        require(next.startsWith("https://")) { "Request redirected to a non-HTTPS URL." }
+        if (status in 301..302 && currentMethod != "GET" && currentMethod != "HEAD") {
+          throw IllegalStateException("Request failed ($status): WordPress redirected a $currentMethod request to $next. Use the canonical HTTPS site URL.")
+        }
+        currentUrl = next
+        if (status in 301..302) { currentMethod = "GET"; currentBody = null }
+        if (hop == 3) throw IllegalStateException("Request failed ($status): too many redirects; last Location=$next")
+        return@repeat
+      }
+      val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+      val response = stream?.use { BufferedInputStream(it).readBytes().toString(StandardCharsets.UTF_8) } ?: ""
+      if (status !in 200..299) throw IllegalStateException("Request failed ($status): ${response.take(280)}")
+      return response
     }
-    val status = connection.responseCode
-    val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-    val response = stream?.use { BufferedInputStream(it).readBytes().toString(StandardCharsets.UTF_8) } ?: ""
-    if (status !in 200..299) throw IllegalStateException("Request failed ($status): ${response.take(280)}")
-    return response
+    throw IllegalStateException("Request failed: too many redirects")
   }
 
   private fun chatEndpoint(base: String): String = PublishingContracts.requireHttpsUrl(base, "Article API URL").let { if (it.endsWith("/chat/completions")) it else "$it/chat/completions" }
