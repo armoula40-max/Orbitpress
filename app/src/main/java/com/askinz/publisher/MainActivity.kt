@@ -447,7 +447,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         "additionalProperties":false
       }""".trimIndent()
     )
-    return JSONObject().put("type", "json_schema").put("json_schema", JSONObject().put("name":"askinz_niche_article").put("strict", true).put("schema", schema))
+    return JSONObject().put("type", "json_schema").put("json_schema", JSONObject().put("name", "askinz_niche_article").put("strict", true).put("schema", schema))
   }
 
   private fun generateImage(request: JSONObject): JSONObject {
