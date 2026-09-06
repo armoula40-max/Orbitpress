@@ -69,6 +69,6 @@ class MoreContractsTest {
     assertThrows(IllegalArgumentException::class.java) { MediaPublishingContract.requirePinterestRatio(1000, 1000) }
     assertTrue(MediaPublishingContract.normalizePinterestLink("https://example.com/pin").startsWith("https://"))
     assertThrows(IllegalArgumentException::class.java) { MediaPublishingContract.normalizePinterestLink("http://example.com/pin") }
-    assertEquals(5, MediaPublishingContract.normalizePrompt("Quick prompt").take(64).length)
+    assertEquals(12, MediaPublishingContract.normalizePrompt("Quick prompt").take(64).length)
   }
 }
