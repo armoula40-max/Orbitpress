@@ -40,19 +40,19 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/unit-test.log
+          ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee unit-test.log
           test_status=${PIPESTATUS[0]}
-          echo "UNIT_TEST_STATUS=$test_status" >> app/build/unit-test.log
+          echo "UNIT_TEST_STATUS=$test_status" >> unit-test.log
           exit 0
 
       - name: Report unit test failure
         if: always()
         run: |
-          TEST_STATUS=$(grep -oE "UNIT_TEST_STATUS=[0-9]+" app/build/unit-test.log | tail -1 | cut -d= -f2)
+          TEST_STATUS=$(grep -oE "UNIT_TEST_STATUS=[0-9]+" unit-test.log | tail -1 | cut -d= -f2)
           if [ "$TEST_STATUS" != "0" ]; then
-            message="$(grep -aiE "FAILED|error:|BUILD FAILED|What went wrong|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |Exception" app/build/unit-test.log | head -20 | tr '\n' ' ')"
+            message="$(grep -aiE "FAILED|error:|BUILD FAILED|What went wrong|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |Exception" unit-test.log | head -20 | tr '\n' ' ')"
             if [ -z "$message" ]; then
-              message="$(tail -n 60 app/build/unit-test.log | tr '\n' ' ')"
+              message="$(tail -n 60 unit-test.log | tr '\n' ' ')"
             fi
             if [ -z "$message" ]; then message="Unit tests failed with exit code $TEST_STATUS. See raw workflow logs."; fi
             echo "::error::$message"
