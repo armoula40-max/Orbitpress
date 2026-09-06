@@ -278,7 +278,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val base = settings.optString("scraperApiBaseUrl").trim().trimEnd('/')
     val key = settings.optString("scraperApiKey").trim()
     require(base.isNotBlank() && key.isNotBlank()) { "Configure the VPS Scraper API URL and key first." }
-    require(base.startsWith("https://") || base.startsWith("http://")) { "Scraper API URL must start with http:// or https://." }
+    require(base.startsWith("https://")) { "Scraper API URL must use HTTPS." }
     val url = request.optString("url").trim()
     require(url.startsWith("https://")) { "Only HTTPS social URLs are accepted." }
     val limit = request.optInt("limit", 20).coerceIn(1, 200)
@@ -320,9 +320,10 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val token = settings.optString("pinterestAccessToken").trim()
     require(token.isNotBlank()) { "Configure a Pinterest access token before using Pinterest API." }
     val boardId = request.optString("boardId").trim().ifBlank { settings.optString("pinterestBoardId").trim() }
+    require(boardId.isNotBlank()) { "Select a Pinterest Board ID before using the API scan." }
     val headers = mapOf("Authorization" to "Bearer $token", "Content-Type" to "application/json")
     val account = JSONObject(http(SocialApiContracts.pinterestUserAccount(), "GET", headers, null))
-    val pinsResponse = if (boardId.isBlank()) JSONObject(http(SocialApiContracts.pinterestBoards(request.optInt("pageSize", 50)), "GET", headers, null)) else JSONObject(http(SocialApiContracts.pinterestBoardPins(boardId, request.optInt("pageSize", 50)), "GET", headers, null))
+    val pinsResponse = JSONObject(http(SocialApiContracts.pinterestBoardPins(boardId, request.optInt("pageSize", 50)), "GET", headers, null))
     val rawPins = pinsResponse.optJSONArray("items") ?: pinsResponse.optJSONArray("data") ?: JSONArray()
     val pins = JSONArray()
     for (i in 0 until rawPins.length()) pins.put(SocialApiContracts.normalizePinterestPin(rawPins.getJSONObject(i)))

@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build:
@@ -32,6 +35,9 @@ jobs:
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build APK
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace

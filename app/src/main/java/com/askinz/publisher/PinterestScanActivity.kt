@@ -12,6 +12,7 @@ import org.json.JSONObject
 class PinterestScanActivity : Activity() {
   private lateinit var webView: WebView
   private var scanStarted = false
+  private var resultBridge: ResultBridge? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -27,22 +28,37 @@ class PinterestScanActivity : Activity() {
       webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
           val target = request?.url?.toString().orEmpty()
-          return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
+          if (target.isNotBlank() && target.startsWith("http")) {
+            if (!isAllowedPinterestUrl(target)) removeResultBridge()
+            return false
+          }
+          removeResultBridge()
+          return true
         }
         @Suppress("DEPRECATION")
         override fun shouldOverrideUrlLoading(view: WebView?, target: String?): Boolean {
           val urlTarget = target.orEmpty()
-          return urlTarget.isNotBlank() && !urlTarget.startsWith("http://") && !urlTarget.startsWith("https://")
+          if (urlTarget.isNotBlank() && urlTarget.startsWith("http")) {
+            if (!isAllowedPinterestUrl(urlTarget)) removeResultBridge()
+            return false
+          }
+          removeResultBridge()
+          return true
         }
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
+          val url = loadedUrl.orEmpty()
+          if (!isAllowedPinterestUrl(url)) {
+            removeResultBridge()
+            return
+          }
           if (!scanStarted) {
             scanStarted = true
+            installResultBridge()
             view?.postDelayed({ collectVisiblePins() }, 3500)
           }
         }
       }
-      addJavascriptInterface(ResultBridge(), "OrbitPressScan")
     }
     setContentView(webView)
     webView.loadUrl(url)
@@ -52,6 +68,29 @@ class PinterestScanActivity : Activity() {
     val parsed = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return false
     val host = parsed.host.orEmpty().lowercase()
     return url.startsWith("https://") && (host == "pinterest.com" || host.endsWith(".pinterest.com"))
+  }
+
+  override fun onDestroy() {
+    removeResultBridge()
+    if (::webView.isInitialized) {
+      webView.stopLoading()
+      webView.destroy()
+    }
+    super.onDestroy()
+  }
+
+  private fun isAllowedPinterestUrl(url: String): Boolean = isPinterestUrl(url)
+
+  private fun installResultBridge() {
+    if (resultBridge != null) return
+    val bridge = ResultBridge()
+    resultBridge = bridge
+    webView.addJavascriptInterface(bridge, "OrbitPressScan")
+  }
+
+  private fun removeResultBridge() {
+    resultBridge = null
+    if (::webView.isInitialized) webView.removeJavascriptInterface("OrbitPressScan")
   }
 
   private fun collectVisiblePins() {
@@ -103,7 +142,13 @@ class PinterestScanActivity : Activity() {
   }
 
   inner class ResultBridge {
-    @JavascriptInterface fun done(json: String) { setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, json)); finish() }
+    @JavascriptInterface
+    fun done(json: String) {
+      if (resultBridge == null || isFinishing) return
+      resultBridge = null
+      setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, json))
+      finish()
+    }
   }
 
   companion object {

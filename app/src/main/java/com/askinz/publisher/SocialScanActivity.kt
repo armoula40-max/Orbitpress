@@ -27,6 +27,7 @@ class SocialScanActivity : Activity() {
   private var pageReady = false
   private var facebookDeepLinkSeen = false
   private var scanGeneration = 0
+  private var resultBridge: ResultBridge? = null
 
   override fun onCreate(state: Bundle?) {
     super.onCreate(state)
@@ -75,20 +76,31 @@ class SocialScanActivity : Activity() {
 
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
-          if (loadedUrl.orEmpty().startsWith("http")) {
-            pageReady = true
-            scanButton.isEnabled = true
-            statusView.text = if (facebookDeepLinkSeen) {
-              "Page loaded. Facebook app-link was blocked; you can now start the scan."
-            } else {
-              "Page ready. Review or sign in, then start the scan."
-            }
-            if (platform == "reddit" && !scanStarted) {
-              val generation = ++scanGeneration
-              view?.postDelayed({
-                if (generation == scanGeneration && pageReady && !scanStarted) scanButton.performClick()
-              }, 3500)
-            }
+          val url = loadedUrl.orEmpty()
+          if (!url.startsWith("http")) {
+            removeResultBridge()
+            return
+          }
+          if (!isAllowedSocialUrl(url)) {
+            pageReady = false
+            scanButton.isEnabled = false
+            removeResultBridge()
+            statusView.text = "Navigation outside ${platform.replaceFirstChar { it.uppercase() }} was blocked. Return to a supported page before scanning."
+            return
+          }
+          pageReady = true
+          scanButton.isEnabled = true
+          installResultBridge()
+          statusView.text = if (facebookDeepLinkSeen) {
+            "Page loaded. Facebook app-link was blocked; you can now start the scan."
+          } else {
+            "Page ready. Review or sign in, then start the scan."
+          }
+          if (platform == "reddit" && !scanStarted) {
+            val generation = ++scanGeneration
+            view?.postDelayed({
+              if (generation == scanGeneration && pageReady && !scanStarted) scanButton.performClick()
+            }, 3500)
           }
         }
 
@@ -100,7 +112,6 @@ class SocialScanActivity : Activity() {
           }
         }
       }
-      addJavascriptInterface(ResultBridge(), "OrbitPressSocial")
     }
 
     CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
@@ -118,10 +129,16 @@ class SocialScanActivity : Activity() {
   private fun handleNavigation(target: String, view: WebView?): Boolean {
     if (target.startsWith("fb://") || target.startsWith("intent://")) {
       facebookDeepLinkSeen = true
+      removeResultBridge()
       statusView.text = "Facebook app-link blocked. Remain in the browser view and start the scan when ready."
       return true
     }
-    return target.isNotBlank() && !target.startsWith("http://") && !target.startsWith("https://")
+    if (target.isNotBlank() && target.startsWith("http")) {
+      if (!isAllowedSocialUrl(target)) removeResultBridge()
+      return false
+    }
+    removeResultBridge()
+    return true
   }
 
   private fun normalizeStartUrl(source: String, url: String): String? {
@@ -136,17 +153,45 @@ class SocialScanActivity : Activity() {
     return url.takeIf { allowed }
   }
 
+  private fun isAllowedSocialUrl(url: String): Boolean {
+    if (!url.startsWith("https://")) return false
+    val host = runCatching { android.net.Uri.parse(url).host?.lowercase() }.getOrNull().orEmpty()
+    return when (platform) {
+      "facebook" -> host == "facebook.com" || host.endsWith(".facebook.com")
+      "reddit" -> host == "reddit.com" || host.endsWith(".reddit.com")
+      else -> false
+    }
+  }
+
+  private fun installResultBridge() {
+    if (resultBridge != null) return
+    val bridge = ResultBridge()
+    resultBridge = bridge
+    webView.addJavascriptInterface(bridge, "OrbitPressSocial")
+  }
+
+  private fun removeResultBridge() {
+    resultBridge = null
+    if (::webView.isInitialized) webView.removeJavascriptInterface("OrbitPressSocial")
+  }
+
   override fun onDestroy() {
     scanGeneration++
+    removeResultBridge()
     if (::webView.isInitialized) {
       webView.stopLoading()
-      webView.removeJavascriptInterface("OrbitPressSocial")
       webView.destroy()
     }
     super.onDestroy()
   }
 
   private fun collectVisiblePosts() {
+    if (resultBridge == null) {
+      statusView.text = "The source page is not ready yet. Wait for it to finish loading."
+      scanStarted = false
+      scanButton.isEnabled = true
+      return
+    }
     val maxPosts = intent.getIntExtra(EXTRA_MAX, 20).coerceIn(1, 40)
     val maxScrolls = intent.getIntExtra(EXTRA_SCROLLS, 6).coerceIn(1, 10)
     val script = """
@@ -193,6 +238,8 @@ class SocialScanActivity : Activity() {
     @JavascriptInterface
     fun done(raw: String) {
       runOnUiThread {
+        if (resultBridge == null || isFinishing) return@runOnUiThread
+        resultBridge = null
         statusView.text = "Scan complete. Returning results…"
         setResult(RESULT_OK, intent.putExtra(EXTRA_RESULT, raw))
         finish()

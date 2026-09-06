@@ -17,11 +17,17 @@ class SettingsLockContractsTest {
 
   @Test
   fun hashesPinWithoutStoringThePlainValue() {
-    assertEquals(
-      "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-      SettingsLockContract.hashPin("1234"),
-    )
-    assertFalse(SettingsLockContract.hashPin("1234").contains("1234"))
+    val hash = SettingsLockContract.hashPin("1234")
+    assertTrue(hash.startsWith("pbkdf2-v1:"))
+    assertFalse(hash.contains("1234"))
+    assertTrue(SettingsLockContract.matches("1234", hash))
+  }
+
+  @Test
+  fun supportsLegacySha256HashesForExistingInstallations() {
+    val legacy = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4"
+    assertTrue(SettingsLockContract.matches("1234", legacy))
+    assertFalse(SettingsLockContract.matches("5678", legacy))
   }
 
   @Test
