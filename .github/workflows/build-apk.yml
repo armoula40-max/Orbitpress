@@ -44,8 +44,9 @@ jobs:
         if: always()
         run: |
           if grep -qiE "BUILD FAILED|FAILED|error:" app/build/unit-test.log 2>/dev/null || grep -rqi "<failure" app/build/test-results/testDebugUnitTest 2>/dev/null; then
-            echo "::error::Unit tests failed. First error lines:
-$(grep -aiE "FAILED|error:|BUILD FAILED|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |What went wrong" app/build/unit-test.log | head -12)"
+            message="$(grep -aiE "FAILED|error:|BUILD FAILED|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |What went wrong" app/build/unit-test.log | head -12)"
+            if [ -z "$message" ]; then message="Unit tests failed. See raw workflow logs."; fi
+            echo "::error::$message"
             exit 1
           fi
 
