@@ -37,7 +37,17 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+        continue-on-error: true
+        run: ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/unit-test.log || true
+
+      - name: Report unit test failure
+        if: always()
+        run: |
+          if grep -qiE "BUILD FAILED|FAILED|error:" app/build/unit-test.log 2>/dev/null || grep -rqi "<failure" app/build/test-results/testDebugUnitTest 2>/dev/null; then
+            echo "::error::Unit tests failed. First error lines:
+$(grep -aiE "FAILED|error:|BUILD FAILED|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |What went wrong" app/build/unit-test.log | head -12)"
+            exit 1
+          fi
 
       - name: Build APK
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
