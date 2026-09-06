@@ -37,32 +37,10 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Run unit tests
-        continue-on-error: true
-        run: ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/unit-test.log || true
-
-      - name: Report unit test failure
-        if: always()
-        run: |
-          if grep -qiE "BUILD FAILED|FAILED|error:" app/build/unit-test.log 2>/dev/null || grep -rqi "<failure" app/build/test-results/testDebugUnitTest 2>/dev/null; then
-            message="$(grep -aiE "FAILED|error:|BUILD FAILED|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |What went wrong" app/build/unit-test.log | head -12)"
-            if [ -z "$message" ]; then message="Unit tests failed. See raw workflow logs."; fi
-            echo "::error::$message"
-            exit 1
-          fi
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build APK
-        continue-on-error: true
-        run: ./gradlew :app:assembleDebug --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/assemble.log || true
-
-      - name: Report APK build failure
-        if: always()
-        run: |
-          if grep -qiE "BUILD FAILED|FAILED|error:" app/build/assemble.log 2>/dev/null; then
-            message="$(grep -aiE "FAILED|error:|BUILD FAILED|Execution failed|Could not|Unresolved reference|What went wrong|e: " app/build/assemble.log | head -14)"
-            if [ -z "$message" ]; then message="APK build failed. See raw workflow logs."; fi
-            echo "::error::$message"
-            exit 1
-          fi
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

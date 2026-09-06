@@ -165,8 +165,9 @@ class SocialScanActivity : Activity() {
 
   private fun installResultBridge() {
     if (resultBridge != null) return
-    resultBridge = ResultBridge()
-    webView.addJavascriptInterface(resultBridge, "OrbitPressSocial")
+    val bridge = ResultBridge()
+    resultBridge = bridge
+    webView.addJavascriptInterface(bridge, "OrbitPressSocial")
   }
 
   private fun removeResultBridge() {

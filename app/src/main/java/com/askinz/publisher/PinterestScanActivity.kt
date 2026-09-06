@@ -83,8 +83,9 @@ class PinterestScanActivity : Activity() {
 
   private fun installResultBridge() {
     if (resultBridge != null) return
-    resultBridge = ResultBridge()
-    webView.addJavascriptInterface(resultBridge, "OrbitPressScan")
+    val bridge = ResultBridge()
+    resultBridge = bridge
+    webView.addJavascriptInterface(bridge, "OrbitPressScan")
   }
 
   private fun removeResultBridge() {
