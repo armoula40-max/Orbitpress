@@ -51,7 +51,18 @@ jobs:
           fi
 
       - name: Build APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        continue-on-error: true
+        run: ./gradlew :app:assembleDebug --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/assemble.log || true
+
+      - name: Report APK build failure
+        if: always()
+        run: |
+          if grep -qiE "BUILD FAILED|FAILED|error:" app/build/assemble.log 2>/dev/null; then
+            message="$(grep -aiE "FAILED|error:|BUILD FAILED|Execution failed|Could not|Unresolved reference|What went wrong|e: " app/build/assemble.log | head -14)"
+            if [ -z "$message" ]; then message="APK build failed. See raw workflow logs."; fi
+            echo "::error::$message"
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
