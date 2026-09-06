@@ -38,13 +38,19 @@ jobs:
 
       - name: Run unit tests
         continue-on-error: true
-        run: ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/unit-test.log || true
+        run: |
+          set +e
+          ./gradlew :app:testDebugUnitTest --console=plain --no-daemon --stacktrace 2>&1 | tee app/build/unit-test.log
+          test_status=${PIPESTATUS[0]}
+          echo "UNIT_TEST_STATUS=$test_status" >> app/build/unit-test.log
+          exit 0
 
       - name: Report unit test failure
         if: always()
         run: |
-          message="$(grep -aiE "FAILED|error:|BUILD FAILED|AssertionError|expected:|but was:|Could not|Unresolved reference|e: |What went wrong|Exception" app/build/unit-test.log | head -14)"
-          if [ -n "$message" ]; then
+          TEST_STATUS=$(grep -oE "UNIT_TEST_STATUS=[0-9]+" app/build/unit-test.log | tail -1 | cut -d= -f2)
+          if [ "$TEST_STATUS" != "0" ]; then
+            message="$(tail -n 70 app/build/unit-test.log)"
             echo "::error::$message"
             exit 1
           fi
