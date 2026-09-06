@@ -4,7 +4,7 @@
 
 ## المتطلبات
 
-استخدم Android Studio حديثًا مع Android SDK Platform 35 وBuild Tools مناسبة، وJDK 17. المشروع يستخدم Android Gradle Plugin 8.10.2. لا تحتاج إلى Manus أو إلى الموقع التجريبي لتشغيل التطبيق محليًا.
+استخدم Android Studio حديثًا مع Android SDK Platform 35 وBuild Tools مناسبة، وJDK 17. المشروع يستخدم Android Gradle Plugin 8.7.3 مع Gradle Wrapper 9.6.1. لا تحتاج إلى Manus أو إلى الموقع التجريبي لتشغيل التطبيق محليًا.
 
 ## فتح المشروع
 
