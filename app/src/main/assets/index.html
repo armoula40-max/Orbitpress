@@ -478,7 +478,7 @@
 
       <section class="notice warn"><div><strong>Important</strong>Use <b>Refresh WordPress updates</b> after creating a new WordPress category. It reads categories and tracked-post records only; it never creates, edits, or deletes content. Base URLs must use HTTPS.</div></section>
 
-      <section class="card"><div class="connection-line"><h2>VPS Scraper API</h2><span id="scraperApiConfigured" class="connection-state">Not configured</span></div><p class="helper">Connect to your private Playwright scraper on VPS. HTTPS only for security. Leave the URL blank to use the build default.</p><label for="scraperApiBaseUrl">Scraper API URL</label><input id="scraperApiBaseUrl" placeholder="https://scraper.example.com"><label for="scraperApiKey">Scraper API key</label><input id="scraperApiKey" type="password" autocomplete="off" placeholder="Paste key from VPS .env"><label for="scraperTimeoutSeconds">Scraper timeout (seconds)</label><input id="scraperTimeoutSeconds" type="number" min="30" max="900" step="30" placeholder="300"><p class="helper">How long to wait for a Playwright scan before giving up (30–900 s, default 300). Raise it if scans end with "did not answer within".</p><p id="scraperDefaultHint" class="helper" hidden></p></section>
+      <section class="card"><div class="connection-line"><h2>VPS Scraper API</h2><span id="scraperApiConfigured" class="connection-state">Not configured</span></div><p class="helper">Connect to your private Playwright scraper on VPS. HTTPS only for security. Leave the URL blank to use the build default.</p><label for="scraperApiBaseUrl">Scraper API URL</label><input id="scraperApiBaseUrl" placeholder="https://scraper.example.com"><label for="scraperApiKey">Scraper API key</label><input id="scraperApiKey" type="password" autocomplete="off" placeholder="Paste key from VPS .env"><label for="scraperTimeoutSeconds">Scraper timeout (seconds)</label><input id="scraperTimeoutSeconds" type="number" min="30" max="900" step="30" placeholder="300"><p class="helper">How long to wait for a Playwright scan before giving up (30–900 s, default 300). Raise it if scans end with "did not answer within".</p><p id="scraperDefaultHint" class="helper" hidden></p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button id="scraperPing" class="button secondary" type="button" style="flex:1">Test scraper connection</button></div><p id="scraperPingResult" class="helper" hidden></p><p class="helper">Addresses like <b>x.x.x.x.sslip.io</b> are dialled by their embedded IP, so scans keep working on networks that cannot resolve sslip.io ("Unable to resolve host").</p></section>
 
       <section class="card"><div class="connection-line"><h2>Custom generation prompts</h2><span class="connection-state ready">Per site</span></div><p class="helper">Use variables {{keyword}}, {{category}}, and {{title}}. Keep required JSON and safety rules intact.</p><label for="textPrompt">Article text prompt</label><textarea id="textPrompt" rows="6" placeholder="Write in our editorial voice..."></textarea><label for="imagePrompt">Article image prompt</label><textarea id="imagePrompt" rows="4" placeholder="Editorial food photography for {{title}}, no text..."></textarea><label for="pinterestPrompt">Pinterest image prompt</label><textarea id="pinterestPrompt" rows="4" placeholder="Vertical 2:3 Pinterest image for {{title}}, no text..."></textarea><label for="articleImageCount">Number of additional images in article</label><input id="articleImageCount" type="number" min="0" max="8" value="0"><p class="helper">Featured and Pinterest images are separate. This controls additional in-article images.</p></section>
 
@@ -1309,6 +1309,20 @@
       finally{if(button) button.disabled=false}
     }
 
+    async function pingScraper(){
+      const btn=$('scraperPing'),out=$('scraperPingResult');
+      const typedUrl=($('scraperApiBaseUrl')||{}).value||'',typedKey=($('scraperApiKey')||{}).value||'';
+      if(typedUrl.trim()||typedKey.trim()){try{bridge.saveSettings(JSON.stringify(settingsForm()),activeSiteId())}catch(_){}}
+      if(btn) btn.disabled=true;
+      if(out){out.hidden=false;out.textContent='Checking the VPS scraper…'}
+      try{
+        const r=await nativeCall('scraperPing',{siteId:activeSiteId()},{timeoutMs:45000});
+        if(out) out.textContent=`✓ ${r.message||'Scraper reachable.'}${r.keyConfigured?'':' No API key saved yet — paste it above.'}`;
+        notice('VPS scraper is reachable.','good');
+      }catch(e){if(out) out.textContent=`✗ ${e.message||'Scraper unreachable.'}`;notice(e.message||'Scraper unreachable.','bad')}
+      finally{if(btn) btn.disabled=false}
+    }
+
     function saveSettingsSection(card){
       const s=settingsForm();
       try{
@@ -1347,6 +1361,7 @@
       ['articleBaseUrl','articleModel','articleApiKey','wordpressBaseUrl','wordpressUsername','wordpressAppPassword','imageProvider','imageBaseUrl','imageAccountId','imageModel','imageApiToken','pinterestBoardId','pinterestAccessToken','facebookGraphVersion','facebookAccessToken','scraperApiBaseUrl','scraperApiKey','scraperTimeoutSeconds'].forEach(id=>{const el=$(id);if(el) el.addEventListener('input',scheduleSettingsAutoSave,{passive:true})});
       const dc=$('defaultCategory');if(dc) dc.addEventListener('change',scheduleSettingsAutoSave);
       ['scraperApiBaseUrl','scraperApiKey'].forEach(id=>{const el=$(id);if(el) el.addEventListener('input',()=>renderScraperDefaults(),{passive:true})});
+      const scraperPingBtn=$('scraperPing');if(scraperPingBtn) scraperPingBtn.onclick=pingScraper;
 
       const as=$('activeSite');if(as) as.onchange=e=>switchSite(e.target.value);
       const adS=$('addSite');if(adS) adS.onclick=addSite;

@@ -38,9 +38,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
+import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -261,6 +264,7 @@ private class NativeBridge(
           "pinterestApiScan" -> pinterestApiScan(request)
           "scraperFacebook" -> scraperScan(request, "facebook")
           "scraperPinterest" -> scraperScan(request, "pinterest")
+          "scraperPing" -> scraperPing(request)
           "generate" -> generate(request)
           "categories" -> categories(request)
           "syncPublishedPosts" -> syncPublishedPosts(request)
@@ -296,11 +300,65 @@ private class NativeBridge(
     cookieValues.forEach { (name, value) -> cookies.put(JSONObject().put("name", name).put("value", value)) }
     val timeoutSeconds = ScraperDefaultsContract.timeoutSeconds(settings)
     val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies).put("timeoutSeconds", timeoutSeconds)
-    return try {
-      JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), readTimeoutMillis = timeoutSeconds * 1000))
-    } catch (_: SocketTimeoutException) {
+    return JSONObject(scraperHttp(endpoint, mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), timeoutSeconds))
+  }
+  /**
+   * POSTs to the VPS scraper. Wildcard-DNS hosts (sslip.io / nip.io) embed their IPv4 address, and some
+   * carriers refuse to resolve them ("Unable to resolve host"), so those hosts are dialled directly by IP
+   * while TLS SNI + certificate validation + Host header stay bound to the hostname. Other hosts use http().
+   */
+  private fun scraperHttp(endpoint: String, headers: Map<String, String>, body: ByteArray, timeoutSeconds: Int): String {
+    val embeddedIp = EmbeddedIpHostContract.embeddedIpv4ForUrl(endpoint)
+    try {
+      if (embeddedIp != null) {
+        val response = DirectTlsHttpClient.request(endpoint, "POST", headers, body, embeddedIp, connectTimeoutMillis = 20_000, readTimeoutMillis = timeoutSeconds * 1000)
+        if (response.status !in 200..299) throw IllegalStateException("Request failed (${response.status}): ${response.body.take(280)}")
+        return response.body
+      }
+      return http(endpoint, "POST", headers, body, readTimeoutMillis = timeoutSeconds * 1000)
+    } catch (error: SocketTimeoutException) {
+      if (error.message?.contains("connect", ignoreCase = true) == true) throw IllegalStateException("Cannot reach the VPS scraper${if (embeddedIp != null) " at $embeddedIp:443" else ""} (connection timed out). Check that the service and firewall allow HTTPS.")
       throw IllegalStateException("VPS scraper did not answer within $timeoutSeconds s. Lower the item count or raise the scraper timeout in Settings.")
+    } catch (_: UnknownHostException) {
+      throw IllegalStateException("This network cannot resolve ${runCatching { URL(endpoint).host }.getOrDefault("the scraper host")}. Check the device's internet/DNS, or use an address of the form <server-ip>.sslip.io so the app can dial the IP directly.")
+    } catch (error: ConnectException) {
+      throw IllegalStateException("Cannot reach the VPS scraper${if (embeddedIp != null) " at $embeddedIp:443" else ""}: ${error.message.orEmpty()}. Check that the service and firewall allow HTTPS.")
+    } catch (error: SSLException) {
+      throw IllegalStateException("TLS handshake with the VPS scraper failed: ${error.message.orEmpty()}. The server certificate must be valid for the scraper hostname.")
     }
+  }
+  /** Lets the Settings screen check the scraper before a scan: DNS-independent GET on the base URL. */
+  private fun scraperPing(request: JSONObject): JSONObject {
+    val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
+    val scraper = ScraperDefaultsContract.resolve(settings, BuildConfig.SCRAPER_DEFAULT_URL, BuildConfig.SCRAPER_DEFAULT_KEY)
+    val base = if (scraper.baseUrl.isNotBlank()) PublishingContracts.requireHttpsUrl(scraper.baseUrl, "Scraper API URL") else throw IllegalArgumentException("Enter the VPS Scraper API URL first.")
+    val embeddedIp = EmbeddedIpHostContract.embeddedIpv4ForUrl(base)
+    val started = System.currentTimeMillis()
+    val status = try {
+      if (embeddedIp != null) {
+        DirectTlsHttpClient.request("$base/health", "GET", mapOf("x-orbitpress-key" to scraper.key), null, embeddedIp, connectTimeoutMillis = 15_000, readTimeoutMillis = 20_000).status
+      } else {
+        val connection = (URL("$base/health").openConnection() as HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000; instanceFollowRedirects = false; setRequestProperty("x-orbitpress-key", scraper.key) }
+        try { connection.responseCode } finally { connection.disconnect() }
+      }
+    } catch (error: UnknownHostException) {
+      throw IllegalStateException("Cannot resolve ${URL(base).host} on this network. Check the device's internet/DNS.")
+    } catch (error: ConnectException) {
+      throw IllegalStateException("Cannot reach the VPS scraper${if (embeddedIp != null) " at $embeddedIp:443" else ""}: ${error.message.orEmpty()}.")
+    } catch (error: SSLException) {
+      throw IllegalStateException("TLS handshake failed: ${error.message.orEmpty()}.")
+    } catch (_: SocketTimeoutException) {
+      throw IllegalStateException("The VPS scraper did not answer the health check within 20 s.")
+    }
+    val elapsed = System.currentTimeMillis() - started
+    val route = if (embeddedIp != null) ", direct IP $embeddedIp" else ""
+    val verdict = when (status) {
+      in 200..299 -> "Scraper reachable (HTTP $status in $elapsed ms$route)."
+      401, 403 -> "Scraper reachable (HTTP $status in $elapsed ms$route) but it rejected the API key. Paste the key from the VPS .env and save."
+      404 -> "Scraper reachable (no /health route, HTTP 404 in $elapsed ms$route). DNS, TCP and TLS are fine."
+      else -> "Scraper reachable (HTTP $status in $elapsed ms$route)."
+    }
+    return JSONObject().put("ok", true).put("status", status).put("elapsedMs", elapsed).put("directIp", embeddedIp ?: JSONObject.NULL).put("keyConfigured", scraper.key.isNotBlank()).put("message", verdict)
   }
   private fun facebookGraphScan(request: JSONObject): JSONObject {
     val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
