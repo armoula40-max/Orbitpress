@@ -10,12 +10,9 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -23,13 +20,10 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/checkout@v5
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -39,75 +33,54 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --parallel --max-workers=4 --build-cache
+
       - name: Build Debug APK
-        id: build_debug
-        run: |
-          set -o pipefail
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build-debug.log
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-
-      - name: Show error extract
-        if: failure()
-        run: |
-          echo "=== GREP e: ==="
-          grep -n "e: " build-debug.log | head -n 200 || true
-          echo "=== GREP error ==="
-          grep -i "error" build-debug.log | head -n 200 || true
-          echo "=== tail 500 ==="
-          tail -n 500 build-debug.log
-
-      - name: Push build logs to branch on failure
-        if: failure()
-        run: |
-          git config user.name "orbitpress-ci"
-          git config user.email "ci@orbitpress.local"
-          BRANCH="${{ github.ref_name }}"
-          mkdir -p ci-logs
-          cp build-debug.log ci-logs/build-debug-${{ github.run_id }}.log || true
-          # Extract errors
-          grep -n "e: " build-debug.log | head -n 500 > ci-logs/errors-${{ github.run_id }}.txt || true
-          echo "# Build failure ${{ github.run_id }} on $BRANCH" > ci-logs/latest-failure.md
-          echo "" >> ci-logs/latest-failure.md
-          echo "## Errors" >> ci-logs/latest-failure.md
-          echo '```' >> ci-logs/latest-failure.md
-          cat ci-logs/errors-${{ github.run_id }}.txt >> ci-logs/latest-failure.md || echo "no errors" >> ci-logs/latest-failure.md
-          echo '```' >> ci-logs/latest-failure.md
-          echo "" >> ci-logs/latest-failure.md
-          echo "## Debug log tail (800 lines)" >> ci-logs/latest-failure.md
-          echo '```' >> ci-logs/latest-failure.md
-          tail -n 800 build-debug.log >> ci-logs/latest-failure.md || echo "no log" >> ci-logs/latest-failure.md
-          echo '```' >> ci-logs/latest-failure.md
-          git add ci-logs/
-          git commit -m "ci: add build logs for run ${{ github.run_id }} [skip ci]" || echo "no changes to commit"
-          git push origin HEAD:$BRANCH || echo "push failed"
-          git push origin HEAD:arena/01a07be5-orbitpress || true
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace --parallel --build-cache
 
       - name: Build Release APK
-        if: steps.build_debug.outputs.exit_code == '0'
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build-release.log
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --parallel --build-cache
 
-      - name: Upload APKs
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbitPress-debug-apk-v4.1-modern
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbitPress-release-apk-v4.1-modern
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OrbitPress-apks-${{ github.run_id }}
+          name: test-reports
           path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
-          retention-days: 14
+            app/build/reports/tests/
+            app/build/test-results/
+          retention-days: 7
           if-no-files-found: warn
 
-  test:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -115,16 +88,5 @@ jobs:
       - uses: android-actions/setup-android@v3
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - run: chmod +x ./gradlew
-      - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --info 2>&1 | tee test.log
-      - name: Upload Test Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports-${{ github.run_id }}
-          path: |
-            app/build/reports/tests/
-            app/build/test-results/
-            test.log
-          retention-days: 7
-          if-no-files-found: warn
+      - name: Lint
+        run: ./gradlew :app:lintDebug --no-daemon
