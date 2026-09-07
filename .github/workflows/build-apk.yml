@@ -10,6 +10,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -23,6 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -35,8 +39,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
@@ -48,35 +51,37 @@ jobs:
           ./gradlew :app:assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build-debug.log
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
-      - name: Build Release APK
-        if: steps.build_debug.outputs.exit_code == '0'
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build-release.log
+      - name: Show log tail on failure
+        if: failure()
+        run: |
+          echo "=== DEBUG LOG TAIL ==="
+          tail -n 1000 build-debug.log || true
+          echo "=== GRADLE PROJECTS ==="
+          ./gradlew projects --no-daemon || true
 
       - name: Push build logs to branch on failure
         if: failure()
         run: |
-          echo "=== BUILD DEBUG LOG (tail 500) ==="
-          tail -n 500 build-debug.log || true
-          echo "=== BUILD RELEASE LOG (tail 500) ==="
-          tail -n 500 build-release.log || true
           git config user.name "orbitpress-ci"
           git config user.email "ci@orbitpress.local"
+          BRANCH="${{ github.ref_name }}"
+          echo "Current branch: $BRANCH ref: ${{ github.ref }}"
           mkdir -p ci-logs
           cp build-debug.log ci-logs/build-debug-${{ github.run_id }}.log || true
-          cp build-release.log ci-logs/build-release-${{ github.run_id }}.log || true
-          # Also create a summary file
-          echo "# Build failure ${{ github.run_id }}" > ci-logs/latest-failure.md
+          echo "# Build failure ${{ github.run_id }} on $BRANCH" > ci-logs/latest-failure.md
           echo "" >> ci-logs/latest-failure.md
-          echo "## Debug log tail" >> ci-logs/latest-failure.md
+          echo "## Debug log tail (1000 lines)" >> ci-logs/latest-failure.md
           echo '```' >> ci-logs/latest-failure.md
-          tail -n 300 build-debug.log >> ci-logs/latest-failure.md || echo "no log" >> ci-logs/latest-failure.md
+          tail -n 1000 build-debug.log >> ci-logs/latest-failure.md || echo "no log" >> ci-logs/latest-failure.md
           echo '```' >> ci-logs/latest-failure.md
           git add ci-logs/
-          git commit -m "ci: add build logs for run ${{ github.run_id }} [skip ci]" || echo "no changes"
-          # Push to same branch if push event, else to arena branch
-          BRANCH="${{ github.head_ref || github.ref_name }}"
-          echo "Pushing logs to branch $BRANCH"
-          git push origin HEAD:$BRANCH || git push origin HEAD:arena/01a07be5-orbitpress || true
+          git commit -m "ci: add build logs for run ${{ github.run_id }} [skip ci]" || echo "no changes to commit"
+          git push origin HEAD:$BRANCH || echo "push failed, trying arena branch"
+          git push origin HEAD:arena/01a07be5-orbitpress || true
+
+      - name: Build Release APK
+        if: steps.build_debug.outputs.exit_code == '0'
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build-release.log
 
       - name: Upload APKs
         if: always()
@@ -106,8 +111,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -118,18 +121,6 @@ jobs:
       - run: chmod +x ./gradlew
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --info 2>&1 | tee test.log
-      - name: Push test logs on failure
-        if: failure()
-        run: |
-          tail -n 500 test.log || true
-          git config user.name "orbitpress-ci"
-          git config user.email "ci@orbitpress.local"
-          mkdir -p ci-logs
-          cp test.log ci-logs/test-${{ github.run_id }}.log || true
-          git add ci-logs/
-          git commit -m "ci: add test logs for run ${{ github.run_id }} [skip ci]" || true
-          BRANCH="${{ github.head_ref || github.ref_name }}"
-          git push origin HEAD:$BRANCH || git push origin HEAD:arena/01a07be5-orbitpress || true
       - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v4
