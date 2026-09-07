@@ -634,9 +634,15 @@ private class NativeBridge(
   private fun pinterestImageAltText(draft: JSONObject): String = PublishingContracts.pinterestImageAltText(draft.optString("pinterestTitle"), draft.optString("title"))
   private fun wordpressHeaders(settings: JSONObject): Map<String, String> { val raw = "${settings.getString("wordpressUsername")}:${settings.getString("wordpressAppPassword")}".toByteArray(StandardCharsets.UTF_8); return mapOf("Authorization" to "Basic ${Base64.encodeToString(raw, Base64.NO_WRAP)}") }
   private fun http(url: String, method: String, headers: Map<String, String>, body: ByteArray?): String {
-    var currentUrl = url; var currentMethod = method; var currentBody = body
+    var currentUrl = url; var currentMethod = method; var currentBody: ByteArray? = body
     repeat(4) { hop ->
-      val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply { requestMethod = currentMethod; connectTimeout = 20_000; readTimeout = 60_000; instanceFollowRedirects = false; useCaches = false; setRequestProperty("Connection", "keep-alive"); setRequestProperty("Accept-Encoding", "gzip"); headers.forEach { (k, v) -> setRequestProperty(k, v) }; if (currentBody != null) { doOutput = true; setFixedLengthStreamingMode(currentBody.size); outputStream.use { it.write(currentBody) } } }
+      val bodySnapshot = currentBody
+      val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = currentMethod; connectTimeout = 20_000; readTimeout = 60_000; instanceFollowRedirects = false; useCaches = false
+        setRequestProperty("Connection", "keep-alive"); setRequestProperty("Accept-Encoding", "gzip")
+        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+        if (bodySnapshot != null) { doOutput = true; setFixedLengthStreamingMode(bodySnapshot.size); outputStream.use { it.write(bodySnapshot) } }
+      }
       val status = connection.responseCode
       if (status in 300..399) { val location = connection.getHeaderField("Location")?.trim().orEmpty(); if (location.isBlank()) throw IllegalStateException("Request failed ($status): redirect without Location"); val next = URL(URL(currentUrl), location).toString(); require(next.startsWith("https://")) { "Request redirected to a non-HTTPS URL." }; if (status in 301..302 && currentMethod != "GET" && currentMethod != "HEAD") throw IllegalStateException("Request failed ($status): WordPress redirected a $currentMethod request to $next."); currentUrl = next; if (status in 301..302) { currentMethod = "GET"; currentBody = null }; if (hop == 3) throw IllegalStateException("Request failed ($status): too many redirects; last Location=$next"); connection.disconnect(); return@repeat }
       val stream = if (status in 200..299) connection.inputStream else connection.errorStream
