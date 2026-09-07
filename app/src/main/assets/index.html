@@ -431,7 +431,7 @@
     <!-- Facebook Analyzer -->
     <section class="screen" id="screen-facebook">
       <div class="analyzer-hero"><p class="eyebrow" style="color:#FDA4AF">Facebook Analyzer</p><h1>Find the posts that spark action.</h1><p>Scan a public Page, rank visible posts, and send the strongest report to AI — modern, fast, efficient.</p><div class="platform-pills"><span class="platform-pill">Facebook only</span><span class="platform-pill">Public Page</span><span class="platform-pill">AI insights</span></div></div>
-      <section class="card"><div class="section-head"><div><h2>Scan a Facebook Page</h2><p>Use a public Page URL. Graph API is faster and more reliable.</p></div><span class="tag">Facebook only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="facebookSourceUrl">Facebook Page URL</label><input id="facebookSourceUrl" type="url" placeholder="https://www.facebook.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button id="scanFacebook" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="facebookApiScan" class="button secondary" type="button" style="flex:1">Graph API</button><button id="facebookVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button></div><p class="helper">Visible scan is a fallback. Graph API scan uses the saved Facebook access token and never opens the Facebook page in a loop.</p></div></section>
+      <section class="card"><div class="section-head"><div><h2>Scan a Facebook Page</h2><p>Use a public Page URL. Graph API is faster and more reliable.</p></div><span class="tag">Facebook only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="facebookSourceUrl">Facebook Page URL</label><input id="facebookSourceUrl" type="url" placeholder="https://www.facebook.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button id="scanFacebook" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="facebookApiScan" class="button secondary" type="button" style="flex:1">Graph API</button><button id="facebookVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button></div><p class="helper">Visible scan is a fallback. Graph API scan uses the saved Facebook access token and never opens the Facebook page in a loop. VPS scan forwards the Facebook session cookies stored in this app: open the Page once with <b>Visible scan</b> and log in there, otherwise Facebook shows the VPS a login wall and 0 posts come back.</p></div></section>
       <section class="card"><div class="section-head"><div><h2>Top Facebook posts</h2><p>Metrics remain unavailable when the page does not expose them.</p></div><button id="analyzeFacebook" class="small-button" type="button" disabled>Analyze with AI</button></div><div id="facebookScanStatus"></div><div id="facebookResults" class="pin-results"><div class="empty">Add a Page URL and scan to see visible posts.</div></div></section>
       <section class="card"><div class="section-head"><div><h2>AI post intelligence</h2><p>Understand hooks, tone, topics, and reusable content angles.</p></div><span class="tag">AI report</span></div><div id="facebookAiReport" class="ai-panel"><h3>No report yet</h3><p>Scan the Page, then analyze the strongest visible posts.</p></div></section>
     </section>
@@ -1296,17 +1296,38 @@
       if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);
       try{
         const r=await nativeCall(platform==='facebook'?'scraperFacebook':'scraperPinterest',{url,limit:platform==='facebook'?25:Number($('pinterestMaxPins').value||20),siteId:activeSiteId()},{timeoutMs:(budget+15)*1000});
-        const rows=platform==='facebook'?(r.posts||[]):(r.pins||[]);
+        const rows=platform==='facebook'?(r.posts||r.items||r.data||[]):(r.pins||r.items||r.data||[]);
         const accepted=platform==='facebook'?rows.filter(x=>{
           const candidate=String(x?.url||x?.postUrl||'');
           return x&&x.isComment!==true&&/^https?:\/\/(?:www\.)?(?:m\.)?facebook\.com\//i.test(candidate)&&!/[?&](comment_id|reply_comment_id|comment|reply)=/i.test(candidate)&&/(?:\/posts\/|\/permalink\.php|\/story\.php|\/photo\.php|\/videos?\/|\/reel\/|\/watch\/|\/share\/(?:p|v)\/|story_fbid=|photo_id=)/i.test(candidate)
         }):rows;
         st.scanning=false;st.source=url;
         st.posts=accepted.map(x=>platform==='facebook'?{kind:'facebook_post',isComment:false,author:x.author||'',text:x.text||x.message||'',url:x.url||x.postUrl||'',likes:x.likes??x.reactions,comments:x.comments,shares:x.shares}:x);
-        st.status=`VPS API collected ${st.posts.length} ${platform==='facebook'?'original posts':'pins'}.${platform==='facebook'&&rows.length&&!accepted.length?' VPS returned no original post links; comments rejected.':''}`;
-        renderSocialResults(platform);notice(`VPS ${platform} scan completed.`,'good');
+        const diag=r.orbitpressDiagnostics||{};
+        if(!st.posts.length){
+          const why=explainEmptyScraperResult(platform,r,rows.length,diag);
+          st.status=`VPS API collected 0 ${platform==='facebook'?'original posts':'pins'}. ${why}`;
+          addLog('scan_empty',`VPS ${platform} scan returned nothing`,{errorDetails:why.slice(0,400)});
+          if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);
+          notice(why,'bad');
+        }else{
+          st.status=`VPS API collected ${st.posts.length} ${platform==='facebook'?'original posts':'pins'}${diag.sessionCookiePresent===false?' (no login session was sent — engagement numbers may be missing)':''}.`;
+          if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);notice(`VPS ${platform} scan completed.`,'good');
+        }
       }catch(e){st.scanning=false;st.status=e.message||'VPS scraper request failed.';if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);notice(e.message||'VPS scraper request failed.','bad')}
       finally{if(button) button.disabled=false}
+    }
+
+    function explainEmptyScraperResult(platform,r,rawCount,diag){
+      const label=platform==='facebook'?'Facebook':'Pinterest';
+      const msg=String(diag.serverMessage||r.error||r.message||r.warning||r.reason||'').trim();
+      const finalUrl=String(diag.finalUrl||r.finalUrl||'').toLowerCase();
+      const loginWall=r.loginRequired===true||r.blocked===true||r.checkpoint===true||/\/login|checkpoint|login\.php|\/recover/.test(finalUrl)||/log ?in|sign in|checkpoint|not logged|session|cookie|blocked|rate limit|captcha|temporarily/i.test(msg);
+      if(rawCount>0) return `The VPS returned ${rawCount} item(s) but none was an original ${label} post link (comments, reel previews or off-site links were rejected). Use the Page's main URL, e.g. https://www.facebook.com/<page>/.`;
+      if(loginWall) return `${label} showed a login wall to the VPS${msg?` (${msg})`:''}. Open the source once with "Visible scan", log in inside that window, then run the VPS scan again so your session cookies are forwarded.`;
+      if(diag.sessionCookiePresent===false) return `No ${label} session cookies were available to send (${diag.cookiesSent||0} cookie(s) sent). ${label} hides Page posts from logged-out visitors. Open the Page with "Visible scan", log in inside that window, then retry the VPS scan.`;
+      if(msg) return `The VPS scraper returned no posts: ${msg}`;
+      return `The VPS scraper returned no posts even though a session was sent. Check on the server that the Playwright selectors still match ${label}'s current layout and that the Page URL is public.`;
     }
 
     async function pingScraper(){

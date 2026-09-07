@@ -95,7 +95,11 @@ class SocialScanActivity : Activity() {
           pageReady = true
           scanButton.isEnabled = true
           installResultBridge()
-          statusView.text = if (facebookDeepLinkSeen) {
+          CookieManager.getInstance().flush()
+          val loggedIn = platform != "facebook" || hasFacebookSession()
+          statusView.text = if (!loggedIn) {
+            "Not logged in to Facebook. Log in on this page first (the session stays on this phone and is reused by VPS scans), then start the scan."
+          } else if (facebookDeepLinkSeen) {
             "Page loaded. Facebook app-link was blocked; you can now start the scan."
           } else {
             "Page ready. Review or sign in, then start the scan."
@@ -121,6 +125,7 @@ class SocialScanActivity : Activity() {
       }
     }
 
+    CookieManager.getInstance().setAcceptCookie(true)
     CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
 
     val root = LinearLayout(this).apply {
@@ -146,6 +151,15 @@ class SocialScanActivity : Activity() {
     }
     removeResultBridge()
     return true
+  }
+
+  private fun hasFacebookSession(): Boolean {
+    val manager = CookieManager.getInstance()
+    val names = listOf("https://www.facebook.com/", "https://facebook.com/", "https://m.facebook.com/")
+      .flatMap { manager.getCookie(it).orEmpty().split(';') }
+      .mapNotNull { part -> part.substringBefore('=', "").trim().takeIf { it.isNotBlank() } }
+      .toSet()
+    return "c_user" in names && "xs" in names
   }
 
   private fun normalizeStartUrl(source: String, url: String): String? {
@@ -185,6 +199,7 @@ class SocialScanActivity : Activity() {
   override fun onDestroy() {
     scanGeneration++
     removeResultBridge()
+    CookieManager.getInstance().flush()
     if (::webView.isInitialized) {
       try {
         webView.stopLoading()

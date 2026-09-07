@@ -300,7 +300,15 @@ private class NativeBridge(
     cookieValues.forEach { (name, value) -> cookies.put(JSONObject().put("name", name).put("value", value)) }
     val timeoutSeconds = ScraperDefaultsContract.timeoutSeconds(settings)
     val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies).put("timeoutSeconds", timeoutSeconds)
-    return JSONObject(scraperHttp(endpoint, mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), timeoutSeconds))
+    val response = JSONObject(scraperHttp(endpoint, mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), timeoutSeconds))
+    // Tell the WebView what the server saw, so an empty result can be explained instead of silently showing 0.
+    val sessionCookieNames = if (platform == "facebook") listOf("c_user", "xs") else listOf("_pinterest_sess")
+    val diagnostics = JSONObject()
+      .put("cookiesSent", cookies.length())
+      .put("sessionCookiePresent", sessionCookieNames.all { cookieValues.containsKey(it) })
+      .put("serverMessage", ScraperResultContract.serverMessage(response))
+      .put("finalUrl", response.optString("finalUrl", response.optString("url")))
+    return response.put("orbitpressDiagnostics", diagnostics)
   }
   /**
    * POSTs to the VPS scraper. Wildcard-DNS hosts (sslip.io / nip.io) embed their IPv4 address, and some
