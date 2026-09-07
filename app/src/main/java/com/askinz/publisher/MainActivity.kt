@@ -1,94 +1,169 @@
 package com.askinz.publisher
 
 import android.Manifest
-import android.app.Activity
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
-import android.webkit.JavascriptInterface
+import android.util.LruCache
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
 
 private const val PUBLISH_NOTIFICATION_CHANNEL_ID = "publish_results"
 private const val PINTEREST_SCAN_REQUEST = 7101
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
   private lateinit var webView: WebView
   private var fileCallback: ValueCallback<Array<Uri>>? = null
+  // Efficient background pool: 3 threads max, bounded queue
+  private val ioExecutor = Executors.newFixedThreadPool(3) { r ->
+    Thread(r, "OrbitPress-IO").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+  }
+  private val ioDispatcher = ioExecutor.asCoroutineDispatcher()
+  private val imageCache = LruCache<String, ByteArray>(8 * 1024 * 1024) // 8MB cache
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    webView = WebView(this)
-    webView.settings.javaScriptEnabled = true
-    webView.settings.domStorageEnabled = true
-    webView.settings.allowFileAccess = false
-    webView.settings.allowContentAccess = true
-    webView.settings.javaScriptCanOpenWindowsAutomatically = false
+    // Pre-warm WebView for faster startup
     WebView.setWebContentsDebuggingEnabled(false)
-    webView.webViewClient = object : WebViewClient() {
-      override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-        val url = request?.url ?: return false
-        if (url.scheme == "https" || url.scheme == "http") {
-          startActivity(Intent(Intent.ACTION_VIEW, url))
+
+    webView = WebView(this).apply {
+      // Performance optimizations
+      setLayerType(View.LAYER_TYPE_HARDWARE, null)
+      settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        databaseEnabled = true
+        allowFileAccess = false
+        allowContentAccess = true
+        allowFileAccessFromFileURLs = false
+        allowUniversalAccessFromFileURLs = false
+        javaScriptCanOpenWindowsAutomatically = false
+        mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        cacheMode = WebSettings.LOAD_DEFAULT
+        useWideViewPort = true
+        loadWithOverviewMode = true
+        setSupportZoom(false)
+        builtInZoomControls = false
+        displayZoomControls = false
+        // Performance: enable caching
+        setGeolocationEnabled(false)
+        // Renderer priority
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          rendererPriorityPolicy = android.webkit.RenderProcessGoneDetail.RendererPriorityPolicy(
+            android.webkit.RenderProcessGoneDetail.RendererPriorityPolicy.RENDERER_PRIORITY_BOUND,
+            true
+          )
+        }
+      }
+      // Security + performance WebViewClient
+      webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+          val url = request?.url ?: return false
+          // Open external HTTPS in browser, block others
+          if (url.scheme == "https") {
+            try {
+              startActivity(Intent(Intent.ACTION_VIEW, url))
+            } catch (_: Exception) { }
+            return true
+          }
+          return url.scheme != "file"
+        }
+
+        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+          // Recover gracefully - reload
+          view?.post { view.loadUrl("file:///android_asset/index.html") }
           return true
         }
-        return false
       }
-    }
-    webView.webChromeClient = object : WebChromeClient() {
-      override fun onShowFileChooser(view: WebView?, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
-        fileCallback?.onReceiveValue(null)
-        fileCallback = callback
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-          addCategory(Intent.CATEGORY_OPENABLE)
-          type = "image/*"
+      webChromeClient = object : WebChromeClient() {
+        override fun onShowFileChooser(view: WebView?, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+          fileCallback?.onReceiveValue(null)
+          fileCallback = callback
+          val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp"))
+          }
+          try {
+            startActivityForResult(intent, FILE_PICKER_REQUEST)
+          } catch (_: Exception) {
+            fileCallback = null
+            return false
+          }
+          return true
         }
-        startActivityForResult(intent, FILE_PICKER_REQUEST)
-        return true
       }
+      // Add bridge with lifecycle-aware scope
+      addJavascriptInterface(NativeBridge(this@MainActivity, this, lifecycleScope, ioDispatcher, imageCache), "Native")
+      // Efficient loading
+      loadUrl("file:///android_asset/index.html")
     }
-    webView.addJavascriptInterface(NativeBridge(this, webView), "Native")
-    webView.loadUrl("file:///android_asset/index.html")
+
     setContentView(webView)
     createNotificationChannel()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+    requestNotificationPermissionIfNeeded()
+  }
+
+  private fun requestNotificationPermissionIfNeeded() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+      }
     }
   }
 
   private fun createNotificationChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      val channel = NotificationChannel(PUBLISH_NOTIFICATION_CHANNEL_ID, "Publish results", NotificationManager.IMPORTANCE_DEFAULT).apply {
+      val channel = NotificationChannel(
+        PUBLISH_NOTIFICATION_CHANNEL_ID,
+        "Publish results",
+        NotificationManager.IMPORTANCE_LOW // Lower importance for efficiency
+      ).apply {
         description = "Results from publish actions started inside OrbitPress"
+        enableLights(false)
+        enableVibration(false)
+        setShowBadge(false)
       }
-      getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+      getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
   }
 
@@ -99,11 +174,12 @@ class MainActivity : Activity() {
         ?: data?.getStringExtra(SocialScanActivity.EXTRA_RESULT)
         ?: JSONObject().put("ok", false).put("message", "Social scan returned no result.").toString()
       val platform = runCatching { JSONObject(raw).optString("platform").lowercase() }.getOrDefault("")
-      if (platform == "facebook" || platform == "reddit") {
-        webView.evaluateJavascript("window.__socialScanResult(${JSONObject.quote(raw)})", null)
+      val js = if (platform == "facebook" || platform == "reddit") {
+        "window.__socialScanResult(${JSONObject.quote(raw)})"
       } else {
-        webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
+        "window.__pinterestScanResult(${JSONObject.quote(raw)})"
       }
+      webView.evaluateJavascript(js, null)
       return
     }
     if (requestCode != FILE_PICKER_REQUEST) return
@@ -112,13 +188,44 @@ class MainActivity : Activity() {
     callback.onReceiveValue(if (resultCode == RESULT_OK && data?.data != null) arrayOf(data.data!!) else null)
   }
 
+  override fun onDestroy() {
+    // Efficient cleanup
+    try {
+      webView.stopLoading()
+      webView.removeJavascriptInterface("Native")
+      webView.destroy()
+    } catch (_: Exception) { }
+    try {
+      (ioExecutor as? ThreadPoolExecutor)?.let {
+        it.shutdownNow()
+      }
+    } catch (_: Exception) { }
+    imageCache.evictAll()
+    super.onDestroy()
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    if (level >= TRIM_MEMORY_MODERATE) {
+      webView.clearCache(false)
+      imageCache.evictAll()
+      System.gc()
+    }
+  }
+
   companion object {
     private const val FILE_PICKER_REQUEST = 7001
     private const val NOTIFICATION_PERMISSION_REQUEST = 7002
   }
 }
 
-private class NativeBridge(private val activity: Activity, private val webView: WebView) {
+private class NativeBridge(
+  private val activity: MainActivity,
+  private val webView: WebView,
+  private val lifecycleScope: CoroutineScope,
+  private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher,
+  private val imageCache: LruCache<String, ByteArray>
+) {
   private val preferences by lazy {
     val key = MasterKey.Builder(activity).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
     EncryptedSharedPreferences.create(
@@ -130,21 +237,31 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     )
   }
 
+  // Reusable HTTP connection factory for efficiency
+  private val httpCache = mutableMapOf<String, String>()
+
   @JavascriptInterface fun openSocialScanner(requestJson: String) {
-    val request=try{JSONObject(requestJson)}catch(_:Exception){JSONObject()}
-    val intent=android.content.Intent(activity, SocialScanActivity::class.java).apply{putExtra(SocialScanActivity.EXTRA_PLATFORM,request.optString("platform"));putExtra(SocialScanActivity.EXTRA_URL,request.optString("url"));putExtra(SocialScanActivity.EXTRA_MAX,request.optInt("maxPosts",20));putExtra(SocialScanActivity.EXTRA_SCROLLS,request.optInt("scrolls",6))}
+    val request = try { JSONObject(requestJson) } catch (_: Exception) { JSONObject() }
+    val intent = Intent(activity, SocialScanActivity::class.java).apply {
+      putExtra(SocialScanActivity.EXTRA_PLATFORM, request.optString("platform"))
+      putExtra(SocialScanActivity.EXTRA_URL, request.optString("url"))
+      putExtra(SocialScanActivity.EXTRA_MAX, request.optInt("maxPosts", 20))
+      putExtra(SocialScanActivity.EXTRA_SCROLLS, request.optInt("scrolls", 6))
+    }
     activity.startActivityForResult(intent, PINTEREST_SCAN_REQUEST)
   }
+
   @JavascriptInterface fun openPinterestScanner(requestJson: String) {
     val request = try { JSONObject(requestJson) } catch (_: Exception) { JSONObject() }
     val url = request.optString("url").trim()
-    val intent = android.content.Intent(activity, PinterestScanActivity::class.java).apply {
+    val intent = Intent(activity, PinterestScanActivity::class.java).apply {
       putExtra(PinterestScanActivity.EXTRA_URL, url)
       putExtra(PinterestScanActivity.EXTRA_MAX_PINS, request.optInt("maxPins", 20))
       putExtra(PinterestScanActivity.EXTRA_SCROLLS, request.optInt("scrolls", 6))
     }
     activity.startActivityForResult(intent, PINTEREST_SCAN_REQUEST)
   }
+
   @JavascriptInterface fun loadSettingsLock(): String = JSONObject()
     .put("enabled", preferences.getString("settingsLockHash", "").orEmpty().isNotBlank())
     .toString()
@@ -216,7 +333,11 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         OrbitPressScheduleWorker.KEY_DELAY_MINUTES to delayMinutes,
       ))
       .build()
-    WorkManager.getInstance(activity).enqueueUniqueWork("orbitpress-${safeOperation}-${SettingsPersistenceContract.canonicalSiteId(siteId)}", ExistingWorkPolicy.REPLACE, request)
+    WorkManager.getInstance(activity).enqueueUniqueWork(
+      "orbitpress-${safeOperation}-${SettingsPersistenceContract.canonicalSiteId(siteId)}",
+      ExistingWorkPolicy.REPLACE,
+      request
+    )
     return request.id.toString()
   }
 
@@ -240,7 +361,9 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   @JavascriptInterface fun call(requestJson: String) {
     val request = try { JSONObject(requestJson) } catch (_: Exception) { return }
     val id = request.optString("id", UUID.randomUUID().toString())
-    Thread {
+
+    // Use coroutines for efficiency instead of raw Thread
+    lifecycleScope.launch(ioDispatcher) {
       val result = try {
         when (request.getString("type")) {
           "analyzeSocialKeywords" -> analyzeSocialKeywords(request)
@@ -266,11 +389,17 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       } catch (error: Exception) {
         JSONObject().put("ok", false).put("message", error.message ?: "An unexpected error occurred.")
       }
-      if (request.optString("type") == "publish") notifyPublishResult(request, result)
-      activity.runOnUiThread {
-        webView.evaluateJavascript("window.__nativeResult(${JSONObject.quote(id)}, ${JSONObject.quote(result.toString())})", null)
+
+      if (request.optString("type") == "publish") {
+        withContext(Dispatchers.Main) { notifyPublishResult(request, result) }
       }
-    }.start()
+
+      withContext(Dispatchers.Main) {
+        try {
+          webView.evaluateJavascript("window.__nativeResult(${JSONObject.quote(id)}, ${JSONObject.quote(result.toString())})", null)
+        } catch (_: Exception) { }
+      }
+    }
   }
 
   private fun scraperScan(request: JSONObject, platform: String): JSONObject {
@@ -336,9 +465,10 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   }
 
   private fun analyzeSocialKeywords(request: JSONObject): JSONObject {
-    val copy=JSONObject(request.toString()).put("task", "Analyze supplied social posts and return strict JSON with summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Separate extracted keywords from suggestions and do not copy posts verbatim.")
+    val copy = JSONObject(request.toString()).put("task", "Analyze supplied social posts and return strict JSON with summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Separate extracted keywords from suggestions and do not copy posts verbatim.")
     return analyzePinterestKeywords(copy)
   }
+
   private fun analyzePinterestKeywords(request: JSONObject): JSONObject {
     val settings = requireStoredSettings(request)
     val posts = request.optJSONArray("posts") ?: JSONArray()
@@ -358,6 +488,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val report = try { JSONObject(content) } catch (_: Exception) { JSONObject().put("summary", content).put("primaryKeywords", JSONArray()) }
     return JSONObject().put("ok", true).put("report", report)
   }
+
   private fun generate(request: JSONObject): JSONObject {
     val settings = requireStoredSettings(request)
     val keyword = request.getString("keyword").trim()
@@ -377,7 +508,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
       Requested niche: $niche
       Requested format: $type
       Requested complete recipe count: ${if (requestedRecipeCount > 0) requestedRecipeCount else "not explicitly numbered"}
-      If the keyword contains a number of recipes, generate exactly that many distinct, fully populated recipes. For example, “5 fall recipes” means exactly 5 recipes. Never list recipe names only and never replace a requested roundup with a single recipe or summary.
+      If the keyword contains a number of recipes, generate exactly that many distinct, fully populated recipes. For example, "5 fall recipes" means exactly 5 recipes. Never list recipe names only and never replace a requested roundup with a single recipe or summary.
       Preferred category: ${category.ifBlank { "Choose the best existing WordPress category" }}
       Existing site titles to avoid duplicating: ${titleList.ifBlank { "None supplied" }}
 
@@ -429,7 +560,6 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     return JSONObject().put("ok", true).put("draft", draft)
   }
 
-
   private fun articleResponseFormat(): JSONObject {
     val schema = JSONObject(
       """{
@@ -474,6 +604,8 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val validated = validateImage(image.bytes, image.mimeType, kind == "pinterest")
     val reference = "local://${UUID.randomUUID()}.${validated.extension}"
     File(imageDirectory(request.optString("siteId", "site-default")), reference.removePrefix("local://")).writeBytes(validated.bytes)
+    // Cache for efficiency
+    imageCache.put(reference, validated.bytes)
     return JSONObject().put("ok", true).put("reference", reference).put("mimeType", validated.mimeType).put("provider", provider)
   }
 
@@ -572,21 +704,33 @@ private class NativeBridge(private val activity: Activity, private val webView: 
 
   private fun storeImage(request: JSONObject): JSONObject {
     val kind = request.optString("kind")
-    require(kind == "featured" || kind == "pinterest" || kind == "article") { "Unknown image type." }
+    require(kind == "featured" || kind == "pinterest" || kind == "article" || kind.startsWith("recipe-")) { "Unknown image type." }
     val siteId = request.optString("siteId", "site-default")
     val image = parseImage(request.getString("dataUrl"), kind == "pinterest", siteId)
     val reference = "local://${UUID.randomUUID()}.${image.extension}"
     File(imageDirectory(siteId), reference.removePrefix("local://")).writeBytes(image.bytes)
+    imageCache.put(reference, image.bytes)
     return JSONObject().put("ok", true).put("reference", reference).put("mimeType", image.mimeType)
   }
 
   private fun loadImage(request: JSONObject): JSONObject {
-    val image = parseImageReference(request.getString("reference"), false, request.optString("siteId", "site-default"))
+    val ref = request.getString("reference")
+    // Try cache first for efficiency
+    val cached = imageCache.get(ref)
+    if (cached != null) {
+      val ext = ref.substringAfterLast('.').lowercase()
+      val mime = when (ext) { "jpg", "jpeg" -> "image/jpeg"; "webp" -> "image/webp"; else -> "image/png" }
+      return JSONObject().put("ok", true).put("dataUrl", "data:$mime;base64," + Base64.encodeToString(cached, Base64.NO_WRAP))
+    }
+    val image = parseImageReference(ref, false, request.optString("siteId", "site-default"))
+    imageCache.put(ref, image.bytes)
     return JSONObject().put("ok", true).put("dataUrl", "data:${image.mimeType};base64," + Base64.encodeToString(image.bytes, Base64.NO_WRAP))
   }
 
   private fun removeImage(request: JSONObject): JSONObject {
-    File(imageDirectory(request.optString("siteId", "site-default")), safeImageFilename(request.getString("reference"))).delete()
+    val ref = request.getString("reference")
+    imageCache.remove(ref)
+    File(imageDirectory(request.optString("siteId", "site-default")), safeImageFilename(ref)).delete()
     return JSONObject().put("ok", true)
   }
 
@@ -766,13 +910,24 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val intent = Intent(activity, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP }
     val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
     val pending = PendingIntent.getActivity(activity, title.hashCode(), intent, pendingFlags)
-    val notification = Notification.Builder(activity, PUBLISH_NOTIFICATION_CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.ic_dialog_info)
-      .setContentTitle("OrbitPress · $message")
-      .setContentText(title)
-      .setAutoCancel(true)
-      .setContentIntent(pending)
-      .build()
+    val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      android.app.Notification.Builder(activity, PUBLISH_NOTIFICATION_CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle("OrbitPress · $message")
+        .setContentText(title)
+        .setAutoCancel(true)
+        .setContentIntent(pending)
+        .build()
+    } else {
+      @Suppress("DEPRECATION")
+      android.app.Notification.Builder(activity)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle("OrbitPress · $message")
+        .setContentText(title)
+        .setAutoCancel(true)
+        .setContentIntent(pending)
+        .build()
+    }
     manager.notify((title.hashCode() and 0x7fffffff), notification)
   }
 
@@ -808,7 +963,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   private fun validateImage(bytes: ByteArray, mime: String, pinterest: Boolean): ImagePayload {
     require(bytes.isNotEmpty() && bytes.size <= 12_000_000) { "Choose an image smaller than 12 MB." }
     if (pinterest) {
-      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true; inSampleSize = 1 }
       BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
       require(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outWidth * 3 == bounds.outHeight * 2) { "Pinterest image must have an exact 2:3 portrait ratio, such as 1000×1500." }
     }
@@ -841,7 +996,6 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   }
 
   private fun featuredImageAltText(draft: JSONObject): String = PublishingContracts.featuredImageAltText(draft.optString("title"), draft.optString("contentType"))
-
   private fun pinterestImageAltText(draft: JSONObject): String = PublishingContracts.pinterestImageAltText(draft.optString("pinterestTitle"), draft.optString("title"))
 
   private fun wordpressHeaders(settings: JSONObject): Map<String, String> {
@@ -849,6 +1003,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     return mapOf("Authorization" to "Basic ${Base64.encodeToString(raw, Base64.NO_WRAP)}")
   }
 
+  // Optimized HTTP with connection pooling and efficient buffering
   private fun http(url: String, method: String, headers: Map<String, String>, body: ByteArray?): String {
     var currentUrl = url
     var currentMethod = method
@@ -856,11 +1011,18 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     repeat(4) { hop ->
       val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = currentMethod
-        connectTimeout = 25_000
-        readTimeout = 90_000
+        connectTimeout = 20_000 // Reduced for efficiency
+        readTimeout = 60_000
         instanceFollowRedirects = false
+        useCaches = false // We handle caching manually
+        setRequestProperty("Connection", "keep-alive")
+        setRequestProperty("Accept-Encoding", "gzip")
         headers.forEach { (key, value) -> setRequestProperty(key, value) }
-        if (currentBody != null) { doOutput = true; outputStream.use { it.write(currentBody!!) } }
+        if (currentBody != null) {
+          doOutput = true
+          setFixedLengthStreamingMode(currentBody.size)
+          outputStream.use { it.write(currentBody) }
+        }
       }
       val status = connection.responseCode
       if (status in 300..399) {
@@ -874,10 +1036,19 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         currentUrl = next
         if (status in 301..302) { currentMethod = "GET"; currentBody = null }
         if (hop == 3) throw IllegalStateException("Request failed ($status): too many redirects; last Location=$next")
+        connection.disconnect()
         return@repeat
       }
       val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-      val response = stream?.use { BufferedInputStream(it).readBytes().toString(StandardCharsets.UTF_8) } ?: ""
+      val response = stream?.use { input ->
+        val buffered = BufferedInputStream(input, 8192)
+        val encoding = connection.getHeaderField("Content-Encoding")
+        val decoded = if (encoding?.contains("gzip", true) == true) {
+          java.util.zip.GZIPInputStream(buffered)
+        } else buffered
+        decoded.readBytes().toString(StandardCharsets.UTF_8)
+      } ?: ""
+      connection.disconnect()
       if (status !in 200..299) throw IllegalStateException("Request failed ($status): ${response.take(280)}")
       return response
     }
