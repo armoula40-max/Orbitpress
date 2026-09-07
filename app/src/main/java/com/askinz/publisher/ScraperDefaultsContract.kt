@@ -41,4 +41,18 @@ object ScraperDefaultsContract {
   }
 
   fun endpoint(resolved: Resolved, platform: String): String = "${requireEndpoint(resolved)}/api/$platform/scrape"
+
+  /** Playwright scans routinely take longer than a minute; the default read timeout is 5 minutes. */
+  const val DEFAULT_TIMEOUT_SECONDS = 300
+  const val MIN_TIMEOUT_SECONDS = 30
+  const val MAX_TIMEOUT_SECONDS = 900
+
+  /** Seconds the app waits for the scraper to answer; blank/invalid settings fall back to the default. */
+  fun timeoutSeconds(settings: JSONObject): Int {
+    val raw = settings.optString("scraperTimeoutSeconds").trim()
+    val parsed = raw.toIntOrNull() ?: return DEFAULT_TIMEOUT_SECONDS
+    return parsed.coerceIn(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
+  }
+
+  fun timeoutMillis(settings: JSONObject): Int = timeoutSeconds(settings) * 1000
 }

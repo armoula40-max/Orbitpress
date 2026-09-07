@@ -57,6 +57,24 @@ class ScraperDefaultsContractTest {
   }
 
   @Test
+  fun timeoutDefaultsToFiveMinutesAndIsClamped() {
+    assertEquals(300, ScraperDefaultsContract.timeoutSeconds(JSONObject()))
+    assertEquals(300, ScraperDefaultsContract.timeoutSeconds(JSONObject().put("scraperTimeoutSeconds", "")))
+    assertEquals(300, ScraperDefaultsContract.timeoutSeconds(JSONObject().put("scraperTimeoutSeconds", "abc")))
+    assertEquals(120, ScraperDefaultsContract.timeoutSeconds(JSONObject().put("scraperTimeoutSeconds", " 120 ")))
+    assertEquals(30, ScraperDefaultsContract.timeoutSeconds(JSONObject().put("scraperTimeoutSeconds", "5")))
+    assertEquals(900, ScraperDefaultsContract.timeoutSeconds(JSONObject().put("scraperTimeoutSeconds", "99999")))
+    assertEquals(120_000, ScraperDefaultsContract.timeoutMillis(JSONObject().put("scraperTimeoutSeconds", "120")))
+  }
+
+  @Test
+  fun timeoutSurvivesSettingsMerge() {
+    val merged = SettingsPersistenceContract.merge(JSONObject(), JSONObject().put("scraperTimeoutSeconds", "240"))
+    assertEquals("240", merged.getString("scraperTimeoutSeconds"))
+    assertEquals(240, ScraperDefaultsContract.timeoutSeconds(merged))
+  }
+
+  @Test
   fun emptyBuildDefaultsKeepTheFeatureUnconfigured() {
     val resolved = ScraperDefaultsContract.resolve(JSONObject(), "", "")
     assertEquals("", resolved.baseUrl)

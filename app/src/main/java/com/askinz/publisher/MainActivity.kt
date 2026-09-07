@@ -39,6 +39,7 @@ import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -212,7 +213,7 @@ private class NativeBridge(
   @JavascriptInterface fun loadSettings(siteId: String): String {
     val saved = storedSettings(SettingsPersistenceContract.canonicalSiteId(siteId))
     val scraper = ScraperDefaultsContract.resolve(saved, BuildConfig.SCRAPER_DEFAULT_URL, BuildConfig.SCRAPER_DEFAULT_KEY)
-    return JSONObject().put("articleBaseUrl", saved.optString("articleBaseUrl")).put("articleModel", saved.optString("articleModel")).put("wordpressBaseUrl", saved.optString("wordpressBaseUrl")).put("wordpressUsername", saved.optString("wordpressUsername")).put("categoryId", saved.optString("categoryId")).put("articleApiConfigured", saved.optString("articleApiKey").isNotBlank()).put("wordpressConfigured", saved.optString("wordpressAppPassword").isNotBlank()).put("imageConfigured", saved.optString("imageApiToken").isNotBlank()).put("pinterestConfigured", saved.optString("pinterestAccessToken").isNotBlank() && saved.optString("pinterestBoardId").isNotBlank()).put("facebookConfigured", saved.optString("facebookAccessToken").isNotBlank()).put("textPrompt", saved.optString("textPrompt")).put("imagePrompt", saved.optString("imagePrompt")).put("pinterestPrompt", saved.optString("pinterestPrompt")).put("articleImageCount", saved.optInt("articleImageCount", 0)).put("scraperApiBaseUrl", saved.optString("scraperApiBaseUrl")).put("scraperApiConfigured", scraper.configured).put("scraperDefaultUrl", BuildConfig.SCRAPER_DEFAULT_URL).put("scraperUrlFromBuild", scraper.urlFromBuild).put("scraperKeyFromBuild", scraper.keyFromBuild).toString()
+    return JSONObject().put("articleBaseUrl", saved.optString("articleBaseUrl")).put("articleModel", saved.optString("articleModel")).put("wordpressBaseUrl", saved.optString("wordpressBaseUrl")).put("wordpressUsername", saved.optString("wordpressUsername")).put("categoryId", saved.optString("categoryId")).put("articleApiConfigured", saved.optString("articleApiKey").isNotBlank()).put("wordpressConfigured", saved.optString("wordpressAppPassword").isNotBlank()).put("imageConfigured", saved.optString("imageApiToken").isNotBlank()).put("pinterestConfigured", saved.optString("pinterestAccessToken").isNotBlank() && saved.optString("pinterestBoardId").isNotBlank()).put("facebookConfigured", saved.optString("facebookAccessToken").isNotBlank()).put("textPrompt", saved.optString("textPrompt")).put("imagePrompt", saved.optString("imagePrompt")).put("pinterestPrompt", saved.optString("pinterestPrompt")).put("articleImageCount", saved.optInt("articleImageCount", 0)).put("scraperApiBaseUrl", saved.optString("scraperApiBaseUrl")).put("scraperApiConfigured", scraper.configured).put("scraperDefaultUrl", BuildConfig.SCRAPER_DEFAULT_URL).put("scraperUrlFromBuild", scraper.urlFromBuild).put("scraperKeyFromBuild", scraper.keyFromBuild).put("scraperTimeoutSeconds", ScraperDefaultsContract.timeoutSeconds(saved)).toString()
   }
   @JavascriptInterface fun saveSettings(json: String, siteId: String) {
     require(json.length <= 30_000) { "Settings payload is too large." }
@@ -293,8 +294,13 @@ private class NativeBridge(
     cookieSources.forEach { source -> CookieManager.getInstance().getCookie(source).orEmpty().split(';').forEach { part -> val separator = part.indexOf('='); if (separator > 0) cookieValues[part.substring(0, separator).trim()] = part.substring(separator + 1).trim() } }
     val cookies = JSONArray()
     cookieValues.forEach { (name, value) -> cookies.put(JSONObject().put("name", name).put("value", value)) }
-    val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies)
-    return JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8)))
+    val timeoutSeconds = ScraperDefaultsContract.timeoutSeconds(settings)
+    val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies).put("timeoutSeconds", timeoutSeconds)
+    return try {
+      JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), readTimeoutMillis = timeoutSeconds * 1000))
+    } catch (_: SocketTimeoutException) {
+      throw IllegalStateException("VPS scraper did not answer within $timeoutSeconds s. Lower the item count or raise the scraper timeout in Settings.")
+    }
   }
   private fun facebookGraphScan(request: JSONObject): JSONObject {
     val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
@@ -632,12 +638,12 @@ private class NativeBridge(
   private fun featuredImageAltText(draft: JSONObject): String = PublishingContracts.featuredImageAltText(draft.optString("title"), draft.optString("contentType"))
   private fun pinterestImageAltText(draft: JSONObject): String = PublishingContracts.pinterestImageAltText(draft.optString("pinterestTitle"), draft.optString("title"))
   private fun wordpressHeaders(settings: JSONObject): Map<String, String> { val raw = "${settings.getString("wordpressUsername")}:${settings.getString("wordpressAppPassword")}".toByteArray(StandardCharsets.UTF_8); return mapOf("Authorization" to "Basic ${Base64.encodeToString(raw, Base64.NO_WRAP)}") }
-  private fun http(url: String, method: String, headers: Map<String, String>, body: ByteArray?): String {
+  private fun http(url: String, method: String, headers: Map<String, String>, body: ByteArray?, readTimeoutMillis: Int = 60_000): String {
     var currentUrl = url; var currentMethod = method; var currentBody: ByteArray? = body
     repeat(4) { hop ->
       val bodySnapshot = currentBody
       val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-        requestMethod = currentMethod; connectTimeout = 20_000; readTimeout = 60_000; instanceFollowRedirects = false; useCaches = false
+        requestMethod = currentMethod; connectTimeout = 20_000; readTimeout = readTimeoutMillis; instanceFollowRedirects = false; useCaches = false
         setRequestProperty("Connection", "keep-alive"); setRequestProperty("Accept-Encoding", "gzip")
         headers.forEach { (k, v) -> setRequestProperty(k, v) }
         if (bodySnapshot != null) { doOutput = true; setFixedLengthStreamingMode(bodySnapshot.size); outputStream.use { it.write(bodySnapshot) } }
