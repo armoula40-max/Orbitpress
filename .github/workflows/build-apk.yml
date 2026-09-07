@@ -15,57 +15,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-and-build:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      - uses: android-actions/setup-android@v3
       - name: Install Android packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          yes | sdkmanager --licenses || true
-
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
       - name: Make Gradle executable
         run: chmod +x ./gradlew
-
-      - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --build-cache
-
-      - name: Show test results if failed
-        if: failure()
-        run: |
-          find app/build -name "*.txt" -o -name "*.html" | head -n 20
-          cat app/build/reports/tests/testDebugUnitTest/classes/*.html || true
-          find app/build/test-results -name "*.xml" -exec cat {} \; | tail -n 200 || true
-
-      - name: Build Debug APK
+      - name: Build Debug APK - Modern
         run: ./gradlew :app:assembleDebug --no-daemon --build-cache --stacktrace
-
-      - name: Build Release APK with R8
+      - name: Build Release APK - R8 Optimized
         run: ./gradlew :app:assembleRelease --no-daemon --build-cache --stacktrace
-
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: OrbitPress-debug-apk-v4.1-modern
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
-
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
@@ -73,13 +47,28 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - run: chmod +x ./gradlew
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --info
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
           path: |
-            app/build/reports/tests/
+            app/build/reports/
             app/build/test-results/
           retention-days: 7
           if-no-files-found: warn
