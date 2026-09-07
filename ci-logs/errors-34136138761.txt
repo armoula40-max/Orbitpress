@@ -1,2 +1,0 @@
-19:The client will now receive all logging from the daemon (pid: 2673). The daemon log file: /home/runner/.gradle/daemon/9.6.1/daemon-2673.out.log
-768:e: file:///home/runner/work/Orbitpress/Orbitpress/app/src/main/java/com/askinz/publisher/MainActivity.kt:639:441 Smart cast to 'kotlin.ByteArray' is impossible, because 'currentBody' is a local variable that is mutated in a capturing closure.
