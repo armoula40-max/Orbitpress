@@ -51,13 +51,15 @@ jobs:
           ./gradlew :app:assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build-debug.log
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
-      - name: Show log tail on failure
+      - name: Show error extract
         if: failure()
         run: |
-          echo "=== DEBUG LOG TAIL ==="
-          tail -n 1000 build-debug.log || true
-          echo "=== GRADLE PROJECTS ==="
-          ./gradlew projects --no-daemon || true
+          echo "=== GREP e: ==="
+          grep -n "e: " build-debug.log | head -n 200 || true
+          echo "=== GREP error ==="
+          grep -i "error" build-debug.log | head -n 200 || true
+          echo "=== tail 500 ==="
+          tail -n 500 build-debug.log
 
       - name: Push build logs to branch on failure
         if: failure()
@@ -65,18 +67,24 @@ jobs:
           git config user.name "orbitpress-ci"
           git config user.email "ci@orbitpress.local"
           BRANCH="${{ github.ref_name }}"
-          echo "Current branch: $BRANCH ref: ${{ github.ref }}"
           mkdir -p ci-logs
           cp build-debug.log ci-logs/build-debug-${{ github.run_id }}.log || true
+          # Extract errors
+          grep -n "e: " build-debug.log | head -n 500 > ci-logs/errors-${{ github.run_id }}.txt || true
           echo "# Build failure ${{ github.run_id }} on $BRANCH" > ci-logs/latest-failure.md
           echo "" >> ci-logs/latest-failure.md
-          echo "## Debug log tail (1000 lines)" >> ci-logs/latest-failure.md
+          echo "## Errors" >> ci-logs/latest-failure.md
           echo '```' >> ci-logs/latest-failure.md
-          tail -n 1000 build-debug.log >> ci-logs/latest-failure.md || echo "no log" >> ci-logs/latest-failure.md
+          cat ci-logs/errors-${{ github.run_id }}.txt >> ci-logs/latest-failure.md || echo "no errors" >> ci-logs/latest-failure.md
+          echo '```' >> ci-logs/latest-failure.md
+          echo "" >> ci-logs/latest-failure.md
+          echo "## Debug log tail (800 lines)" >> ci-logs/latest-failure.md
+          echo '```' >> ci-logs/latest-failure.md
+          tail -n 800 build-debug.log >> ci-logs/latest-failure.md || echo "no log" >> ci-logs/latest-failure.md
           echo '```' >> ci-logs/latest-failure.md
           git add ci-logs/
           git commit -m "ci: add build logs for run ${{ github.run_id }} [skip ci]" || echo "no changes to commit"
-          git push origin HEAD:$BRANCH || echo "push failed, trying arena branch"
+          git push origin HEAD:$BRANCH || echo "push failed"
           git push origin HEAD:arena/01a07be5-orbitpress || true
 
       - name: Build Release APK
@@ -92,18 +100,6 @@ jobs:
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
           retention-days: 14
-          if-no-files-found: warn
-
-      - name: Upload Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-reports-${{ github.run_id }}
-          path: |
-            app/build/reports/
-            build-debug.log
-            build-release.log
-          retention-days: 7
           if-no-files-found: warn
 
   test:
