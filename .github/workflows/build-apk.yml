@@ -25,45 +25,39 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Set up Java 17 - Efficient
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Setup Android SDK - Efficient
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          log-accepted-android-sdk-licenses: false
 
-      - name: Install Android packages - Cached
+      - name: Install Android packages
         run: |
-          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" --verbose
-          sdkmanager --list_installed
-
-      - name: Gradle cache - Efficient
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ~/.android/build-cache
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses || true
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
-      - name: Run unit tests - Efficient
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --parallel --max-workers=4 --build-cache --stacktrace
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --build-cache
 
-      - name: Build Debug APK - Modern Efficient
-        run: ./gradlew :app:assembleDebug --no-daemon --parallel --max-workers=4 --build-cache --stacktrace -Pandroid.builder.sdkDownload=false
+      - name: Show test results if failed
+        if: failure()
+        run: |
+          find app/build -name "*.txt" -o -name "*.html" | head -n 20
+          cat app/build/reports/tests/testDebugUnitTest/classes/*.html || true
+          find app/build/test-results -name "*.xml" -exec cat {} \; | tail -n 200 || true
 
-      - name: Build Release APK - Optimized with R8
-        run: ./gradlew :app:assembleRelease --no-daemon --parallel --max-workers=4 --build-cache --stacktrace -Pandroid.builder.sdkDownload=false
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --build-cache --stacktrace
+
+      - name: Build Release APK with R8
+        run: ./gradlew :app:assembleRelease --no-daemon --build-cache --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -71,7 +65,6 @@ jobs:
           name: OrbitPress-debug-apk-v4.1-modern
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
-          compression-level: 6
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
@@ -79,17 +72,18 @@ jobs:
           name: OrbitPress-release-apk-v4.1-modern
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
-          compression-level: 6
 
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: app/build/reports/tests/
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
           retention-days: 7
+          if-no-files-found: warn
 
-  # Additional job for efficient lint check
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -103,10 +97,11 @@ jobs:
       - uses: android-actions/setup-android@v3
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - run: chmod +x ./gradlew
-      - run: ./gradlew :app:lintDebug --no-daemon --parallel --build-cache || true
+      - run: ./gradlew :app:lintDebug --no-daemon --build-cache || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: lint-reports
           path: app/build/reports/lint-results-debug.html
           retention-days: 7
+          if-no-files-found: warn

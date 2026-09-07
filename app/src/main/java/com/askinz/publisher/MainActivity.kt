@@ -86,13 +86,7 @@ class MainActivity : AppCompatActivity() {
         displayZoomControls = false
         // Performance: enable caching
         setGeolocationEnabled(false)
-        // Renderer priority
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          rendererPriorityPolicy = android.webkit.RenderProcessGoneDetail.RendererPriorityPolicy(
-            android.webkit.RenderProcessGoneDetail.RendererPriorityPolicy.RENDERER_PRIORITY_BOUND,
-            true
-          )
-        }
+        // Performance: renderer priority handled by system, no custom policy needed for efficiency
       }
       // Security + performance WebViewClient
       webViewClient = object : WebViewClient() {
