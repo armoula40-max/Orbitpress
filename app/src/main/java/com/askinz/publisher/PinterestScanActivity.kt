@@ -2,9 +2,11 @@ package com.askinz.publisher
 
 import android.app.Activity
 import android.os.Bundle
+import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
@@ -19,11 +21,17 @@ class PinterestScanActivity : Activity() {
     val url = intent.getStringExtra(EXTRA_URL).orEmpty().trim()
     if (!isPinterestUrl(url)) return finishWithError("Only public Pinterest HTTPS URLs are supported.")
     webView = WebView(this).apply {
-      settings.javaScriptEnabled = true
-      settings.domStorageEnabled = true
-      settings.allowFileAccess = false
-      settings.allowContentAccess = false
-      settings.javaScriptCanOpenWindowsAutomatically = false
+      setLayerType(View.LAYER_TYPE_HARDWARE, null)
+      settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        databaseEnabled = false
+        allowFileAccess = false
+        allowContentAccess = false
+        javaScriptCanOpenWindowsAutomatically = false
+        cacheMode = WebSettings.LOAD_NO_CACHE
+        mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+      }
       webChromeClient = WebChromeClient()
       webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -47,16 +55,21 @@ class PinterestScanActivity : Activity() {
         }
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
-          val url = loadedUrl.orEmpty()
-          if (!isAllowedPinterestUrl(url)) {
+          val loaded = loadedUrl.orEmpty()
+          if (!isAllowedPinterestUrl(loaded)) {
             removeResultBridge()
             return
           }
           if (!scanStarted) {
             scanStarted = true
             installResultBridge()
-            view?.postDelayed({ collectVisiblePins() }, 3500)
+            view?.postDelayed({ collectVisiblePins() }, 3000)
           }
+        }
+
+        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+          finishWithError("Renderer crashed, please retry.")
+          return true
         }
       }
     }
@@ -73,8 +86,10 @@ class PinterestScanActivity : Activity() {
   override fun onDestroy() {
     removeResultBridge()
     if (::webView.isInitialized) {
-      webView.stopLoading()
-      webView.destroy()
+      try {
+        webView.stopLoading()
+        webView.destroy()
+      } catch (_: Exception) {}
     }
     super.onDestroy()
   }
@@ -101,7 +116,7 @@ class PinterestScanActivity : Activity() {
         let pass = 0;
         const maxPins = $maxPins;
         const maxScrolls = $maxScrolls;
-        const clean = value => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 1800);
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 1800);
         const pinUrl = value => { try { const u = new URL(value, location.href); return u.pathname.includes('/pin/') ? u.href.split('?')[0] : ''; } catch (_) { return ''; } };
         const extract = () => {
           const found = new Map();
@@ -112,14 +127,11 @@ class PinterestScanActivity : Activity() {
             const card = anchor.closest('[data-test-id="pin"], [data-test-id="pinWrapper"], [data-test-id*="pin"], article, [role="listitem"]') || anchor.parentElement || anchor;
             const image = card.querySelector('img');
             const heading = card.querySelector('h1,h2,h3,[role="heading"],[data-test-id*="title"],[title]');
-            const metaTitle = card.querySelector('meta[property="og:title"],meta[name="title"]');
             const rawText = card.innerText || card.textContent || '';
-            const lines = rawText.split('\\n').map(clean).filter(line => line && line.toLowerCase() !== 'pin' && !/^open pin$/i.test(line));
+            const lines = rawText.split('\n').map(clean).filter(line => line && line.toLowerCase() !== 'pin' && !/^open pin$/i.test(line));
             const text = clean(rawText || image?.alt || '');
-            const title = clean(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || heading?.textContent || heading?.getAttribute('title') || metaTitle?.content || image?.alt || lines[0] || 'Pinterest Pin');
-            const description = clean(card.querySelector('[data-test-id*="description"],meta[property="og:description"]')?.textContent || card.querySelector('meta[property="og:description"]')?.content || lines.slice(1,3).join(' '));
-            const combinedText = clean([title, description, text].filter(Boolean).join(' '));
-            found.set(url, {url, title, text:combinedText, description, imageUrl: image?.currentSrc || image?.src || image?.getAttribute('src') || null, publishedAt:null, saves:null, comments:null, shares:null, viralScore:null});
+            const title = clean(anchor.getAttribute('aria-label') || anchor.getAttribute('title') || heading?.textContent || image?.alt || lines[0] || 'Pinterest Pin');
+            found.set(url, {url, title, text, imageUrl: image?.currentSrc || image?.src || null, viralScore:null});
           });
           return Array.from(found.values());
         };
@@ -127,8 +139,8 @@ class PinterestScanActivity : Activity() {
         const merge = rows => rows.forEach(pin => { if (!all.some(item => item.url === pin.url) && all.length < maxPins) all.push(pin); });
         const tick = () => {
           merge(extract());
-          if (pass++ < maxScrolls) { window.scrollTo(0, document.body.scrollHeight); window.setTimeout(tick, 900); }
-          else { OrbitPressScan.done(JSON.stringify({ok:true, source:document.title || location.hostname, posts:all, collectionMethod:'visible_webview', completeness:all.length?'partial':'empty', diagnostics:{anchors:document.querySelectorAll('a[href*="/pin/"], [data-test-id="pin"]').length, pageUrl:location.href, fields:'Pinterest profile pages may expose Pin URLs without title or analytics; open individual Pins or use API for complete metadata.'}})); }
+          if (pass++ < maxScrolls) { window.scrollTo(0, document.body.scrollHeight); window.setTimeout(tick, 800); }
+          else { try { OrbitPressScan.done(JSON.stringify({ok:true, source:document.title || location.hostname, posts:all, collectionMethod:'visible_webview'})); } catch(e) {} }
         };
         tick();
       })();
