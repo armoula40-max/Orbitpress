@@ -2,6 +2,11 @@ name: Build OrbitPress APK - Modern Efficient
 
 on:
   workflow_dispatch:
+    inputs:
+      scraper_url:
+        description: "ORBITPRESS_SCRAPER_URL baked into the APK (HTTPS). Leave empty to use the repository variable or the default."
+        required: false
+        default: ""
   push:
     branches:
       - main
@@ -39,6 +44,24 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      # Build-time defaults for the VPS Scraper. The URL comes from the workflow input or the
+      # repository variable ORBITPRESS_SCRAPER_URL (falls back to the sslip.io VPS). The key is
+      # read ONLY from the repository secret ORBITPRESS_SCRAPER_KEY; when the secret is missing the
+      # APK ships without a key and the user pastes it once in Settings.
+      - name: Write .env for the build
+        env:
+          INPUT_URL: ${{ github.event.inputs.scraper_url }}
+          VAR_URL: ${{ vars.ORBITPRESS_SCRAPER_URL }}
+          SECRET_KEY: ${{ secrets.ORBITPRESS_SCRAPER_KEY }}
+        run: |
+          URL="${INPUT_URL:-${VAR_URL:-https://23.95.186.208.sslip.io}}"
+          {
+            echo "ORBITPRESS_SCRAPER_URL=${URL}"
+            echo "ORBITPRESS_SCRAPER_KEY=${SECRET_KEY}"
+          } > .env
+          echo "Scraper URL baked into APK: ${URL}"
+          if [ -z "${SECRET_KEY}" ]; then echo "::notice::ORBITPRESS_SCRAPER_KEY secret not set - APK ships without a default key (enter it in Settings)."; else echo "Scraper key: provided via secret"; fi
+
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --parallel --max-workers=4 --build-cache
 
@@ -51,7 +74,7 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrbitPress-debug-apk-v4.1-modern
+          name: OrbitPress-debug-apk-v4.1.1
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
           if-no-files-found: error
@@ -59,7 +82,7 @@ jobs:
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrbitPress-release-apk-v4.1-modern
+          name: OrbitPress-release-apk-v4.1.1
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
           if-no-files-found: error

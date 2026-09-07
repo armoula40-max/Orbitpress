@@ -6,3 +6,8 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Build-time secrets (never commit). Copy .env.example to .env
+.env
+.env.*
+!.env.example

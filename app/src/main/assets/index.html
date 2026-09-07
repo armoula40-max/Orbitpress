@@ -478,7 +478,7 @@
 
       <section class="notice warn"><div><strong>Important</strong>Use <b>Refresh WordPress updates</b> after creating a new WordPress category. It reads categories and tracked-post records only; it never creates, edits, or deletes content. Base URLs must use HTTPS.</div></section>
 
-      <section class="card"><div class="connection-line"><h2>VPS Scraper API</h2><span id="scraperApiConfigured" class="connection-state">Not configured</span></div><p class="helper">Connect to your private Playwright scraper on VPS. HTTPS only for security.</p><label for="scraperApiBaseUrl">Scraper API URL</label><input id="scraperApiBaseUrl" placeholder="https://scraper.example.com"><label for="scraperApiKey">Scraper API key</label><input id="scraperApiKey" type="password" autocomplete="off" placeholder="Paste key from VPS .env"></section>
+      <section class="card"><div class="connection-line"><h2>VPS Scraper API</h2><span id="scraperApiConfigured" class="connection-state">Not configured</span></div><p class="helper">Connect to your private Playwright scraper on VPS. HTTPS only for security. Leave the URL blank to use the build default.</p><label for="scraperApiBaseUrl">Scraper API URL</label><input id="scraperApiBaseUrl" placeholder="https://scraper.example.com"><label for="scraperApiKey">Scraper API key</label><input id="scraperApiKey" type="password" autocomplete="off" placeholder="Paste key from VPS .env"><p id="scraperDefaultHint" class="helper" hidden></p></section>
 
       <section class="card"><div class="connection-line"><h2>Custom generation prompts</h2><span class="connection-state ready">Per site</span></div><p class="helper">Use variables {{keyword}}, {{category}}, and {{title}}. Keep required JSON and safety rules intact.</p><label for="textPrompt">Article text prompt</label><textarea id="textPrompt" rows="6" placeholder="Write in our editorial voice..."></textarea><label for="imagePrompt">Article image prompt</label><textarea id="imagePrompt" rows="4" placeholder="Editorial food photography for {{title}}, no text..."></textarea><label for="pinterestPrompt">Pinterest image prompt</label><textarea id="pinterestPrompt" rows="4" placeholder="Vertical 2:3 Pinterest image for {{title}}, no text..."></textarea><label for="articleImageCount">Number of additional images in article</label><input id="articleImageCount" type="number" min="0" max="8" value="0"><p class="helper">Featured and Pinterest images are separate. This controls additional in-article images.</p></section>
 
@@ -591,6 +591,17 @@
       articleImageCount:Math.max(0,Math.min(8,parseInt($('articleImageCount').value||'0',10)||0))
     }}
 
+    function renderScraperDefaults(summary){
+      const s=summary||state.settingsSummary||{};
+      const urlEl=$('scraperApiBaseUrl');if(urlEl&&s.scraperDefaultUrl) urlEl.placeholder=s.scraperDefaultUrl;
+      const hint=$('scraperDefaultHint');if(!hint) return;
+      const typedUrl=urlEl?urlEl.value.trim():'';const typedKey=($('scraperApiKey')||{}).value||'';
+      const parts=[];
+      if(!typedUrl&&s.scraperDefaultUrl) parts.push(`URL from build: ${s.scraperDefaultUrl}`);
+      if(!typedKey&&s.scraperKeyFromBuild) parts.push('key from build');
+      hint.hidden=!parts.length;hint.textContent=parts.length?`Using ${parts.join(' + ')}. Type a value above to override.`:'';
+    }
+
     function settingsReady(){const s=settingsForm();return !!(s.articleBaseUrl&&s.articleModel&&s.wordpressBaseUrl&&s.wordpressUsername&&(s.articleApiKey||state.settingsSummary.articleApiConfigured)&&(s.wordpressAppPassword||state.settingsSummary.wordpressConfigured))}
 
     let settingsAutoSaveTimer=null;
@@ -607,7 +618,7 @@
             wordpressBaseUrl:s.wordpressBaseUrl,wordpressUsername:s.wordpressUsername,
             categoryId:s.categoryId,imageProvider:s.imageProvider,imageBaseUrl:s.imageBaseUrl,
             imageAccountId:s.imageAccountId,imageModel:s.imageModel,pinterestBoardId:s.pinterestBoardId,
-            scraperApiBaseUrl:s.scraperApiBaseUrl||'',scraperApiConfigured:!!(s.scraperApiKey||state.settingsSummary.scraperApiConfigured),
+            scraperApiBaseUrl:s.scraperApiBaseUrl||'',scraperApiConfigured:!!(s.scraperApiKey||state.settingsSummary.scraperApiConfigured||state.settingsSummary.scraperKeyFromBuild),scraperUrlFromBuild:!s.scraperApiBaseUrl&&!!state.settingsSummary.scraperDefaultUrl,scraperKeyFromBuild:!s.scraperApiKey&&!!state.settingsSummary.scraperKeyFromBuild,
             textPrompt:s.textPrompt||'',imagePrompt:s.imagePrompt||'',pinterestPrompt:s.pinterestPrompt||'',articleImageCount:s.articleImageCount||0,
             articleApiConfigured:!!(s.articleApiKey||state.settingsSummary.articleApiConfigured),
             wordpressConfigured:!!(s.wordpressAppPassword||state.settingsSummary.wordpressConfigured)
@@ -1105,7 +1116,10 @@
         el.textContent=ok?'● Saved locally':'Not configured';
         el.className='connection-state '+(ok?'ready':'warn');
       };
-      setState('scraperApiConfigured',!!s.scraperApiConfigured);setState('facebookConfigured',!!s.facebookConfigured);setState('imageConfigured',!!s.imageConfigured);setState('pinterestConfigured',!!s.pinterestConfigured);setState('articleConfigured',!!s.articleApiConfigured);setState('wordpressConfigured',!!s.wordpressConfigured);
+      renderScraperDefaults(s);
+      setState('scraperApiConfigured',!!s.scraperApiConfigured);
+      if(s.scraperApiConfigured&&(s.scraperUrlFromBuild||s.scraperKeyFromBuild)){const el=$('scraperApiConfigured');if(el) el.textContent='● Build default'}
+      setState('facebookConfigured',!!s.facebookConfigured);setState('imageConfigured',!!s.imageConfigured);setState('pinterestConfigured',!!s.pinterestConfigured);setState('articleConfigured',!!s.articleApiConfigured);setState('wordpressConfigured',!!s.wordpressConfigured);
       const pd=$('providerDiagnostic');if(pd){const base=(s.articleBaseUrl||'').trim(),model=(s.articleModel||'').trim();pd.textContent=base&&model?`Provider ready: HTTPS normalized, JSON Schema with fallback, token limit optimized for ${model}.`:'First-run: enter Article API base URL and model. Credentials encrypted per site.'}
       renderCategories();
       const cd=$('connectionDetail');if(cd) cd.textContent=state.connection?.verified?`WordPress verified as ${state.connection.accountName||'your account'}.`:state.connection?.message||'WordPress not tested yet.';
@@ -1156,7 +1170,7 @@
       if(!settingsReady()) return notice('Complete base URLs, model, username, and missing secrets before saving.','bad');
       try{
         bridge.saveSettings(JSON.stringify(s),state.workspace.activeSiteId||'site-default');
-        state.settingsSummary={...state.settingsSummary,articleBaseUrl:s.articleBaseUrl,articleModel:s.articleModel,wordpressBaseUrl:s.wordpressBaseUrl,wordpressUsername:s.wordpressUsername,categoryId:s.categoryId,imageProvider:s.imageProvider,imageBaseUrl:s.imageBaseUrl,imageAccountId:s.imageAccountId,imageModel:s.imageModel,pinterestBoardId:s.pinterestBoardId,scraperApiBaseUrl:s.scraperApiBaseUrl||'',scraperApiConfigured:!!(s.scraperApiKey||state.settingsSummary.scraperApiConfigured),textPrompt:s.textPrompt||'',imagePrompt:s.imagePrompt||'',pinterestPrompt:s.pinterestPrompt||'',articleImageCount:s.articleImageCount||0,articleApiConfigured:!!(s.articleApiKey||state.settingsSummary.articleApiConfigured),wordpressConfigured:!!(s.wordpressAppPassword||state.settingsSummary.wordpressConfigured)};
+        state.settingsSummary={...state.settingsSummary,articleBaseUrl:s.articleBaseUrl,articleModel:s.articleModel,wordpressBaseUrl:s.wordpressBaseUrl,wordpressUsername:s.wordpressUsername,categoryId:s.categoryId,imageProvider:s.imageProvider,imageBaseUrl:s.imageBaseUrl,imageAccountId:s.imageAccountId,imageModel:s.imageModel,pinterestBoardId:s.pinterestBoardId,scraperApiBaseUrl:s.scraperApiBaseUrl||'',scraperApiConfigured:!!(s.scraperApiKey||state.settingsSummary.scraperApiConfigured||state.settingsSummary.scraperKeyFromBuild),scraperUrlFromBuild:!s.scraperApiBaseUrl&&!!state.settingsSummary.scraperDefaultUrl,scraperKeyFromBuild:!s.scraperApiKey&&!!state.settingsSummary.scraperKeyFromBuild,textPrompt:s.textPrompt||'',imagePrompt:s.imagePrompt||'',pinterestPrompt:s.pinterestPrompt||'',articleImageCount:s.articleImageCount||0,articleApiConfigured:!!(s.articleApiKey||state.settingsSummary.articleApiConfigured),wordpressConfigured:!!(s.wordpressAppPassword||state.settingsSummary.wordpressConfigured)};
         notice('Settings saved securely. Testing WordPress…');
         const connection=await nativeCall('testConnection');state.connection={verified:true,accountName:connection.accountName};
         $('articleApiKey').value='';$('wordpressAppPassword').value='';
@@ -1328,6 +1342,7 @@
 
       ['articleBaseUrl','articleModel','articleApiKey','wordpressBaseUrl','wordpressUsername','wordpressAppPassword','imageProvider','imageBaseUrl','imageAccountId','imageModel','imageApiToken','pinterestBoardId','pinterestAccessToken','facebookGraphVersion','facebookAccessToken','scraperApiBaseUrl','scraperApiKey'].forEach(id=>{const el=$(id);if(el) el.addEventListener('input',scheduleSettingsAutoSave,{passive:true})});
       const dc=$('defaultCategory');if(dc) dc.addEventListener('change',scheduleSettingsAutoSave);
+      ['scraperApiBaseUrl','scraperApiKey'].forEach(id=>{const el=$(id);if(el) el.addEventListener('input',()=>renderScraperDefaults(),{passive:true})});
 
       const as=$('activeSite');if(as) as.onchange=e=>switchSite(e.target.value);
       const adS=$('addSite');if(adS) adS.onclick=addSite;

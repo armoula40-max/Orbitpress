@@ -3,6 +3,38 @@ plugins {
   id("org.jetbrains.kotlin.android")
 }
 
+/**
+ * Build-time defaults for the VPS Scraper (ORBITPRESS_SCRAPER_URL / ORBITPRESS_SCRAPER_KEY).
+ * Lookup order: `.env` at the repository root (git-ignored) → `-P` Gradle property → OS environment variable.
+ * Values end up in BuildConfig; the app uses them only when the Settings fields are left blank.
+ */
+val dotEnv: Map<String, String> = run {
+  val file = rootProject.file(".env")
+  if (!file.exists()) return@run emptyMap<String, String>()
+  file.readLines()
+    .map { it.trim().removePrefix("export ").trim() }
+    .filter { it.isNotBlank() && !it.startsWith("#") && it.contains('=') }
+    .associate { line ->
+      val key = line.substringBefore('=').trim()
+      val value = line.substringAfter('=').trim().trim('"', '\'')
+      key to value
+    }
+}
+
+fun buildSecret(name: String): String =
+  dotEnv[name] ?: (project.findProperty(name) as String?) ?: System.getenv(name) ?: ""
+
+fun javaString(value: String): String = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+val scraperUrl = buildSecret("ORBITPRESS_SCRAPER_URL").trimEnd('/')
+val scraperKey = buildSecret("ORBITPRESS_SCRAPER_KEY")
+require(scraperUrl.isBlank() || scraperUrl.startsWith("https://")) {
+  "ORBITPRESS_SCRAPER_URL must use HTTPS (got '$scraperUrl')."
+}
+logger.lifecycle(
+  "OrbitPress scraper defaults: url=${scraperUrl.ifBlank { "<none>" }} key=${if (scraperKey.isBlank()) "<none>" else "<set>"}"
+)
+
 android {
   namespace = "com.askinz.publisher"
   compileSdk = 35
@@ -11,9 +43,12 @@ android {
     applicationId = "com.askinz.publisher"
     minSdk = 26
     targetSdk = 35
-    versionCode = 9
-    versionName = "4.1.0"
+    versionCode = 10
+    versionName = "4.1.1"
     vectorDrawables { useSupportLibrary = true }
+
+    buildConfigField("String", "SCRAPER_DEFAULT_URL", javaString(scraperUrl))
+    buildConfigField("String", "SCRAPER_DEFAULT_KEY", javaString(scraperKey))
   }
 
   buildFeatures { buildConfig = true }

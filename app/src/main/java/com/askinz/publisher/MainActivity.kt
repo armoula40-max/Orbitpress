@@ -211,7 +211,8 @@ private class NativeBridge(
   @JavascriptInterface fun verifySettingsLock(pin: String): Boolean = try { SettingsLockContract.matches(pin, preferences.getString("settingsLockHash", "").orEmpty()) } catch (_: Exception) { false }
   @JavascriptInterface fun loadSettings(siteId: String): String {
     val saved = storedSettings(SettingsPersistenceContract.canonicalSiteId(siteId))
-    return JSONObject().put("articleBaseUrl", saved.optString("articleBaseUrl")).put("articleModel", saved.optString("articleModel")).put("wordpressBaseUrl", saved.optString("wordpressBaseUrl")).put("wordpressUsername", saved.optString("wordpressUsername")).put("categoryId", saved.optString("categoryId")).put("articleApiConfigured", saved.optString("articleApiKey").isNotBlank()).put("wordpressConfigured", saved.optString("wordpressAppPassword").isNotBlank()).put("imageConfigured", saved.optString("imageApiToken").isNotBlank()).put("pinterestConfigured", saved.optString("pinterestAccessToken").isNotBlank() && saved.optString("pinterestBoardId").isNotBlank()).put("facebookConfigured", saved.optString("facebookAccessToken").isNotBlank()).put("textPrompt", saved.optString("textPrompt")).put("imagePrompt", saved.optString("imagePrompt")).put("pinterestPrompt", saved.optString("pinterestPrompt")).put("articleImageCount", saved.optInt("articleImageCount", 0)).put("scraperApiBaseUrl", saved.optString("scraperApiBaseUrl")).put("scraperApiConfigured", saved.optString("scraperApiKey").isNotBlank()).toString()
+    val scraper = ScraperDefaultsContract.resolve(saved, BuildConfig.SCRAPER_DEFAULT_URL, BuildConfig.SCRAPER_DEFAULT_KEY)
+    return JSONObject().put("articleBaseUrl", saved.optString("articleBaseUrl")).put("articleModel", saved.optString("articleModel")).put("wordpressBaseUrl", saved.optString("wordpressBaseUrl")).put("wordpressUsername", saved.optString("wordpressUsername")).put("categoryId", saved.optString("categoryId")).put("articleApiConfigured", saved.optString("articleApiKey").isNotBlank()).put("wordpressConfigured", saved.optString("wordpressAppPassword").isNotBlank()).put("imageConfigured", saved.optString("imageApiToken").isNotBlank()).put("pinterestConfigured", saved.optString("pinterestAccessToken").isNotBlank() && saved.optString("pinterestBoardId").isNotBlank()).put("facebookConfigured", saved.optString("facebookAccessToken").isNotBlank()).put("textPrompt", saved.optString("textPrompt")).put("imagePrompt", saved.optString("imagePrompt")).put("pinterestPrompt", saved.optString("pinterestPrompt")).put("articleImageCount", saved.optInt("articleImageCount", 0)).put("scraperApiBaseUrl", saved.optString("scraperApiBaseUrl")).put("scraperApiConfigured", scraper.configured).put("scraperDefaultUrl", BuildConfig.SCRAPER_DEFAULT_URL).put("scraperUrlFromBuild", scraper.urlFromBuild).put("scraperKeyFromBuild", scraper.keyFromBuild).toString()
   }
   @JavascriptInterface fun saveSettings(json: String, siteId: String) {
     require(json.length <= 30_000) { "Settings payload is too large." }
@@ -280,14 +281,12 @@ private class NativeBridge(
   }
   private fun scraperScan(request: JSONObject, platform: String): JSONObject {
     val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
-    val base = settings.optString("scraperApiBaseUrl").trim().trimEnd('/')
-    val key = settings.optString("scraperApiKey").trim()
-    require(base.isNotBlank() && key.isNotBlank()) { "Configure the VPS Scraper API URL and key first." }
-    require(base.startsWith("https://")) { "Scraper API URL must use HTTPS." }
+    val scraper = ScraperDefaultsContract.resolve(settings, BuildConfig.SCRAPER_DEFAULT_URL, BuildConfig.SCRAPER_DEFAULT_KEY)
+    val endpoint = ScraperDefaultsContract.endpoint(scraper, platform)
+    val key = scraper.key
     val url = request.optString("url").trim()
     require(url.startsWith("https://")) { "Only HTTPS social URLs are accepted." }
     val limit = request.optInt("limit", 20).coerceIn(1, 200)
-    val endpoint = "$base/api/$platform/scrape"
     CookieManager.getInstance().flush()
     val cookieSources = if (platform == "facebook") listOf("https://www.facebook.com/", "https://facebook.com/", "https://m.facebook.com/", url) else listOf("https://www.pinterest.com/", "https://pinterest.com/", url)
     val cookieValues = linkedMapOf<String, String>()
