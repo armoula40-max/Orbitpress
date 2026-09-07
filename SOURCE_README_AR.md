@@ -55,6 +55,21 @@ ORBITPRESS_SCRAPER_KEY=<المفتاح من .env على السيرفر>
 
 على GitHub Actions يكتب الـ workflow ملف `.env` تلقائياً: العنوان من مدخل `scraper_url` عند التشغيل اليدوي أو من متغير المستودع `ORBITPRESS_SCRAPER_URL` (وإلا العنوان الافتراضي أعلاه)، والمفتاح من السر `ORBITPRESS_SCRAPER_KEY` فقط. إن لم يُضبط السر يُبنى الـ APK بدون مفتاح ويكفي لصق المفتاح مرة واحدة في الإعدادات — وهو الخيار الموصى به للمستودعات العامة لأن أي مفتاح مضمّن في APK يمكن استخراجه.
 
+## توقيع نسخة release (اختياري)
+
+بدون مفتاح توقيع تُنتج CI نسخة release **غير موقّعة** لا يقبلها Android، لذلك ثبّت نسخة debug. لتوقيعها تلقائياً:
+
+1. أنشئ keystore مرة واحدة على جهازك (احتفظ به وبكلمة السر في مكان آمن؛ فقدانه يعني عدم القدرة على تحديث التطبيق فوق النسخة المثبتة):
+   ```bash
+   keytool -genkeypair -v -keystore orbitpress-release.jks -alias orbitpress -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. حوّله إلى نص: `base64 -w0 orbitpress-release.jks` (على macOS: `base64 -i orbitpress-release.jks | tr -d '\n'`).
+3. أضف في GitHub → Settings → Secrets and variables → Actions:
+   `ORBITPRESS_KEYSTORE_BASE64` (الناتج أعلاه)، `ORBITPRESS_KEYSTORE_PASSWORD`، `ORBITPRESS_KEY_ALIAS` (مثل `orbitpress`)، و`ORBITPRESS_KEY_PASSWORD` (اختياري، يساوي كلمة سر الـ keystore إن تُرك فارغاً).
+4. أعد تشغيل الـ workflow: يظهر artifact باسم `OrbitPress-release-apk-…-signed` ويُثبَّت مباشرة. محلياً يكفي وضع القيم في `.env` (انظر `.env.example`) مع مسار الملف في `ORBITPRESS_KEYSTORE_FILE`.
+
+ملفات `*.jks` و`*.keystore` و`*.p12` مستثناة من Git، والـ workflow يحذف الـ keystore و`.env` في نهاية كل تشغيل.
+
 ## ما تم استبعاده عمدًا
 
 تم استبعاد `local.properties` و`.gradle` وملفات `build` وملفات التوقيع والمفاتيح وأي أسرار وAPKات كبيرة من نسخة المصدر. كما أن مفتاح توقيع الإصدار الموجود على جهاز البناء ليس جزءًا من الحزمة. استخدم مفتاح توقيعك الخاص عند توزيع نسخة إنتاجية.

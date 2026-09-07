@@ -35,6 +35,18 @@ logger.lifecycle(
   "OrbitPress scraper defaults: url=${scraperUrl.ifBlank { "<none>" }} key=${if (scraperKey.isBlank()) "<none>" else "<set>"}"
 )
 
+/**
+ * Optional release signing. When ORBITPRESS_KEYSTORE_FILE (path) + passwords are provided - locally through
+ * `.env` / env vars, on CI through the ORBITPRESS_KEYSTORE_BASE64 secret decoded by the workflow - the release
+ * APK is signed with that key and installs directly. Without them the release APK stays unsigned (as before).
+ */
+val releaseStoreFile = buildSecret("ORBITPRESS_KEYSTORE_FILE").let { if (it.isBlank()) null else rootProject.file(it) }
+val releaseStorePassword = buildSecret("ORBITPRESS_KEYSTORE_PASSWORD")
+val releaseKeyAlias = buildSecret("ORBITPRESS_KEY_ALIAS")
+val releaseKeyPassword = buildSecret("ORBITPRESS_KEY_PASSWORD").ifBlank { releaseStorePassword }
+val releaseSigningReady = releaseStoreFile?.exists() == true && releaseStorePassword.isNotBlank() && releaseKeyAlias.isNotBlank()
+logger.lifecycle("OrbitPress release signing: ${if (releaseSigningReady) "enabled (${releaseStoreFile?.name}, alias=$releaseKeyAlias)" else "disabled - release APK will be unsigned"}")
+
 android {
   namespace = "com.askinz.publisher"
   compileSdk = 35
@@ -58,6 +70,19 @@ android {
     targetCompatibility = JavaVersion.VERSION_17
   }
 
+  signingConfigs {
+    if (releaseSigningReady) {
+      create("release") {
+        storeFile = releaseStoreFile
+        storePassword = releaseStorePassword
+        keyAlias = releaseKeyAlias
+        keyPassword = releaseKeyPassword
+        enableV1Signing = true
+        enableV2Signing = true
+      }
+    }
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false
@@ -67,6 +92,7 @@ android {
         "proguard-rules.pro"
       )
       isDebuggable = false
+      if (releaseSigningReady) signingConfig = signingConfigs.getByName("release")
     }
     debug {
       isMinifyEnabled = false

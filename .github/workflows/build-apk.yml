@@ -35,7 +35,7 @@ jobs:
           cache: gradle
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android packages
         run: |
@@ -49,10 +49,15 @@ jobs:
       # read ONLY from the repository secret ORBITPRESS_SCRAPER_KEY; when the secret is missing the
       # APK ships without a key and the user pastes it once in Settings.
       - name: Write .env for the build
+        id: dotenv
         env:
           INPUT_URL: ${{ github.event.inputs.scraper_url }}
           VAR_URL: ${{ vars.ORBITPRESS_SCRAPER_URL }}
           SECRET_KEY: ${{ secrets.ORBITPRESS_SCRAPER_KEY }}
+          KEYSTORE_BASE64: ${{ secrets.ORBITPRESS_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ORBITPRESS_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ORBITPRESS_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ORBITPRESS_KEY_PASSWORD }}
         run: |
           URL="${INPUT_URL:-${VAR_URL:-https://23.95.186.208.sslip.io}}"
           {
@@ -61,6 +66,22 @@ jobs:
           } > .env
           echo "Scraper URL baked into APK: ${URL}"
           if [ -z "${SECRET_KEY}" ]; then echo "::notice::ORBITPRESS_SCRAPER_KEY secret not set - APK ships without a default key (enter it in Settings)."; else echo "Scraper key: provided via secret"; fi
+
+          # Optional release signing: decode the keystore secret and point Gradle at it.
+          if [ -n "${KEYSTORE_BASE64}" ] && [ -n "${KEYSTORE_PASSWORD}" ] && [ -n "${KEY_ALIAS}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > orbitpress-release.jks
+            {
+              echo "ORBITPRESS_KEYSTORE_FILE=orbitpress-release.jks"
+              echo "ORBITPRESS_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}"
+              echo "ORBITPRESS_KEY_ALIAS=${KEY_ALIAS}"
+              echo "ORBITPRESS_KEY_PASSWORD=${KEY_PASSWORD:-${KEYSTORE_PASSWORD}}"
+            } >> .env
+            echo "release_signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing: enabled"
+          else
+            echo "release_signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release signing secrets not set - release APK will be unsigned (install the debug APK). See SOURCE_README_AR.md."
+          fi
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --parallel --max-workers=4 --build-cache
@@ -82,10 +103,14 @@ jobs:
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrbitPress-release-apk-v4.1.3
+          name: OrbitPress-release-apk-v4.1.3${{ steps.dotenv.outputs.release_signed == 'true' && '-signed' || '-unsigned' }}
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
           if-no-files-found: error
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f orbitpress-release.jks .env
 
       - name: Upload Test Reports
         if: always()
@@ -108,7 +133,7 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - run: chmod +x ./gradlew
       - name: Lint
