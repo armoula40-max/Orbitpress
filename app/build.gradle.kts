@@ -14,6 +14,7 @@ android {
     versionCode = 9
     versionName = "4.1.0"
     vectorDrawables { useSupportLibrary = true }
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   buildFeatures { buildConfig = true }
@@ -21,7 +22,6 @@ android {
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
-    isCoreLibraryDesugaringEnabled = true
   }
 
   buildTypes {
@@ -32,7 +32,6 @@ android {
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro"
       )
-      // Keep WebView bridge methods
       isDebuggable = false
     }
     debug {
@@ -54,20 +53,23 @@ android {
     }
   }
 
-  androidResources { generateLocaleConfig = true }
-
-  // Performance: disable unused features
   lint {
     abortOnError = false
     checkReleaseBuilds = false
+  }
+
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      isReturnDefaultValues = true
+    }
   }
 }
 
 kotlin { jvmToolchain(17) }
 
 dependencies {
-  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-
+  // Modern efficient dependencies
   implementation("androidx.core:core-ktx:1.13.1")
   implementation("androidx.appcompat:appcompat:1.7.0")
   implementation("com.google.android.material:material:1.12.0")
