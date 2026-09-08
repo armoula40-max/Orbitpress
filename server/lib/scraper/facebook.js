@@ -321,8 +321,13 @@ async function scanViaBrowser(sourceUrl, options) {
     let pageName = null;
     let stagnantPasses = 0;
     let lastSize = 0;
+    let rawFound = 0;
+    let stoppedBy = 'scroll-cap';
+    let passesDone = 0;
     for (let pass = 0; pass < scrollCap && Date.now() < deadline; pass += 1) {
+      passesDone = pass + 1;
       const batch = await page.evaluate(COLLECT_SCRIPT);
+      rawFound += (batch.posts || []).length;
       if (batch.pageName && !pageName) pageName = batch.pageName;
       (batch.posts || []).forEach((post) => {
         if (!post) return;
@@ -346,25 +351,27 @@ async function scanViaBrowser(sourceUrl, options) {
       });
       stagnantPasses = merged.size > lastSize ? 0 : stagnantPasses + 1;
       lastSize = merged.size;
-      if (merged.size >= options.maxPosts) break;
+      if (merged.size >= options.maxPosts) { stoppedBy = 'post-cap'; break; }
 
       // Time-window coverage: stop as soon as we scrolled past the start of
       // the requested window (we then hold the full last-N-days chronology).
       if (windowStartMs) {
         const dated = [...merged.values()].map((p) => p.publishedAt && Date.parse(p.publishedAt)).filter(Boolean);
-        if (dated.length >= 3 && Math.min(...dated) <= windowStartMs) break;      // covered: oldest seen is older than the window start
-        if (dated.length >= 3 && stagnantPasses >= 2) break;                       // page simply has nothing older
-      } else if (stagnantPasses >= 3) {
+        if (dated.length >= 3 && Math.min(...dated) <= windowStartMs) { stoppedBy = 'window-covered'; break; } // covered: oldest seen is older than the window start
+        if (dated.length >= 3 && stagnantPasses >= 4) { stoppedBy = 'no-older-posts'; break; }                  // page bottom reached, nothing older exists
+      } else if (stagnantPasses >= 5) {
+        stoppedBy = 'no-new-posts';
         break; // count-based mode with no new items
       }
       await page.evaluate('window.scrollBy(0, Math.max(900, Math.round(document.body.scrollHeight * 0.25)))');
       await page.waitForTimeout(1400);
     }
+    if (Date.now() >= deadline && stoppedBy === 'scroll-cap') stoppedBy = 'time-limit';
     const dates = [...merged.values()].map((p) => p.publishedAt && Date.parse(p.publishedAt)).filter(Boolean);
     const coverage = dates.length
       ? { from: new Date(Math.min(...dates)).toISOString(), to: new Date(Math.max(...dates)).toISOString(), complete: !!(windowStartMs && Math.min(...dates) <= windowStartMs), windowDays: options.windowDays || null }
       : { from: null, to: null, complete: false, windowDays: options.windowDays || null };
-    return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage };
+    return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage, browserDiag: { rawFound, unique: merged.size, passes: passesDone, stoppedBy } };
   } finally {
     await page.close().catch(() => {});
   }
@@ -415,20 +422,22 @@ async function scanFacebook({ url, maxPosts = 25, scrolls, windowDays = 7, useSe
       });
     const posts = [...merged.values()];
     if (posts.length) {
-      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName, result.coverage);
+      const pipeline = { http: httpPosts.length, browserUnique: result.browserDiag ? result.browserDiag.unique : 0, browserRaw: result.browserDiag ? result.browserDiag.rawFound : 0, passes: result.browserDiag ? result.browserDiag.passes : 0, stoppedBy: result.browserDiag ? result.browserDiag.stoppedBy : null, final: Math.min(posts.length, limit) };
+      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName, result.coverage, pipeline);
     }
   } catch (error) {
     errors.push(`Browser scan: ${error.message}`);
   }
 
   if (httpPosts.length) {
-    return finalize(httpPosts.slice(0, limit), sourceUrl, 'server_rendered_json', 'partial');
+    const pipeline = { http: httpPosts.length, browserUnique: 0, browserRaw: 0, passes: 0, stoppedBy: errors.length ? 'browser-failed' : null, final: Math.min(httpPosts.length, limit), error: errors.join(' | ').slice(0, 300) || null };
+    return finalize(httpPosts.slice(0, limit), sourceUrl, 'server_rendered_json', 'partial', null, null, pipeline);
   }
   const needsLogin = !useSession || /login|cookie|captcha|checkpoint/i.test(errors.join(' '));
   throw new Error(`Facebook scan failed. ${needsLogin ? 'Facebook usually requires a connected account session from a datacenter server — connect Facebook in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim());
 }
 
-function finalize(posts, sourceUrl, method, completeness, pageName, coverage) {
+function finalize(posts, sourceUrl, method, completeness, pageName, coverage, pipeline) {
   const ranked = analyzer.rankPosts(posts);
   let source = pageName || null;
   try {
@@ -445,6 +454,7 @@ function finalize(posts, sourceUrl, method, completeness, pageName, coverage) {
     collectionMethod: method,
     completeness,
     coverage: coverage || null,
+    pipeline: pipeline || null,
     posts: ranked,
     stats: analyzer.computeStats(ranked),
   };
