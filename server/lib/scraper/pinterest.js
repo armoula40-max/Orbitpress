@@ -304,6 +304,56 @@ async function scanViaBrowser(sourceUrl, options) {
 }
 
 /**
+ * Cheap raw-HTTP pass over the top pins missing titles: each pin's own page
+ * server-renders og:title / og:description / og:image, <time datetime> and
+ * the __PWS_DATA__ detail record — no rendering needed, no wall for pins.
+ */
+async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
+  const sessions = require('./sessions');
+  const cookieHeader = useSession === false ? '' : await sessions.cookieHeader('pinterest').catch(() => '');
+  const targets = pins.filter((pin) => !pin.title || !pin.title.trim()).slice(0, max);
+  const ua = { ...BROWSER_HEADERS };
+  if (cookieHeader) ua.Cookie = cookieHeader;
+  let enriched = 0;
+  for (let i = 0; i < targets.length; i += 4) {
+    await Promise.allSettled(targets.slice(i, i + 4).map(async (pin) => {
+      try {
+        const html = await fetchSourceHtml(`${DEFAULT_BASE}/pin/${pin.id}/`, cookieHeader);
+        void ua;
+        const overlay = {};
+        const og = (prop) => {
+          const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']og:${prop}["'][^>]+content=["']([^"']+)`, 'i'))
+            || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:${prop}["']`, 'i'));
+          return m ? m[1].replace(/&amp;/g, '&').replace(/&#x27;|&apos;/g, "'").replace(/&quot;/g, '"') : null;
+        };
+        let mine = null;
+        const merged2 = new Map();
+        for (const root of extractEmbeddedJson(html)) {
+          collectPinsFromJson(root, 60, merged2);
+          if (merged2.size >= 60) break;
+        }
+        mine = merged2.get(pin.id) || null;
+        const titleRaw = (mine && mine.title) || og('title');
+        if (titleRaw) overlay.title = String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim();
+        const text = (mine && mine.text) || og('description');
+        if (text) overlay.text = text;
+        const imageUrl = (mine && mine.imageUrl) || og('image');
+        if (imageUrl) overlay.imageUrl = imageUrl;
+        const publishedAt = (mine && mine.publishedAt) || (() => { const m = html.match(/<time[^>]+datetime=["']([^"']+)/i); return m ? m[1] : null; })();
+        if (publishedAt) overlay.publishedAt = publishedAt;
+        if (mine && mine.saves != null) overlay.saves = mine.saves;
+        if (mine && mine.comments != null) overlay.comments = mine.comments;
+        if (mine && mine.reactions != null) overlay.reactions = mine.reactions;
+        if (mine && mine.outboundUrl) overlay.outboundUrl = mine.outboundUrl;
+        if (Object.keys(overlay).length) { Object.assign(pin, overlay); enriched += 1; }
+      } catch { /* one pin page failed — leave it */ }
+    }));
+    if (targets.length > 8 && i === 0) await new Promise((r) => setTimeout(r, 400));
+  }
+  return enriched;
+}
+
+/**
  * Scan a Pinterest source (profile / board / pin / search URL or raw query).
  */
 async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSession = true, baseUrl }) {
@@ -330,7 +380,9 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
     const result = await scanViaHttp(httpUrl, { maxItems: limit, useSession });
     httpPins = result.pins;
     if (httpPins.length >= limit) {
-      return finalize(httpPins.slice(0, limit), source, sourceUrl, 'embedded_json', 'full');
+      const sliced = httpPins.slice(0, limit);
+      const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+      return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'full', { http: httpPins.length, enriched });
     }
   } catch (error) {
     errors.push(`HTTP scan: ${error.message}`);
@@ -350,7 +402,10 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
       });
       const pins = [...merged.values()];
       if (pins.length) {
-        return finalize(pins.slice(0, limit), source, sourceUrl, (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (isFallback ? '+tab-fallback' : ''), pins.length >= limit ? 'full' : 'partial');
+        const sliced = pins.slice(0, limit);
+        const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+        const method = (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (enriched ? `+enriched${enriched}` : '') + (isFallback ? '+tab-fallback' : '');
+        return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
       }
     } catch (error) {
       errors.push(`Browser scan (${isFallback ? 'profile fallback' : 'tab url'}): ${error.message}`);
@@ -358,14 +413,16 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   }
 
   if (httpPins.length) {
-    return finalize(httpPins.slice(0, limit), source, sourceUrl, 'embedded_json', 'partial');
+    const sliced = httpPins.slice(0, limit);
+    const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+    return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'partial', { http: httpPins.length, enriched });
   }
   const needsSession = /login|403|429|captcha|blocked|Could not/i.test(errors.join(' '));
   const message = `Pinterest scan failed. ${needsSession ? 'The platform is likely requiring a signed-in session from this server — connect Pinterest in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim();
   throw new Error(message);
 }
 
-function finalize(pins, source, sourceUrl, method, completeness) {
+function finalize(pins, source, sourceUrl, method, completeness, pipeline) {
   const ranked = analyzer.rankPosts(pins);
   return {
     ok: true,
@@ -375,6 +432,7 @@ function finalize(pins, source, sourceUrl, method, completeness) {
     sourceKind: source.kind,
     collectionMethod: method,
     completeness,
+    pipeline: pipeline || null,
     posts: ranked,
     stats: analyzer.computeStats(ranked),
   };

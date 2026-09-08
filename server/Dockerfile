@@ -19,6 +19,8 @@ RUN npm ci --omit=dev
 RUN npx playwright install --with-deps chromium
 
 COPY server/ .
+# build stamp so the UI can always prove WHICH image is live
+RUN date -u '+build %Y-%m-%d %H:%M UTC' > /app/public/build.txt
 
 # Run as an unprivileged user; keep the data volume + browsers writable
 RUN useradd --create-home --uid 1001 orbitpress \

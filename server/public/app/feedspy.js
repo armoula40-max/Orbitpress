@@ -232,7 +232,17 @@
       var covText = cov && cov.from ? ' · التغطية: ' + cov.from.slice(0, 10) + ' ← ' + cov.to.slice(0, 10) + (cov.complete ? ' (مكتملة ✓)' : ' (حتى ما هو متاح)') : '';
       var pipe = spy[platform].pipeline;
       var REASON_AR = { 'post-cap': 'بلغ حد العدد', 'scroll-cap': 'بلغ حد التمريرات', 'window-covered': 'اكتملت النافذة', 'no-older-posts': 'لا منشورات أقدم بالصفحة', 'no-new-posts': 'توقف ظهور الجديد', 'time-limit': 'انتهت المهلة', 'browser-failed': 'فشل مسار المتصفح' };
-      var pipeText = pipe ? ' · تشخيص: HTTP ' + pipe.http + ' + متصفح ' + pipe.browserUnique + ' (' + pipe.passes + ' تمريرة' + (pipe.stoppedBy && REASON_AR[pipe.stoppedBy] ? '، توقف: ' + REASON_AR[pipe.stoppedBy] : '') + (pipe.photos ? '، صور عميقة ' + pipe.photos : '') + ')' : '';
+      var parts = [];
+      if (pipe) {
+        if (pipe.http != null) parts.push('HTTP ' + pipe.http);
+        if (pipe.browser != null) parts.push('متصفح ' + pipe.browser);
+        if (pipe.browserUnique != null) parts.push('متصفح ' + pipe.browserUnique + ' (' + (pipe.passes || 0) + ' تمريرة)');
+        if (pipe.details) parts.push('تفاصيل عميقة ' + pipe.details);
+        if (pipe.enriched) parts.push('إثراء HTTP ' + pipe.enriched);
+        if (pipe.photos) parts.push('صور عميقة ' + pipe.photos);
+        if (pipe.stoppedBy && REASON_AR[pipe.stoppedBy]) parts.push('توقف: ' + REASON_AR[pipe.stoppedBy]);
+      }
+      var pipeText = parts.length ? ' · تشخيص: ' + parts.join(' · ') : '';
       countNote.textContent = filtered.length + ' / ' + all.length + (stats.withMetricsCount < all.length ? ' · ' + (all.length - stats.withMetricsCount) + ' بدون مقاييس ظاهرة' : '') + covText + pipeText;
     }
   }
