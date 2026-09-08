@@ -148,39 +148,65 @@ const COLLECT_SCRIPT = `(() => {
     if (match[2]) n *= match[2].toLowerCase() === 'k' ? 1000 : 1000000;
     return Math.round(n);
   };
+  // relative timestamps ("3 h", "12 mins", "Yesterday", "2 days") -> ISO
+  const relativeToIso = (label) => {
+    const t = String(label || '').toLowerCase().trim();
+    if (!t) return null;
+    if (/^just now/.test(t)) return new Date().toISOString();
+    if (/^yesterday/.test(t)) return new Date(Date.now() - 864e5).toISOString();
+    const m = t.match(/^(\\d+)\\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\\b/);
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    const unit = m[2][0];
+    const ms = unit === 'm' ? 6e4 : unit === 'h' ? 36e5 : unit === 'd' ? 864e5 : 6048e5;
+    return new Date(Date.now() - n * ms).toISOString();
+  };
   const posts = [];
   const seen = new Set();
-  document.querySelectorAll('[role="article"],div[data-pagelet*="FeedUnit"]').forEach(node => {
-    const anchors = Array.from(node.querySelectorAll('a[href]'));
-    const permalink = anchors.find(a => /\\/(posts|permalink\\.php|videos|photos|reel)\\//.test(a.href) || /story_fbid=/.test(a.href));
+  document.querySelectorAll('[role="article"],div[data-pagelet*="FeedUnit"],div[aria-posinset]').forEach(node => {
     const text = clean(node.innerText || node.textContent);
-    const firstHeading = node.querySelector('h2,h3,strong,span[dir="auto"]');
-    const title = clean((firstHeading && firstHeading.innerText) || text.split('\\n')[0]);
-    const url = permalink ? permalink.href : null;
+    if (text.length < 25) return;
+    const anchors = Array.from(node.querySelectorAll('a[href]'));
+    const permalink = anchors.find(a => /\\/(posts|permalink\\.php|videos|photos|photo|reel|share\\/p|share\\/v)\\b/.test(a.href) || /(story_fbid=|photo_id=|video_id=)/.test(a.href) || /story\\.php/.test(a.href));
+    const heading = node.querySelector('h2,h3,h4,[role="heading"]');
+    const authorAnchor = node.querySelector('h2 a, h3 a, h4 a, strong a, a[role="link"]');
+    const lines = (node.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+    const title = clean((heading && heading.innerText) || lines[0] || text);
+    const url = permalink ? permalink.href.split('?')[0].endsWith('/') ? permalink.href : permalink.href : null;
+    let publishedAt = null;
     const timeEl = node.querySelector('abbr[data-utime]');
-    let publishedAt = timeEl && timeEl.getAttribute('data-utime') ? new Date(Number(timeEl.getAttribute('data-utime')) * 1000).toISOString() : null;
-    if (!publishedAt) {
-      const badge = node.querySelector('a[aria-label][href*="/posts/"], a[aria-label][href*="story_fbid"]');
-      if (badge && /ago|Yesterday|\\d{4}/.test(badge.getAttribute('aria-label') || '')) publishedAt = null;
+    if (timeEl && timeEl.getAttribute('data-utime')) {
+      publishedAt = new Date(Number(timeEl.getAttribute('data-utime')) * 1000).toISOString();
+    } else {
+      const timeLink = anchors.find(a => /^(just now|yesterday|\\d+\\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)|[A-Z][a-z]+ \\d+)$/i.test((a.innerText || a.getAttribute('aria-label') || '').trim()));
+      if (timeLink) publishedAt = relativeToIso((timeLink.innerText || timeLink.getAttribute('aria-label') || '').trim());
     }
     let reactions = null, comments = null, shares = null;
     Array.from(node.querySelectorAll('[aria-label]')).forEach(el => {
       const label = el.getAttribute('aria-label') || '';
-      if (reactions == null && /reaction|like/i.test(label)) reactions = toNumber(label);
-      if (comments == null && /comment/i.test(label)) comments = toNumber(label);
-      if (shares == null && /share/i.test(label)) shares = toNumber(label);
+      if (reactions == null && /(reaction|like)/i.test(label) && /\\d/.test(label)) reactions = toNumber(label);
+      if (comments == null && /\\d.*comment/i.test(label)) comments = toNumber(label);
+      if (shares == null && /\\d.*share/i.test(label)) shares = toNumber(label);
     });
-    Array.from(node.querySelectorAll('span,div[role="button"]')).forEach(el => {
-      const t = el.textContent || '';
-      if (comments == null && /\\bcomment/i.test(t) && /\\d/.test(t) && t.length < 40) comments = toNumber(t);
-      if (shares == null && /\\bshare/i.test(t) && /\\d/.test(t) && t.length < 40) shares = toNumber(t);
-    });
-    const key = url || title.slice(0, 80);
-    if (!key || seen.has(key) || text.length < 12) return;
+    const tail = lines.slice(-6).join(' ');
+    if (comments == null) comments = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+comments?/i) || [])[1]);
+    if (shares == null) shares = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+shares?/i) || [])[1]);
+    if (reactions == null) reactions = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+(?:likes?|reactions?)/i) || [])[1]);
+    const key = url || title.slice(0, 90);
+    if (!key || seen.has(key)) return;
     seen.add(key);
-    posts.push({ title, text, url, publishedAt, reactions, comments, shares, saves: null, platform: 'facebook', kind: 'facebook_post', isComment: false });
+    posts.push({
+      title,
+      text,
+      url,
+      publishedAt,
+      author: authorAnchor ? clean(authorAnchor.innerText) : null,
+      reactions, comments, shares, saves: null,
+      platform: 'facebook', kind: 'facebook_post', isComment: false,
+    });
   });
-  return posts;
+  const pageName = (document.querySelector('h1') || {}).innerText || document.title || null;
+  return { posts, pageName };
 })()`;
 
 async function scanViaBrowser(sourceUrl, options) {
@@ -190,26 +216,37 @@ async function scanViaBrowser(sourceUrl, options) {
   const page = await context.newPage();
   try {
     await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(3200);
-    const scrolls = Math.min(10, Math.max(1, options.scrolls || 6));
+    await page.waitForTimeout(4000);
+    const scrolls = Math.min(12, Math.max(1, options.scrolls || 8));
     const merged = new Map();
+    let pageName = null;
     for (let pass = 0; pass < scrolls; pass += 1) {
       const batch = await page.evaluate(COLLECT_SCRIPT);
-      batch.forEach((post) => {
+      if (batch.pageName && !pageName) pageName = batch.pageName;
+      (batch.posts || []).forEach((post) => {
         const key = post.url || post.title;
         if (!merged.has(key) && merged.size < options.maxPosts) merged.set(key, post);
       });
       if (merged.size >= options.maxPosts) break;
-      await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
-      await page.waitForTimeout(850);
+      // scroll the last discovered post into view — Facebook virtualizes the
+      // feed, so unmounting above items is expected and harmless to our map.
+      await page.evaluate('window.scrollBy(0, Math.max(900, Math.round(document.body.scrollHeight * 0.25)))');
+      await page.waitForTimeout(1400);
     }
-    return { posts: [...merged.values()], sessionUsed: status.connected, pageTitle: await page.title() };
+    return { posts: [...merged.values()], sessionUsed: status.connected, pageName };
   } finally {
     await page.close().catch(() => {});
   }
 }
 
 const ORIGINAL_POST_RE = /(?:\/posts\/|\/permalink\.php|\/story\.php|\/photo\.php|\/videos?\/|\/reel\/|\/watch\/|\/share\/(?:p|v)\/|story_fbid=|photo_id=)/i;
+
+// Browser-visible rows without a permalink are still real feed posts (FeedSpy
+// shows them too); keep them when the text is substantial.
+function keepPost(post) {
+  if (post.url && ORIGINAL_POST_RE.test(post.url)) return true;
+  return !post.url && String(post.text || '').length >= 60;
+}
 
 async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true, baseUrl }) {
   const base = (baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
@@ -223,7 +260,7 @@ async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true
   let httpPosts = [];
   try {
     httpPosts = (await scanViaHttp(sourceUrl, { maxPosts: limit, useSession })).posts;
-    httpPosts = httpPosts.filter((post) => post.url && ORIGINAL_POST_RE.test(post.url));
+    httpPosts = httpPosts.filter(keepPost);
     if (httpPosts.length >= limit) {
       return finalize(httpPosts.slice(0, limit), sourceUrl, 'server_rendered_json', 'full');
     }
@@ -235,11 +272,11 @@ async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true
     const result = await scanViaBrowser(sourceUrl, { maxPosts: limit, scrolls });
     const merged = new Map(httpPosts.map((post) => [post.url || post.title, post]));
     result.posts
-      .filter((post) => post.url && ORIGINAL_POST_RE.test(post.url))
-      .forEach((post) => { if (!merged.has(post.url) && merged.size < limit) merged.set(post.url, post); });
+      .filter(keepPost)
+      .forEach((post) => { const key = post.url || post.title; if (!merged.has(key) && merged.size < limit) merged.set(key, post); });
     const posts = [...merged.values()];
     if (posts.length) {
-      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageTitle);
+      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName);
     }
   } catch (error) {
     errors.push(`Browser scan: ${error.message}`);
@@ -252,13 +289,15 @@ async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true
   throw new Error(`Facebook scan failed. ${needsLogin ? 'Facebook usually requires a connected account session from a datacenter server — connect Facebook in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim());
 }
 
-function finalize(posts, sourceUrl, method, completeness, pageTitle) {
+function finalize(posts, sourceUrl, method, completeness, pageName) {
   const ranked = analyzer.rankPosts(posts);
-  let source = pageTitle || null;
+  let source = pageName || null;
   try {
     const info = classifyFacebookUrl(sourceUrl);
     source = source || info.vanity || info.pageId || new URL(sourceUrl).hostname;
-  } catch { /* keep hostname */ }
+  } catch { /* keep hostname */
+    try { source = source || new URL(sourceUrl).hostname; } catch { /* fully degraded */ }
+  }
   return {
     ok: true,
     platform: 'facebook',
