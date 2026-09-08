@@ -178,6 +178,33 @@ const COLLECT_SCRIPT = `(() => {
   return pins;
 })()`;
 
+// Single-pin pages carry the full record (og:title, description, image,
+// publish time, visible counters, __PWS_DATA__ detail resource) — the
+// profile grid itself lazy-loads only bare anchors.
+const PIN_DETAIL_SCRIPT = `(() => {
+  const clean = v => String(v || '').replace(/\\s+/g, ' ').trim().slice(0, 2200);
+  const expandNum = (raw) => {
+    if (!raw) return null;
+    const m = String(raw).replace(/,/g, '').match(/(\\d+(?:\\.\\d+)?)([kKmM])?/);
+    if (!m) return null;
+    let n = parseFloat(m[1]);
+    if (m[2]) n *= m[2].toLowerCase() === 'k' ? 1000 : 1000000;
+    return Math.round(n);
+  };
+  const meta = (sel) => { const el = document.querySelector(sel); return el ? (el.getAttribute('content') || el.textContent) : null; };
+  const title = clean(meta('meta[property="og:title"]') || (document.querySelector('h1') || {}).innerText || '');
+  const text = clean(meta('meta[property="og:description"]') || meta('meta[name="description"]') || '');
+  const imageUrl = meta('meta[property="og:image"]') || null;
+  let publishedAt = null;
+  const timeEl = document.querySelector('time[datetime]');
+  if (timeEl) publishedAt = timeEl.getAttribute('datetime');
+  const body = ((document.body && document.body.innerText) || '').slice(0, 20000);
+  const pick = (re) => { const m = body.match(re); return m ? expandNum(m[1]) : null; };
+  const saves = pick(/([\\d.,]+[kKmM]?)\\s*(?:\S*\s){0,2}(?:pins?|saves?|repins?|حفظ|عمليات حفظ)/i);
+  const comments = pick(/([\\d.,]+[kKmM]?)\\s*(?:\S*\s){0,2}(?:comments?|تعليقات?)/i);
+  return { title, text, imageUrl, publishedAt, saves, comments };
+})()`;
+
 async function scanViaBrowser(sourceUrl, options) {
   const sessions = require('./sessions');
   const status = sessions.sessionStatus('pinterest');
@@ -210,11 +237,53 @@ async function scanViaBrowser(sourceUrl, options) {
       await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
       await page.waitForTimeout(900);
     }
+    // Deep pin visits: the profile grid handed us bare anchors — open each
+    // pin page (session attached) and overlay its real record.
+    let detailsFetched = 0;
+    if (options.includeDetails !== false && (!options.baseUrl || options.baseUrl === DEFAULT_BASE)) {
+      const detailBudget = Date.now() + 90000;
+      const detailCap = Math.min(10, options.maxItems);
+      const origin = new URL(sourceUrl).origin;
+      for (const id of [...merged.keys()]) {
+        if (detailsFetched >= detailCap || Date.now() > detailBudget) break;
+        const existing = merged.get(id);
+        if (existing && existing.title && existing.title.trim() && existing.publishedAt) continue; // already rich
+        try {
+          await page.goto(`${origin}/pin/${id}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          await page.waitForTimeout(1500);
+          const detail = await page.evaluate(PIN_DETAIL_SCRIPT).catch(() => null);
+          if (detail && detail.title && /\s\|\s*Pinterest$/.test(detail.title)) detail.title = detail.title.replace(/\s*\|\s*Pinterest\s*$/, '');
+          let mine = null;
+          try {
+            const jsonText = await page.evaluate(`(() => { const t = document.getElementById('__PWS_DATA__'); return t ? t.textContent : null; })()`);
+            if (jsonText) {
+              const found = collectPinsFromJson(JSON.parse(jsonText), 40);
+              mine = found.find((pin) => pin.id === id) || null;
+            }
+          } catch { /* detail JSON absent */ }
+          const overlay = {};
+          const choose = (a, b) => (a != null && a !== '' ? a : b);
+          if (mine || detail) {
+            overlay.title = choose(mine && mine.title, detail && detail.title) || null;
+            overlay.text = choose(mine && mine.text, detail && detail.text) || null;
+            overlay.imageUrl = choose(mine && mine.imageUrl, detail && detail.imageUrl) || null;
+            overlay.publishedAt = choose(mine && mine.publishedAt, detail && detail.publishedAt) || null;
+            overlay.saves = choose(mine && mine.saves, detail && detail.saves);
+            overlay.comments = choose(mine && mine.comments, detail && detail.comments);
+            overlay.reactions = choose(mine && mine.reactions, null);
+            overlay.outboundUrl = (mine && mine.outboundUrl) || null;
+            ['title', 'text', 'imageUrl', 'publishedAt', 'saves', 'comments', 'reactions', 'outboundUrl'].forEach((f) => { if (overlay[f] == null) delete overlay[f]; });
+            merged.set(id, { ...existing, ...overlay });
+            detailsFetched += 1;
+          }
+        } catch { /* individual pin page failed — keep going */ }
+      }
+    }
     if (!merged.size) {
       await sessions.captureDebug('pinterest', page, status.connected ? 'empty-with-session' : 'empty-no-session');
       throw new Error(`Browser returned 0 pins ${status.connected ? 'even WITH your saved session' : '(no session in use)'} — snapshot saved in data/debug/ on the server`);
     }
-    return { pins: [...merged.values()], sessionUsed: status.connected };
+    return { pins: [...merged.values()], sessionUsed: status.connected, detailsFetched };
   } catch (error) {
     const sessions = require('./sessions');
     await sessions.captureDebug('pinterest', page, `error-${Date.now()}`).catch(() => {});
@@ -256,7 +325,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
 
   // Escalate to the server browser to top up (JS-rendered or session-gated feeds).
   try {
-    const result = await scanViaBrowser(sourceUrl, { maxItems: limit, scrolls });
+    const result = await scanViaBrowser(sourceUrl, { maxItems: limit, scrolls, includeDetails: !testMode });
     const merged = new Map(httpPins.map((pin) => [pin.id, pin]));
     result.pins.forEach((pin) => {
       const existing = merged.get(pin.id);
@@ -264,7 +333,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
     });
     const pins = [...merged.values()];
     if (pins.length) {
-      return finalize(pins.slice(0, limit), source, sourceUrl, (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), pins.length >= limit ? 'full' : 'partial');
+      return finalize(pins.slice(0, limit), source, sourceUrl, (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : ''), pins.length >= limit ? 'full' : 'partial');
     }
   } catch (error) {
     errors.push(`Browser scan: ${error.message}`);
