@@ -93,3 +93,10 @@ html[data-theme="night"] .spy-session { background: #0f1a2d; border-color: #263b
   .spy-cell { width: 100%; }
   .spy-actions { margin-right: 0; }
 }
+
+/* verification step (2FA / device approval) */
+.spy-verify { display: grid; gap: 8px; margin-top: 10px; padding: 12px; border: 1px dashed #efd9a7; border-radius: 13px; background: #fffaf0; }
+html[data-theme="night"] .spy-verify { background: #2a2210; border-color: #6b5a2b; }
+.spy-verify-hint { margin: 0 0 6px; font-weight: 700; color: #79521d; }
+html[data-theme="night"] .spy-verify-hint { color: #ffd98a; }
+.spy-verify input { letter-spacing: .3em; text-align: center; font-size: 17px; font-weight: 800; }

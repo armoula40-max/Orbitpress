@@ -448,14 +448,64 @@
           '<input type="text" id="' + platform + 'LoginUser" placeholder="البريد الإلكتروني أو اسم المستخدم" autocomplete="off">' +
           '<input type="password" id="' + platform + 'LoginPass" placeholder="كلمة المرور" autocomplete="off">' +
           '<button type="button" class="small-button" id="' + platform + 'LoginBtn">تسجيل الدخول عبر متصفح السيرفر</button>' +
-          '<p class="helper">يبقى تسجيل الدخول على السيرفر فقط، ويستخدمه الماسح المدمج. لا API ولا رفع كوكيز. إذا طُلب تحقق بخطوتين أُبلغتَ برسالة واضحة لإتمامه من متصفحك ثم إعادة المحاولة.</p>' +
+          '<p class="helper">يبقى تسجيل الدخول على السيرفر فقط، ويستخدمه الماسح المدمج. لا API ولا رفع كوكيز. إذا طُلب رمز تحقق (2FA) سيظهر حقل إدخاله هنا فوراً.</p>' +
         '</div>' +
+        '<div id="' + platform + 'VerifyStep" class="spy-verify" style="display:none"></div>' +
         '<button type="button" class="small-button remove" id="' + platform + 'LogoutBtn" style="display:' + (connected ? 'inline-block' : 'none') + '">قطع الاتصال</button>' +
       '</div>';
     };
     return '<section class="card" id="spySessionsCard"><div class="connection-line"><h2>الحسابات المرتبطة — تسجيل دخول السيرفر</h2><span class="connection-state ready">جديد</span></div>' +
       '<p class="helper">بديل كامل لـ API والكوكيز: دخول واحد يبقى محفوظاً في متصفح السيرفر الدائم ويستخدمه الماسح في Facebook و Pinterest.</p>' +
       one('facebook', 'Facebook', 'f') + one('pinterest', 'Pinterest', '◉') + '</section>';
+  }
+
+  function renderVerifyStep(platform, info) {
+    var box = document.getElementById(platform + 'VerifyStep');
+    if (!box) return;
+    var isCode = info.challenge === 'code';
+    box.style.display = 'grid';
+    box.innerHTML = '<p class="helper spy-verify-hint">⏳ ' + esc(info.challengeHint || 'تحقق مطلوب من المنصة.') +
+      (info.expiresInSec ? ' <small>(مهلة ~' + Math.ceil(info.expiresInSec / 60) + ' د)</small>' : '') + '</p>' +
+      (isCode
+        ? '<input type="text" inputmode="numeric" id="' + platform + 'VerifyCode" placeholder="رمز التحقق" autocomplete="one-time-code">' +
+          '<button type="button" class="small-button" id="' + platform + 'VerifyBtn">تأكيد رمز التحقق</button>'
+        : '<button type="button" class="small-button" id="' + platform + 'VerifyBtn">وافقتُ من هاتفي — تحقق الآن</button>') +
+      '<button type="button" class="small-button plain" id="' + platform + 'VerifyCancel">إلغاء المحاولة</button>';
+    var btn = document.getElementById(platform + 'VerifyBtn');
+    btn.onclick = function () {
+      btn.disabled = true;
+      btn.textContent = '…جارٍ التحقق';
+      var codeInput = document.getElementById(platform + 'VerifyCode');
+      fetch('/api/sessions/' + platform + '/verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: codeInput ? codeInput.value : '' }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.message || 'فشل التحقق.');
+          spyNotice('تم الاتصال بـ ' + platform + ' بنجاح ✓', 'good');
+          refreshSessionsCard();
+        })
+        .catch(function (error) {
+          spyNotice(error.message, 'bad');
+          btn.disabled = false;
+          btn.textContent = isCode ? 'تأكيد رمز التحقق' : 'وافقتُ من هاتفي — تحقق الآن';
+        });
+    };
+    document.getElementById(platform + 'VerifyCancel').onclick = function () {
+      fetch('/api/sessions/' + platform + '/verification', { method: 'DELETE' }).finally(function () {
+        box.style.display = 'none';
+        var form = document.getElementById(platform + 'SessionForm');
+        if (form) form.style.display = 'grid';
+      });
+    };
+  }
+
+  function enterVerificationMode(platform, info) {
+    var form = document.getElementById(platform + 'SessionForm');
+    if (form) form.style.display = 'none';
+    renderVerifyStep(platform, info);
   }
 
   function installSessionCard() {
@@ -483,13 +533,18 @@
             .then(function (r) { return r.json(); })
             .then(function (result) {
               if (!result.ok) throw new Error(result.message || 'فشل تسجيل الدخول.');
+              if (result.status === 'verification_required') {
+                spyNotice('تحقق إضافي مطلوب من المنصة — أكمل الخطوة الظاهرة في البطاقة.', 'good');
+                enterVerificationMode(platform, result);
+                return;
+              }
               spyNotice('تم الاتصال بـ ' + platform + ' بنجاح.', 'good');
+              refreshSessionsCard();
             })
             .catch(function (error) { spyNotice(error.message, 'bad'); })
             .finally(function () {
               loginBtn.disabled = false;
               loginBtn.textContent = 'تسجيل الدخول عبر متصفح السيرفر';
-              refreshSessionsCard();
             });
         };
         if (logoutBtn) logoutBtn.onclick = function () {
@@ -497,6 +552,21 @@
             .then(function () { spyNotice('تم قطع اتصال ' + platform + '.', 'good'); })
             .finally(refreshSessionsCard);
         };
+        // Resume an in-flight verification after page refresh
+        fetch('/api/sessions/' + platform + '/verification')
+          .then(function (r) { return r.json(); })
+          .then(function (v) {
+            if (v && v.ok && v.pending) {
+              enterVerificationMode(platform, {
+                challenge: v.challenge,
+                expiresInSec: v.expiresInSec,
+                challengeHint: v.challenge === 'code'
+                  ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في الحقل أدناه.'
+                  : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك، ثم اضغط زر التحقق.',
+              });
+            }
+          })
+          .catch(function () { /* no pending challenge */ });
       });
     }).catch(function () { /* card stays hidden if API unreachable */ });
   }

@@ -152,8 +152,22 @@ router.get('/sessions', (req, res) => {
 });
 
 router.post('/sessions/:platform/login', asyncRoute(async (req, res) => {
+  // Returns either { connected:true } or { status:'verification_required', challenge }
   const status = await scraper.sessions.login(req.params.platform, req.body || {});
   res.json({ ok: true, ...status });
+}));
+
+router.get('/sessions/:platform/verification', asyncRoute(async (req, res) => {
+  res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform) });
+}));
+
+router.post('/sessions/:platform/verification', asyncRoute(async (req, res) => {
+  const status = await scraper.sessions.submitVerification(req.params.platform, req.body && req.body.code);
+  res.json({ ok: true, ...status });
+}));
+
+router.delete('/sessions/:platform/verification', asyncRoute(async (req, res) => {
+  res.json(await scraper.sessions.cancelVerification(req.params.platform));
 }));
 
 router.delete('/sessions/:platform', asyncRoute(async (req, res) => {

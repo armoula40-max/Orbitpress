@@ -39,6 +39,46 @@ const PLATFORMS = {
 
 const liveContexts = new Map();
 
+/**
+ * A login that hit a verification challenge keeps its page alive here so the
+ * user can finish it from the Settings card (code entry / phone approval).
+ */
+const PENDING_TTL_MS = 10 * 60 * 1000;
+const pendingLogins = new Map(); // platform -> { page, context, challenge, createdAt }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [platform, pending] of pendingLogins) {
+    if (now - pending.createdAt > PENDING_TTL_MS) {
+      pending.page.close().catch(() => {});
+      pendingLogins.delete(platform);
+    }
+  }
+}, 60 * 1000).unref();
+
+function rememberPending(platform, page, context, challenge) {
+  const old = pendingLogins.get(platform);
+  if (old) old.page.close().catch(() => {});
+  pendingLogins.set(platform, { page, context, challenge, createdAt: Date.now() });
+}
+
+function getPending(platform) {
+  const pending = pendingLogins.get(platform);
+  if (!pending) return null;
+  if (Date.now() - pending.createdAt > PENDING_TTL_MS) {
+    pending.page.close().catch(() => {});
+    pendingLogins.delete(platform);
+    return null;
+  }
+  return pending;
+}
+
+function clearPending(platform) {
+  const pending = pendingLogins.get(platform);
+  if (pending) pending.page.close().catch(() => {});
+  pendingLogins.delete(platform);
+}
+
 function playwright() {
   try {
     return require('playwright');
@@ -150,35 +190,43 @@ async function login(platform, credentials) {
 
     const currentUrl = page.url();
     const pageHtml = await page.content();
-    if (/checkpoint|approvals_code|two[_-]?factor/i.test(currentUrl + pageHtml.slice(0, 4000))) {
-      await saveLoginDebug(platform, page, 'checkpoint');
-      throw new Error('The platform asked for a verification challenge (2FA/checkpoint). Open facebook.com or pinterest.com in your normal browser, complete the verification, then try the login again.');
+    const cookiesNow = await context.cookies();
+    const hasSession = config.sessionCookies.some((name) => cookiesNow.some((cookie) => cookie.name === name && cookie.value));
+    if (hasSession) {
+      return finishLogin(platform, context, username);
+    }
+
+    // Verification challenge? Keep the page alive and hand the user control.
+    const codeInput = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"], input[name="captcha_response"]');
+    const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two_step|login\/cookie/i.test(currentUrl) || !!codeInput;
+    if (!hasSession && isCheckpoint) {
+      const challenge = codeInput ? 'code' : 'device_approval';
+      rememberPending(platform, page, context, challenge);
+      await saveLoginDebug(platform, page, `verification-${challenge}`);
+      return {
+        ...sessionStatus(platform),
+        status: 'verification_required',
+        challenge,
+        challengeHint: challenge === 'code'
+          ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في البطاقة هنا.'
+          : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك (إشعار "هل كنت أنت؟")، ثم اضغط زر التحقق هنا.',
+      };
     }
     if (/captcha|recaptcha/i.test(pageHtml.slice(0, 6000))) {
       await saveLoginDebug(platform, page, 'captcha');
-      throw new Error('The platform presented a CAPTCHA this server cannot solve. Complete a login in your normal browser first, then retry.');
+      throw new Error('المنصة عرضت CAPTCHA لا يمكن للسيرفر حلّها. سجّل دخول نفس الحساب من متصفحك العادي أكمل التحقق ثم أعد المحاولة.');
     }
-    const cookies = await context.cookies();
-    const found = config.sessionCookies.filter((name) => cookies.some((cookie) => cookie.name === name && cookie.value));
-    if (!found.length) {
-      await saveLoginDebug(platform, page, 'no-session-cookie');
-      throw new Error('Login was not confirmed. Check the credentials and try again (wrong passwords do not create a session). A debug snapshot was saved under data/debug/.');
-    }
-    const meta = metaStore();
-    meta.platforms[platform] = {
-      connected: true,
-      label: labelFromCookies(platform, cookies) || username.replace(/(.{2}).+(@.+)/, '$1…$2'),
-      lastLoginAt: new Date().toISOString(),
-    };
-    saveNamedStore('sessions-meta', meta);
-    return sessionStatus(platform);
+    await saveLoginDebug(platform, page, 'no-session-cookie');
+    throw new Error('لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة). حُفظت لقطة تشخيص في data/debug/ على السيرفر.');
   } catch (error) {
     if (!/data\/debug\//.test(String(error.message))) {
       await saveLoginDebug(platform, page, 'error').catch(() => {});
     }
     throw normalizeLoginError(error);
   } finally {
-    await page.close().catch(() => {});
+    if (!pendingLogins.has(platform)) {
+      await page.close().catch(() => {});
+    }
   }
 }
 
@@ -246,6 +294,87 @@ function normalizeLoginError(error) {
   return error instanceof Error ? error : new Error(message);
 }
 
+async function finishLogin(platform, context, username) {
+  const cookies = await context.cookies();
+  clearPending(platform);
+  const meta = metaStore();
+  meta.platforms[platform] = {
+    connected: true,
+    label: labelFromCookies(platform, cookies) || username.replace(/(.{2}).+(@.+)/, '$1…$2'),
+    lastLoginAt: new Date().toISOString(),
+  };
+  saveNamedStore('sessions-meta', meta);
+  return { ...sessionStatus(platform), status: 'connected' };
+}
+
+/**
+ * Finish a pending verification challenge:
+ *  - challenge 'code': type the verification code into the live page and submit
+ *  - challenge 'device_approval': user approved the login on their phone; we
+ *    click the checkpoint "continue" and re-validate the session cookies
+ */
+async function submitVerification(platform, code) {
+  const pending = getPending(platform);
+  if (!pending) {
+    throw new Error('لا توجد محاولة تحقق نشطة (انتهت مهلة 10 دقائق أو بدأت محاولة جديدة). أعد تسجيل الدخول من البداية.');
+  }
+  const config = platformConfig(platform);
+  const { page, context } = pending;
+  pending.createdAt = Date.now(); // activity extends the window
+
+  if (pending.challenge === 'code') {
+    const cleanCode = String(code || '').replace(/\s+/g, '');
+    if (!cleanCode) throw new Error('أدخل رمز التحقق أولاً.');
+    const codeField = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"]');
+    if (!codeField) throw new Error('حقل الرمز لم يعد ظاهراً في الصفحة — أعد تسجيل الدخول.');
+    await codeField.fill(cleanCode);
+    const submit = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"]');
+    if (submit) await submit.click().catch(() => {});
+    else await codeField.press('Enter');
+  } else {
+    // device approval: user pushed "Approve" in their Facebook app; continue the flow
+    const continueButton = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"][name="submit[Continue]"]') || await page.$('button');
+    if (continueButton) await continueButton.click().catch(() => {});
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
+  await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(5000);
+
+  const cookies = await context.cookies();
+  const hasSession = config.sessionCookies.some((name) => cookies.some((cookie) => cookie.name === name && cookie.value));
+  if (hasSession) return finishLogin(platform, context, '');
+
+  const url = page.url();
+  const html = await page.content();
+  // Still on a code page? Probably a wrong code.
+  if (pending.challenge === 'code' && /approvals_code|checkpoint|two[_-]?step/i.test(url + html.slice(0, 3000))) {
+    throw new Error('الرمز لم يُقبل — تأكد أنه الأحدث من تطبيق المصادقة/الرسائل وأعد المحاولة.');
+  }
+  const freshCodeInput = await page.$('input[name="approvals_code"], #approvals_code');
+  if (freshCodeInput) {
+    pending.challenge = 'code';
+    throw new Error('التحقق لم يكتمل بعد — أُظهر حقل رمز جديد؛ أدخله وأعد المحاولة.');
+  }
+  await saveLoginDebug(platform, page, 'verification-stuck');
+  throw new Error('لم تتأكد الجلسة بعد. إن وافقتَ على الدخول من هاتفك بالفعل، انتظر ثواني وأعد الضغط؛ وإلا أعد تسجيل الدخول من البداية.');
+}
+
+function verificationState(platform) {
+  platformConfig(platform);
+  const pending = getPending(platform);
+  return {
+    pending: !!pending,
+    challenge: pending ? pending.challenge : null,
+    expiresInSec: pending ? Math.max(0, Math.round((PENDING_TTL_MS - (Date.now() - pending.createdAt)) / 1000)) : 0,
+  };
+}
+
+async function cancelVerification(platform) {
+  platformConfig(platform);
+  clearPending(platform);
+  return { ok: true };
+}
+
 function labelFromCookies(platform, cookies) {
   if (platform === 'facebook') {
     const user = cookies.find((cookie) => cookie.name === 'c_user');
@@ -299,4 +428,7 @@ module.exports = {
   sessionStatus,
   statuses,
   cookieHeader,
+  submitVerification,
+  verificationState,
+  cancelVerification,
 };
