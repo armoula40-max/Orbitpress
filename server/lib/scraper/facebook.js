@@ -423,6 +423,11 @@ async function scanViaBrowser(sourceUrl, options) {
       ? { from: new Date(Math.min(...dates)).toISOString(), to: new Date(Math.max(...dates)).toISOString(), complete: !!(windowStartMs && Math.min(...dates) <= windowStartMs), windowDays: options.windowDays || null }
       : { from: null, to: null, complete: false, windowDays: options.windowDays || null };
     return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage, browserDiag: { rawFound, unique: merged.size, passes: passesDone, stoppedBy, photos: photoPosts } };
+  } catch (error) {
+    const dbg = require('./sessions');
+    await dbg.captureDebug('facebook', page, `error-${Date.now()}`).catch(() => {});
+    error.message += ' — snapshot saved in data/debug/ on the server';
+    throw error;
   } finally {
     await page.close().catch(() => {});
   }

@@ -286,6 +286,11 @@ async function saveLoginDebug(platform, page, tag) {
   } catch { /* never break login over debugging */ }
 }
 
+/** Same snapshot bundle used for scans: data/debug/<platform>-scan-<tag>-<ts>.{png,html,url.txt} */
+async function captureDebug(platform, page, tag) {
+  return saveLoginDebug(platform, page, `scan-${tag}`);
+}
+
 function normalizeLoginError(error) {
   const message = String(error && error.message || 'Login failed.');
   if (/Timeout.*exceeded/i.test(message)) {
@@ -431,4 +436,5 @@ module.exports = {
   submitVerification,
   verificationState,
   cancelVerification,
+  captureDebug,
 };

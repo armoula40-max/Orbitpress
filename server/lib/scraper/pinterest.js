@@ -210,7 +210,15 @@ async function scanViaBrowser(sourceUrl, options) {
       await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
       await page.waitForTimeout(900);
     }
+    if (!merged.size) {
+      await sessions.captureDebug('pinterest', page, status.connected ? 'empty-with-session' : 'empty-no-session');
+      throw new Error(`Browser returned 0 pins ${status.connected ? 'even WITH your saved session' : '(no session in use)'} — snapshot saved in data/debug/ on the server`);
+    }
     return { pins: [...merged.values()], sessionUsed: status.connected };
+  } catch (error) {
+    const sessions = require('./sessions');
+    await sessions.captureDebug('pinterest', page, `error-${Date.now()}`).catch(() => {});
+    throw new Error(`${error.message} — snapshot saved in data/debug/ on the server`);
   } finally {
     await page.close().catch(() => {});
   }
