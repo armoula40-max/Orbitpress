@@ -6,3 +6,7 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Server edition runtime data & dependencies
+server/node_modules/
+server/data/

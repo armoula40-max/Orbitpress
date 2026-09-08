@@ -1,0 +1,35 @@
+# OrbitPress Server Edition — one-command deployment from the repo root.
+#
+#   cp server/.env.example .env        # ثم عدّل الرمز
+#   docker compose up -d --build       # البناء والتشغيل
+#   docker compose logs -f             # السجلات
+#   docker compose pull && docker compose up -d --build   # تحديث بعد git pull
+#
+services:
+  orbitpress:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: orbitpress-server:latest
+    container_name: orbitpress
+    restart: unless-stopped
+    ports:
+      # الافتراضي: يستمع على كل الواجهات على المنفذ 8080 مع رمز الدخول.
+      # إن ركّبت Nginx أمامه غيّرها إلى "127.0.0.1:8080:8080".
+      - "${ORBITPRESS_PORT:-8080}:8080"
+    environment:
+      ORBITPRESS_TOKEN: ${ORBITPRESS_TOKEN:?Set ORBITPRESS_TOKEN in .env — this is your access password}
+      # ORBITPRESS_SECRET_KEY يُولَّد تلقائياً ويُحفظ داخل volume — لا تضعه هنا إلا لو فقدت النسخة
+    volumes:
+      - orbitpress-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Chromium يحتاج ذاكرة أعلى من الافتراضي للمشاركة
+    shm_size: "512m"
+
+volumes:
+  orbitpress-data:

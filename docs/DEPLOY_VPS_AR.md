@@ -1,0 +1,141 @@
+# نشر OrbitPress Server على VPS (أوبونتو) — الدليل الكامل
+
+الطريقة المعتمدة: **Docker** على سيرفر Ubuntu 22.04/24.04، بدون دومين، مع حماية
+برمز دخول (`ORBITPRESS_TOKEN`). التشفير الكامل بدون دومين يتم عبر Tailscale
+(مجاني) — القسم الأخير.
+
+---
+
+## 0) متطلبات السيرفر
+
+| المورد | الحد الأدنى | ملاحظة |
+|---|---|---|
+| RAM | **2 GB** (يُفضّل 4) | Chromium للماسح هو الأكثر استهلاكاً |
+| Disk | 10 GB متاحة | الصورة ~1.6 GB + البيانات |
+| CPU | 1 vCPU (2 أفضل) | — |
+| OS | Ubuntu 22.04 أو 24.04 | السكربت يعمل على root |
+
+> في أوبونتو إذا كانت الذاكرة 1GB فقط: أضف Swap قبل الاستخدام (انظر قسم المشاكل).
+
+---
+
+## 1) التثبيت الآلي (نسخة ولصق)
+
+ادخل بالـ SSH إلى سيرفرك ونفّذ كـ root:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/armoula40-max/Orbitpress/arena/01a08173-orbitpress/server/deploy/install-server.sh)
+```
+
+السكربت يقوم آلياً بـ: تثبيت Docker ← استنساخ المشروع في `/opt/orbitpress` ←
+توليد رمز دخول عشوائي قوي ← بناء الصورة ويشغّلها. في النهاية يطبع لك:
+
+```
+الرابط:    http://IP-السيرفر:8080/
+رمز الدخول: 4f2a…اكتبه…
+```
+
+افتح الرابط من متصفحك، أدخل الرمز — وانتهى الأمر. 🎉
+
+> أول بناء يحتاج 5–10 دقائق (ينزّل Chromium ~160MB واعتماداته).
+
+---
+
+## 2) الإعدادات داخل التطبيق بعد النشر
+
+1. **Paramètres / Settings** ← املأ: Article API (base URL + model + key) و
+   WordPress (URL + user + Application Password) ثم **Save & test**، واختر الفئة.
+2. بطاقة **الحسابات المرتبطة** (جديدة): سجّل دخول Facebook و/أو Pinterest
+   **مرة واحدة** من هناك — الجلسة تُحفظ داخل السيرفر.
+   كل شيء يُحفظ مشفراً في volume اسمه `orbitpress-data` (البيانات خارج الحاوية
+   وتبقى بعد أي تحديث).
+
+> ملاحظة واقعية: Facebook يقيّد عناوين IP الخاصة بسيرفرات الـ datacenter أحياناً؛
+> عند طلب تحقق سيخبرك التطبيق بوضوح — أنجز التحقق من متصفحك الشخصي على نفس
+> الحساب ثم أعد المحاولة. Pinterest عادةً يعمل حتى بدون تسجيل دخول.
+
+---
+
+## 3) الأوامر اليومية
+
+```bash
+cd /opt/orbitpress
+docker compose logs -f            # سجلات حية
+docker compose restart            # إعادة تشغيل
+docker compose ps                 # الحالة + الفحص الصحي
+```
+
+### التحديث إلى آخر نسخة
+
+```bash
+bash /opt/orbitpress/server/deploy/update-server.sh
+```
+
+> يحافظ التحديث على البيانات والإعدادات والجلسات (في الـ volume) تلقائياً.
+
+### نسخ احتياطي
+
+```bash
+docker run --rm -v orbitpress-data:/data -v "$PWD":/backup ubuntu \
+  tar czf /backup/orbitpress-data-$(date +%F).tar.gz -C /data .
+```
+
+للاستعادة: أنشئ الـ volume ثم فك الضغط داخله بنفس الطريقة العكسية.
+
+---
+
+## 4) الأمان (مهم — بدون دومين)
+
+لأنك تعمل على IP:8080 بدون HTTPS، اعتمدنا طبقتين:
+
+1. **رمز الدخول** `ORBITPRESS_TOKEN` يُطلب قبل عرض الواجهة نفسها.
+2. **قناة مشفرة مجانية عبر Tailscale** (موصى به بقوة لأن HTTP مكشوف نظرياً لمن
+   يتنصت على الشبكة):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up        # سجّل دخول بحساب مجاني
+tailscale ip -4     # عنوانك الخاص: 100.x.x.x
+```
+
+ثم فعّل Tailscale أيضاً على هاتفك/حاسوبك، وافتح OrbitPress عبر
+`http://100.x.x.x:8080/` — اتصال مشفر (WireGuard) بين جهازك والسيرفر مباشرة.
+
+خطوة أخيرة مقترحة: اجعل المنفذ يستمع على Tailscale فقط عبر تعديل ports في
+`docker-compose.yml` إلى:
+
+```yaml
+    ports:
+      - "100.x.x.x:8080:8080"
+```
+
+ثم `docker compose up -d`.
+
+### تغيير رمز الدخول
+
+```bash
+nano /opt/orbitpress/.env      # استبدل ORBITPRESS_TOKEN
+cd /opt/orbitpress && docker compose up -d
+```
+
+---
+
+## 5) مشاكل شائعة وحلولها
+
+| العرض | الحل |
+|---|---|
+| الصفحة لا تفتح | تأكد أن المنفذ مفتوح: `ufw allow 8080/tcp` ثم `docker compose ps` |
+| الماسح: "Playwright is not installed" | نادر داخل الصورة الجاهزة؛ تحقق بـ `docker compose logs` وأعد البناء بـ `docker compose build --no-cache` |
+| Facebook يطلب checkpoint | أنجز التحقق في متصفحك على نفس الحساب ثم أعد تسجيل الدخول من الإعدادات |
+| Pinterest يرجع 403/429 | الخادم محظور مؤقتاً — سجّل الدخول من الإعدادات أو أعد المحاولة لاحقاً |
+| `Out of memory` أثناء البناء (RAM 1GB) | `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` ثم أعد الأمر |
+| فقدت رمز الدخول | `grep ORBITPRESS_TOKEN /opt/orbitpress/.env` |
+
+---
+
+## 6) (اختياري) لاحقاً: دومين + HTTPS
+
+عند شرائك دوميناً أضف سجل `A` يشير لـ IP السيرفر، ثم ركّب Nginx + Certbot
+(`apt install nginx certbot python3-certbot-nginx`) ووجّهه إلى
+`127.0.0.1:8080` وفعّل الشهادة بأمر واحد: `certbot --nginx -d example.com`.
+</content>
