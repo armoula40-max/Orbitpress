@@ -124,6 +124,7 @@
       maxPosts: request.maxPosts || 25,
       maxPins: request.maxPins || 20,
       scrolls: request.scrolls || 6,
+      windowDays: request.windowDays || null,
       useSession: true,
       siteId: request.siteId || 'site-default',
     };

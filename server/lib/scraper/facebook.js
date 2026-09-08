@@ -230,23 +230,41 @@ async function scanViaBrowser(sourceUrl, options) {
   try {
     await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(4000);
-    const scrolls = Math.min(12, Math.max(1, options.scrolls || 8));
+    const scrollCap = Math.min(40, Math.max(1, options.scrolls || 20));
+    const deadline = Date.now() + 170000;
+    const windowStartMs = options.windowDays ? Date.now() - options.windowDays * 86400000 : null;
     const merged = new Map();
     let pageName = null;
-    for (let pass = 0; pass < scrolls; pass += 1) {
+    let stagnantPasses = 0;
+    let lastSize = 0;
+    for (let pass = 0; pass < scrollCap && Date.now() < deadline; pass += 1) {
       const batch = await page.evaluate(COLLECT_SCRIPT);
       if (batch.pageName && !pageName) pageName = batch.pageName;
       (batch.posts || []).forEach((post) => {
         const key = post.url || post.title;
         if (!merged.has(key) && merged.size < options.maxPosts) merged.set(key, post);
       });
+      stagnantPasses = merged.size > lastSize ? 0 : stagnantPasses + 1;
+      lastSize = merged.size;
       if (merged.size >= options.maxPosts) break;
-      // scroll the last discovered post into view — Facebook virtualizes the
-      // feed, so unmounting above items is expected and harmless to our map.
+
+      // Time-window coverage: stop as soon as we scrolled past the start of
+      // the requested window (we then hold the full last-N-days chronology).
+      if (windowStartMs) {
+        const dated = [...merged.values()].map((p) => p.publishedAt && Date.parse(p.publishedAt)).filter(Boolean);
+        if (dated.length >= 3 && Math.min(...dated) <= windowStartMs) break;      // covered: oldest seen is older than the window start
+        if (dated.length >= 3 && stagnantPasses >= 2) break;                       // page simply has nothing older
+      } else if (stagnantPasses >= 3) {
+        break; // count-based mode with no new items
+      }
       await page.evaluate('window.scrollBy(0, Math.max(900, Math.round(document.body.scrollHeight * 0.25)))');
       await page.waitForTimeout(1400);
     }
-    return { posts: [...merged.values()], sessionUsed: status.connected, pageName };
+    const dates = [...merged.values()].map((p) => p.publishedAt && Date.parse(p.publishedAt)).filter(Boolean);
+    const coverage = dates.length
+      ? { from: new Date(Math.min(...dates)).toISOString(), to: new Date(Math.max(...dates)).toISOString(), complete: !!(windowStartMs && Math.min(...dates) <= windowStartMs), windowDays: options.windowDays || null }
+      : { from: null, to: null, complete: false, windowDays: options.windowDays || null };
+    return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage };
   } finally {
     await page.close().catch(() => {});
   }
@@ -261,14 +279,16 @@ function keepPost(post) {
   return !post.url && String(post.text || '').length >= 60;
 }
 
-async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true, baseUrl }) {
+async function scanFacebook({ url, maxPosts = 25, scrolls, windowDays = 7, useSession = true, baseUrl }) {
   const base = (baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
   let sourceUrl = String(url || '').trim();
   if (!sourceUrl) throw new Error('Enter a Facebook Page URL first.');
   const testMode = baseUrl && process.env.ORBITPRESS_ALLOW_HTTP === '1';
   classifyFacebookUrl(sourceUrl, { allowAnyHost: testMode });
   if (base !== DEFAULT_BASE) sourceUrl = sourceUrl.replace(DEFAULT_BASE, base);
-  const limit = Math.min(200, Math.max(1, Number(maxPosts) || 25));
+  // window coverage mode wants a generous hard cap; the UI sends its own.
+  const limit = Math.min(200, Math.max(1, Number(maxPosts) || 150));
+  const days = Math.min(90, Math.max(1, Number(windowDays) || 7));
   const errors = [];
   let httpPosts = [];
   try {
@@ -282,14 +302,14 @@ async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true
   }
 
   try {
-    const result = await scanViaBrowser(sourceUrl, { maxPosts: limit, scrolls });
+    const result = await scanViaBrowser(sourceUrl, { maxPosts: limit, scrolls, windowDays: days });
     const merged = new Map(httpPosts.map((post) => [post.url || post.title, post]));
     result.posts
       .filter(keepPost)
       .forEach((post) => { const key = post.url || post.title; if (!merged.has(key) && merged.size < limit) merged.set(key, post); });
     const posts = [...merged.values()];
     if (posts.length) {
-      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName);
+      return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName, result.coverage);
     }
   } catch (error) {
     errors.push(`Browser scan: ${error.message}`);
@@ -302,7 +322,7 @@ async function scanFacebook({ url, maxPosts = 25, scrolls = 6, useSession = true
   throw new Error(`Facebook scan failed. ${needsLogin ? 'Facebook usually requires a connected account session from a datacenter server — connect Facebook in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim());
 }
 
-function finalize(posts, sourceUrl, method, completeness, pageName) {
+function finalize(posts, sourceUrl, method, completeness, pageName, coverage) {
   const ranked = analyzer.rankPosts(posts);
   let source = pageName || null;
   try {
@@ -318,6 +338,7 @@ function finalize(posts, sourceUrl, method, completeness, pageName) {
     sourceUrl,
     collectionMethod: method,
     completeness,
+    coverage: coverage || null,
     posts: ranked,
     stats: analyzer.computeStats(ranked),
   };

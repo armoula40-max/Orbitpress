@@ -47,8 +47,9 @@ function startScanJob(payload) {
   const runner = platform === 'facebook'
     ? scanFacebook({
         url: payload.url,
-        maxPosts: payload.maxPosts || payload.limit || 25,
-        scrolls: payload.scrolls || 6,
+        maxPosts: payload.maxPosts || payload.limit || 150,
+        scrolls: payload.scrolls,
+        windowDays: payload.windowDays,
         useSession: payload.useSession !== false,
         baseUrl: payload.baseUrl,
       })

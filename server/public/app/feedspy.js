@@ -227,7 +227,11 @@
       };
     });
     var countNote = document.getElementById((isPin ? 'spyP' : platform === 'facebook' ? 'spyF' : 'spyF') + 'Count');
-    if (countNote) countNote.textContent = filtered.length + ' / ' + all.length + (stats.withMetricsCount < all.length ? ' · ' + (all.length - stats.withMetricsCount) + ' بدون مقاييس ظاهرة' : '');
+    if (countNote) {
+      var cov = spy[platform].coverage;
+      var covText = cov && cov.from ? ' · التغطية: ' + cov.from.slice(0, 10) + ' ← ' + cov.to.slice(0, 10) + (cov.complete ? ' (مكتملة ✓)' : ' (حتى ما هو متاح)') : '';
+      countNote.textContent = filtered.length + ' / ' + all.length + (stats.withMetricsCount < all.length ? ' · ' + (all.length - stats.withMetricsCount) + ' بدون مقاييس ظاهرة' : '') + covText;
+    }
   }
 
   function refresh(platform) {
@@ -357,6 +361,7 @@
     s.jobId = parsed.jobId || null;
     if (Array.isArray(parsed.posts)) s.posts = parsed.posts.map(normalizePostMetrics);
     s.stats = parsed.stats || computeStats(s.posts);
+    s.coverage = parsed.coverage || null;
     s.source = parsed.source || s.source || '';
     if (typeof parsed.source === 'string' && parsed.source) s.source = parsed.source;
     else if (parsed.source && parsed.source.name) s.source = parsed.source.name;
