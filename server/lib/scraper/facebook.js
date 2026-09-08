@@ -170,8 +170,14 @@ const COLLECT_SCRIPT = `(() => {
     const permalink = anchors.find(a => /\\/(posts|permalink\\.php|videos|photos|photo|reel|share\\/p|share\\/v)\\b/.test(a.href) || /(story_fbid=|photo_id=|video_id=)/.test(a.href) || /story\\.php/.test(a.href));
     const heading = node.querySelector('h2,h3,h4,[role="heading"]');
     const authorAnchor = node.querySelector('h2 a, h3 a, h4 a, strong a, a[role="link"]');
+    const authorName = authorAnchor ? clean(authorAnchor.innerText) : null;
     const lines = (node.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
-    const title = clean((heading && heading.innerText) || lines[0] || text);
+    let title = clean((heading && heading.innerText) || lines[0] || text);
+    // Feed-style cards head with the author name — prefer the first real
+    // sentence of the post body for a FeedSpy-style readable title.
+    if (authorName && (title === authorName)) {
+      title = clean(lines.find(l => l && l !== authorName && !/^(just now|yesterday|\\d+\\s*(m|mins?|h|hrs?|hours?|d|days?|w|weeks?)\\b)/i.test(l)) || lines[1] || text);
+    }
     const url = permalink ? permalink.href.split('?')[0].endsWith('/') ? permalink.href : permalink.href : null;
     let publishedAt = null;
     const timeEl = node.querySelector('abbr[data-utime]');
@@ -205,7 +211,14 @@ const COLLECT_SCRIPT = `(() => {
       platform: 'facebook', kind: 'facebook_post', isComment: false,
     });
   });
-  const pageName = (document.querySelector('h1') || {}).innerText || document.title || null;
+  let pageName = null;
+  const h1s = Array.from(document.querySelectorAll('h1'));
+  for (const h of h1s) {
+    const t = (h.innerText || '').trim();
+    // skip Facebook's hidden accessibility <h1>Facebook</h1>
+    if (t && !/^\\(?\\d*\\)?\\s*facebook$/i.test(t)) { pageName = t; break; }
+  }
+  if (!pageName) pageName = (document.title || '').replace(/^\\(\\d+\\)\\s*/, '').trim() || null;
   return { posts, pageName };
 })()`;
 
