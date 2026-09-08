@@ -68,12 +68,19 @@ function extractEmbeddedJson(html) {
   return roots;
 }
 
+const BOT_TOPIC_TITLE_RE = /discover pinterest'?s best ideas/i;
+
 function looksLikePin(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const id = String(value.id != null ? value.id : '');
+  if (!/^\d{15,}$/.test(id)) return false; // real Pin ids are 15+ digit snowflakes; topic/interest ids are short
+  const title = String(value.title || value.grid_title || '');
+  if (BOT_TOPIC_TITLE_RE.test(title)) return false; // bot-wall topic tile, not a pin
+  if (value.type && value.type !== 'pin') return false;
   if (value.type === 'pin') return true;
   const hasMedia = value.images || value.image_xlarge_url || value.image_signature || value.carousel_data;
   const hasText = value.title != null || value.grid_title != null || value.description != null || value.rich_summary || value.closeup_description;
-  return Number.isFinite(Number(value.id)) && String(value.id).length >= 6 && hasMedia && hasText;
+  return Boolean(hasMedia && hasText);
 }
 
 function numberOrNull(value) {
@@ -334,7 +341,8 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
         }
         mine = merged2.get(pin.id) || null;
         const titleRaw = (mine && mine.title) || og('title');
-        if (titleRaw) overlay.title = String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim();
+        const titleClean = titleRaw ? String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim() : '';
+        if (titleClean && !/^(pinterest|page not found|show[_ ]error)$/i.test(titleClean)) overlay.title = titleClean;
         const text = (mine && mine.text) || og('description');
         if (text) overlay.text = text;
         const imageUrl = (mine && mine.imageUrl) || og('image');
@@ -379,7 +387,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   try {
     const result = await scanViaHttp(httpUrl, { maxItems: limit, useSession });
     httpPins = result.pins;
-    if (httpPins.length >= limit) {
+    if (httpPins.length >= limit && source.kind !== 'profile') {
       const sliced = httpPins.slice(0, limit);
       const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
       return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'full', { http: httpPins.length, enriched });
