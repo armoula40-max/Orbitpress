@@ -211,29 +211,59 @@ const COLLECT_SCRIPT = `(() => {
     const RE_REACT = /(reaction|like|أعج|إعجاب|اعجاب|تفاعل)/i;
     const RE_COMMENT = /(comment|تعليق)/i;
     const RE_SHARE = /(share|مشارك)/i;
-    // 1) the stats row ("139 · 12 تعليقًا · 4 مشاركات") is the trustworthy source
-    const statsLines = lines.filter(l => (RE_COMMENT.test(l) || RE_SHARE.test(l)) && /[0-9٠-٩]/.test(l));
-    const statsLine = statsLines.slice(-2).join(' · ');
-    if (statsLine) {
-      statsLine.split(/[·|،‐-]/).map(s => s.trim()).filter(Boolean).forEach(seg => {
-        if (comments == null && RE_COMMENT.test(seg)) comments = toNumber(seg);
-        else if (shares == null && RE_SHARE.test(seg)) shares = toNumber(seg);
-        else if (reactions == null && !/مشاهد|view/i.test(seg)) reactions = toNumber(seg);
+    const REACT_TYPES = /(أعج|أحبب|احبب|هاها|ههه|واو|أحزن|احزن|أغضب|اغضب|love|haha|wow|sad|angry|support|care)/i;
+    // a line that is ONLY a count ("230", "1.2 ألف") — that is the reactions total
+    const countToken = (l) => {
+      const t = normDigits(l).trim();
+      return /^\\d[\\d.,]*(?:\\s*(?:ألف|الالف|الآف|مليون|مليار|[kKmM]))?$/.test(t) ? toNumber(t) : null;
+    };
+    // Arabic aria labels often carry a PER-TYPE breakdown
+    // ("أعجب 150، أحبب 60، واو 20") while the post shows the TOTAL — so sum.
+    const sumReacts = (label) => {
+      const s = normDigits(label);
+      const cands = s.match(/\\d[\\d.,]*(?:\\s*(?:ألف|الالف|الآف|مليون|مليار|[kKmM]))?/g) || [];
+      const nums = cands.map(toNumber).filter((v) => v != null);
+      if (!nums.length) return null;
+      if (nums.length > 1 && REACT_TYPES.test(s)) return nums.reduce((a, b) => a + b, 0);
+      // "أعجبك أنت و229 آخرون" — your own reaction is not inside the number
+      if (/(^|[\\s،])(أنت|you)([\\s،]|$)/i.test(s) && nums.length === 1) return nums[0] + 1;
+      return nums[0];
+    };
+    // 1) stats row: reactions total is the bare-number line next to the comment/share line
+    const statIdx = lines.findIndex((l) => (RE_COMMENT.test(l) || RE_SHARE.test(l)) && /[0-9٠-٩]/.test(l));
+    if (statIdx >= 0) {
+      lines.slice(statIdx, statIdx + 2).join(' · ').split(/[·|،ـ-]/).map((sg) => sg.trim()).filter(Boolean).forEach((seg) => {
+        if (comments == null && RE_COMMENT.test(seg)) comments = sumReacts(seg);
+        else if (shares == null && RE_SHARE.test(seg)) shares = sumReacts(seg);
+        else if (reactions == null && RE_REACT.test(seg) && !/مشاهد|view/i.test(seg)) reactions = sumReacts(seg);
       });
+      for (let k = Math.max(0, statIdx - 3); k <= statIdx + 1 && reactions == null; k += 1) {
+        const v = countToken(lines[k]);
+        if (v != null) reactions = v;
+      }
     }
-    // 2) aria-labels (bilingual)
-    Array.from(node.querySelectorAll('[aria-label]')).forEach(el => {
+    // 2) aria-labels (bilingual; reaction breaks summed)
+    Array.from(node.querySelectorAll('[aria-label]')).forEach((el) => {
       const label = el.getAttribute('aria-label') || '';
-      if (!/[0-9\u0660-\u0669]/.test(label)) return;
-      if (reactions == null && RE_REACT.test(label) && !RE_COMMENT.test(label)) reactions = toNumber(label);
-      if (comments == null && RE_COMMENT.test(label)) comments = toNumber(label);
-      if (shares == null && RE_SHARE.test(label)) shares = toNumber(label);
+      if (!/[0-9٠-٩]/.test(label)) return;
+      if (reactions == null && RE_REACT.test(label) && !RE_COMMENT.test(label)) reactions = sumReacts(label);
+      if (comments == null && RE_COMMENT.test(label)) comments = sumReacts(label);
+      if (shares == null && RE_SHARE.test(label) && !RE_COMMENT.test(label)) shares = sumReacts(label);
     });
-    // 3) loose tail fallback (bilingual, order-invariant)
+    // 3) loose tail fallback (bilingual)
     const tail = lines.slice(-6).join(' ');
     if (comments == null) comments = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:comments?|تعليقات?)/i) || [])[1]);
     if (shares == null) shares = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:shares?|مشاركات?|مشاركة)/i) || [])[1]);
-    if (reactions == null) reactions = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:likes?|reactions?|إعجاب|اعجاب)/i) || [])[1]);
+    if (reactions == null) reactions = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:likes?|reactions?|إعجاب|اعجاب|تفاعلات?|أشخاص)/i) || [])[1]);
+    // 4) last resort: a lone bare-number line in the card (below the header)
+    if (reactions == null) {
+      const bare = [];
+      lines.forEach((l, ix) => {
+        const v = countToken(l);
+        if (v != null && !/[:؛]/.test(l) && l.length <= 14) bare.push({ ix, v });
+      });
+      if (bare.length === 1 && bare[0].ix >= 2) reactions = bare[0].v;
+    }
     const key = url || title.slice(0, 90);
     if (!key || seen.has(key)) return;
     seen.add(key);
