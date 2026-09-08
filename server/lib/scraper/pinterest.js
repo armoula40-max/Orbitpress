@@ -322,9 +322,12 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   const limit = Math.min(200, Math.max(1, Number(maxItems) || 20));
 
   const errors = [];
+  // Profile tab URLs (/_created, /_saved) are walled to datacenter crawlers;
+  // the parent profile serves those same pins publicly (created-first).
+  const httpUrl = source.kind === 'profile' && source.tab ? `${base}/${source.user}` : sourceUrl;
   let httpPins = [];
   try {
-    const result = await scanViaHttp(sourceUrl, { maxItems: limit, useSession });
+    const result = await scanViaHttp(httpUrl, { maxItems: limit, useSession });
     httpPins = result.pins;
     if (httpPins.length >= limit) {
       return finalize(httpPins.slice(0, limit), source, sourceUrl, 'embedded_json', 'full');
@@ -334,19 +337,24 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   }
 
   // Escalate to the server browser to top up (JS-rendered or session-gated feeds).
-  try {
-    const result = await scanViaBrowser(sourceUrl, { maxItems: limit, scrolls, includeDetails: !testMode });
-    const merged = new Map(httpPins.map((pin) => [pin.id, pin]));
-    result.pins.forEach((pin) => {
-      const existing = merged.get(pin.id);
-      merged.set(pin.id, existing ? { ...pin, ...Object.fromEntries(Object.entries(existing).filter(([, v]) => v != null && v !== '')) } : pin);
-    });
-    const pins = [...merged.values()];
-    if (pins.length) {
-      return finalize(pins.slice(0, limit), source, sourceUrl, (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : ''), pins.length >= limit ? 'full' : 'partial');
+  const browserTargets = [sourceUrl];
+  if (source.kind === 'profile' && source.tab) browserTargets.push(`${base}/${source.user}`); // tab walled? parent = created grid
+  for (const target of browserTargets) {
+    const isFallback = target !== sourceUrl;
+    try {
+      const result = await scanViaBrowser(target, { maxItems: limit, scrolls, includeDetails: !testMode });
+      const merged = new Map(httpPins.map((pin) => [pin.id, pin]));
+      result.pins.forEach((pin) => {
+        const existing = merged.get(pin.id);
+        merged.set(pin.id, existing ? { ...pin, ...Object.fromEntries(Object.entries(existing).filter(([, v]) => v != null && v !== '')) } : pin);
+      });
+      const pins = [...merged.values()];
+      if (pins.length) {
+        return finalize(pins.slice(0, limit), source, sourceUrl, (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (isFallback ? '+tab-fallback' : ''), pins.length >= limit ? 'full' : 'partial');
+      }
+    } catch (error) {
+      errors.push(`Browser scan (${isFallback ? 'profile fallback' : 'tab url'}): ${error.message}`);
     }
-  } catch (error) {
-    errors.push(`Browser scan: ${error.message}`);
   }
 
   if (httpPins.length) {
