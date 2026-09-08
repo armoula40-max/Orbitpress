@@ -265,6 +265,7 @@ private class NativeBridge(
           "scraperFacebook" -> scraperScan(request, "facebook")
           "scraperPinterest" -> scraperScan(request, "pinterest")
           "scraperPing" -> scraperPing(request)
+          "scraperSession" -> scraperSessionCheck(request)
           "generate" -> generate(request)
           "categories" -> categories(request)
           "syncPublishedPosts" -> syncPublishedPosts(request)
@@ -303,11 +304,20 @@ private class NativeBridge(
     val response = JSONObject(scraperHttp(endpoint, mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8), timeoutSeconds))
     // Tell the WebView what the server saw, so an empty result can be explained instead of silently showing 0.
     val sessionCookieNames = if (platform == "facebook") listOf("c_user", "xs") else listOf("_pinterest_sess")
+    val sessionCookiePresent = sessionCookieNames.all { cookieValues.containsKey(it) }
+    val rawCount = ScraperResultContract.rows(response, platform).length()
+    val finalUrl = response.optString("finalUrl", response.optString("url"))
     val diagnostics = JSONObject()
       .put("cookiesSent", cookies.length())
-      .put("sessionCookiePresent", sessionCookieNames.all { cookieValues.containsKey(it) })
+      .put("sessionCookiePresent", sessionCookiePresent)
+      .put("serverSession", ScraperResultContract.serverSawSession(response, platform) ?: JSONObject.NULL)
       .put("serverMessage", ScraperResultContract.serverMessage(response))
-      .put("finalUrl", response.optString("finalUrl", response.optString("url")))
+      .put("finalUrl", finalUrl)
+      .put("technical", ScraperResultContract.technicalSummary(response, cookies.length()))
+    if (rawCount == 0) {
+      ScraperResultContract.diagnoseEmpty(platform, response, rawCount = 0, acceptedCount = 0, cookiesSent = cookies.length(), sessionCookiePresent = sessionCookiePresent, finalUrl = finalUrl)
+        ?.let { diagnostics.put("emptyCode", it.code).put("emptyReason", it.message) }
+    }
     return response.put("orbitpressDiagnostics", diagnostics)
   }
   /**
@@ -315,15 +325,15 @@ private class NativeBridge(
    * carriers refuse to resolve them ("Unable to resolve host"), so those hosts are dialled directly by IP
    * while TLS SNI + certificate validation + Host header stay bound to the hostname. Other hosts use http().
    */
-  private fun scraperHttp(endpoint: String, headers: Map<String, String>, body: ByteArray, timeoutSeconds: Int): String {
+  private fun scraperHttp(endpoint: String, headers: Map<String, String>, body: ByteArray?, timeoutSeconds: Int, method: String = "POST"): String {
     val embeddedIp = EmbeddedIpHostContract.embeddedIpv4ForUrl(endpoint)
     try {
       if (embeddedIp != null) {
-        val response = DirectTlsHttpClient.request(endpoint, "POST", headers, body, embeddedIp, connectTimeoutMillis = 20_000, readTimeoutMillis = timeoutSeconds * 1000)
+        val response = DirectTlsHttpClient.request(endpoint, method, headers, body, embeddedIp, connectTimeoutMillis = 20_000, readTimeoutMillis = timeoutSeconds * 1000)
         if (response.status !in 200..299) throw IllegalStateException("Request failed (${response.status}): ${response.body.take(280)}")
         return response.body
       }
-      return http(endpoint, "POST", headers, body, readTimeoutMillis = timeoutSeconds * 1000)
+      return http(endpoint, method, headers, body, readTimeoutMillis = timeoutSeconds * 1000)
     } catch (error: SocketTimeoutException) {
       if (error.message?.contains("connect", ignoreCase = true) == true) throw IllegalStateException("Cannot reach the VPS scraper${if (embeddedIp != null) " at $embeddedIp:443" else ""} (connection timed out). Check that the service and firewall allow HTTPS.")
       throw IllegalStateException("VPS scraper did not answer within $timeoutSeconds s. Lower the item count or raise the scraper timeout in Settings.")
@@ -334,6 +344,41 @@ private class NativeBridge(
     } catch (error: SSLException) {
       throw IllegalStateException("TLS handshake with the VPS scraper failed: ${error.message.orEmpty()}. The server certificate must be valid for the scraper hostname.")
     }
+  }
+  /**
+   * One tap, both sides of the login story: are Facebook/Pinterest session cookies stored on this phone, and is the
+   * VPS browser profile logged in (GET /api/session/{platform}/check on orbitpress-scraper-api)?
+   */
+  private fun scraperSessionCheck(request: JSONObject): JSONObject {
+    val platform = if (request.optString("platform") == "pinterest") "pinterest" else "facebook"
+    val settings = storedSettings(request.optString("siteId", SettingsPersistenceContract.DEFAULT_SITE_ID))
+    val scraper = ScraperDefaultsContract.resolve(settings, BuildConfig.SCRAPER_DEFAULT_URL, BuildConfig.SCRAPER_DEFAULT_KEY)
+    val base = ScraperDefaultsContract.requireEndpoint(scraper)
+    CookieManager.getInstance().flush()
+    val sources = if (platform == "facebook") listOf("https://www.facebook.com/", "https://facebook.com/", "https://m.facebook.com/") else listOf("https://www.pinterest.com/", "https://pinterest.com/")
+    val names = linkedSetOf<String>()
+    sources.forEach { source -> CookieManager.getInstance().getCookie(source).orEmpty().split(';').forEach { part -> val separator = part.indexOf('='); if (separator > 0) names += part.substring(0, separator).trim() } }
+    val phoneLoggedIn = if (platform == "facebook") "c_user" in names && "xs" in names else names.any { it.contains("pinterest_sess") }
+    val label = if (platform == "facebook") "Facebook" else "Pinterest"
+    val raw = scraperHttp("$base/api/session/$platform/check", mapOf("Accept" to "application/json", "x-orbitpress-key" to scraper.key), null, timeoutSeconds = 150, method = "GET")
+    val server = JSONObject(raw)
+    val serverLoggedIn = server.optBoolean("loggedIn")
+    val serverCookies = server.optJSONArray("cookieNames")?.let { array -> (0 until array.length()).joinToString(", ") { array.optString(it) } }.orEmpty()
+    val profileExists = server.optBoolean("profileExists")
+    val persistent = server.optBoolean("persistent", true)
+    val phoneLine = "This phone: ${if (phoneLoggedIn) "$label login cookies present (${names.size} cookies) — they are forwarded with every VPS scan." else "no $label login cookies (${names.size} cookies). Open the Page with 'Visible scan' and log in there first."}"
+    val serverLine = "VPS browser: ${if (serverLoggedIn) "logged in to $label${if (serverCookies.isNotBlank()) " ($serverCookies)" else ""}." else "NOT logged in to $label${if (!persistent) " (persistent sessions disabled on the server)" else if (!profileExists) " (no saved profile yet)" else ""}." + " ${if (phoneLoggedIn) "Run one VPS scan now: your phone session is forwarded and stored on the VPS." else "Log in via 'Visible scan', then run a VPS scan."}"}"
+    val finalUrl = server.optString("finalUrl")
+    val technical = listOfNotNull(
+      "phoneCookies=${names.size}",
+      "phoneLoggedIn=$phoneLoggedIn",
+      "serverLoggedIn=$serverLoggedIn",
+      "profileExists=$profileExists",
+      finalUrl.takeIf { it.isNotBlank() }?.let { "finalUrl=${it.take(120)}" },
+      server.optString("title").takeIf { it.isNotBlank() }?.let { "title=${it.take(80)}" },
+    ).joinToString(" · ")
+    return JSONObject().put("ok", true).put("platform", platform).put("phoneLoggedIn", phoneLoggedIn).put("serverLoggedIn", serverLoggedIn).put("ready", phoneLoggedIn || serverLoggedIn)
+      .put("message", "$phoneLine $serverLine").put("technical", technical)
   }
   /** Lets the Settings screen check the scraper before a scan: DNS-independent GET on the base URL. */
   private fun scraperPing(request: JSONObject): JSONObject {

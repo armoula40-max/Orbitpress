@@ -431,7 +431,7 @@
     <!-- Facebook Analyzer -->
     <section class="screen" id="screen-facebook">
       <div class="analyzer-hero"><p class="eyebrow" style="color:#FDA4AF">Facebook Analyzer</p><h1>Find the posts that spark action.</h1><p>Scan a public Page, rank visible posts, and send the strongest report to AI — modern, fast, efficient.</p><div class="platform-pills"><span class="platform-pill">Facebook only</span><span class="platform-pill">Public Page</span><span class="platform-pill">AI insights</span></div></div>
-      <section class="card"><div class="section-head"><div><h2>Scan a Facebook Page</h2><p>Use a public Page URL. Graph API is faster and more reliable.</p></div><span class="tag">Facebook only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="facebookSourceUrl">Facebook Page URL</label><input id="facebookSourceUrl" type="url" placeholder="https://www.facebook.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button id="scanFacebook" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="facebookApiScan" class="button secondary" type="button" style="flex:1">Graph API</button><button id="facebookVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button></div><p class="helper">Visible scan is a fallback. Graph API scan uses the saved Facebook access token and never opens the Facebook page in a loop. VPS scan forwards the Facebook session cookies stored in this app: open the Page once with <b>Visible scan</b> and log in there, otherwise Facebook shows the VPS a login wall and 0 posts come back.</p></div></section>
+      <section class="card"><div class="section-head"><div><h2>Scan a Facebook Page</h2><p>Use a public Page URL. Graph API is faster and more reliable.</p></div><span class="tag">Facebook only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="facebookSourceUrl">Facebook Page URL</label><input id="facebookSourceUrl" type="url" placeholder="https://www.facebook.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button id="scanFacebook" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="facebookApiScan" class="button secondary" type="button" style="flex:1">Graph API</button><button id="facebookVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button><button id="facebookSessionCheck" class="button secondary" type="button" style="flex:1">Check login</button></div><p class="helper">Visible scan is a fallback. Graph API scan uses the saved Facebook access token and never opens the Facebook page in a loop. VPS scan forwards the Facebook session cookies stored in this app: open the Page once with <b>Visible scan</b> and log in there, otherwise Facebook shows the VPS a login wall and 0 posts come back. <b>Check login</b> tells you in one tap whether this phone holds a Facebook session and whether the VPS browser is logged in.</p></div></section>
       <section class="card"><div class="section-head"><div><h2>Top Facebook posts</h2><p>Metrics remain unavailable when the page does not expose them.</p></div><button id="analyzeFacebook" class="small-button" type="button" disabled>Analyze with AI</button></div><div id="facebookScanStatus"></div><div id="facebookResults" class="pin-results"><div class="empty">Add a Page URL and scan to see visible posts.</div></div></section>
       <section class="card"><div class="section-head"><div><h2>AI post intelligence</h2><p>Understand hooks, tone, topics, and reusable content angles.</p></div><span class="tag">AI report</span></div><div id="facebookAiReport" class="ai-panel"><h3>No report yet</h3><p>Scan the Page, then analyze the strongest visible posts.</p></div></section>
     </section>
@@ -448,7 +448,7 @@
     <section class="screen" id="screen-pinterest">
       <div class="analyzer-hero"><p class="eyebrow" style="color:#FDA4AF">Pinterest Analyzer</p><h1>Find the Pins that move.</h1><p>Scan a Pinterest source, rank visible Pins by engagement, then extract winning keywords with AI.</p><div class="platform-pills"><span class="platform-pill">Visible data only</span><span class="platform-pill">Local scan</span><span class="platform-pill">AI keyword insights</span></div></div>
       <div class="analyzer-grid"><div class="analyzer-stat"><b id="pinterestPinCount">0</b><span>Pins collected</span></div><div class="analyzer-stat"><b id="pinterestKeywordCount">0</b><span>Keywords extracted</span></div></div>
-      <section class="card"><div class="section-head"><div><h2>Scan a Pinterest source</h2><p>Paste a profile, board, or Pin URL. Scanner reads visible content only.</p></div><span class="tag">Pinterest only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="pinterestSourceUrl">Pinterest URL</label><input id="pinterestSourceUrl" type="url" placeholder="https://www.pinterest.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="scanPinterest" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="pinterestApiScan" class="button secondary" type="button" style="flex:1">API scan</button><button id="pinterestVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button></div><div class="row three"><div><label for="pinterestMaxPins">Max Pins</label><select id="pinterestMaxPins"><option value="10">10 Pins</option><option value="20" selected>20 Pins</option><option value="40">40 Pins</option></select></div><div><label for="pinterestScrolls">Scrolls</label><select id="pinterestScrolls"><option value="3">3</option><option value="6" selected>6</option><option value="10">10</option></select></div><div><label for="pinterestWindow">Window</label><select id="pinterestWindow"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></div></div><p class="helper">API scan uses saved Pinterest OAuth token. Visible scan remains as fallback.</p></div></section>
+      <section class="card"><div class="section-head"><div><h2>Scan a Pinterest source</h2><p>Paste a profile, board, or Pin URL. Scanner reads visible content only.</p></div><span class="tag">Pinterest only</span></div><div class="pinterest-form"><div class="pinterest-url-row"><div><label for="pinterestSourceUrl">Pinterest URL</label><input id="pinterestSourceUrl" type="url" placeholder="https://www.pinterest.com/..." autocomplete="off"></div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="scanPinterest" class="button scan-button" type="button" style="flex:1">Visible scan</button><button id="pinterestApiScan" class="button secondary" type="button" style="flex:1">API scan</button><button id="pinterestVpsScan" class="button secondary" type="button" style="flex:1">VPS scan</button><button id="pinterestSessionCheck" class="button secondary" type="button" style="flex:1">Check login</button></div><div class="row three"><div><label for="pinterestMaxPins">Max Pins</label><select id="pinterestMaxPins"><option value="10">10 Pins</option><option value="20" selected>20 Pins</option><option value="40">40 Pins</option></select></div><div><label for="pinterestScrolls">Scrolls</label><select id="pinterestScrolls"><option value="3">3</option><option value="6" selected>6</option><option value="10">10</option></select></div><div><label for="pinterestWindow">Window</label><select id="pinterestWindow"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></div></div><p class="helper">API scan uses saved Pinterest OAuth token. Visible scan remains as fallback. VPS scan forwards the Pinterest cookies stored in this app; <b>Check login</b> shows whether this phone and the VPS browser are logged in.</p></div></section>
       <section class="card"><div class="section-head"><div><h2>Top Pins</h2><p>Deterministic ranking runs on phone before any AI request.</p></div><button id="analyzePinterest" class="small-button" type="button" disabled>Analyze with AI</button></div><div id="pinterestScanStatus"></div><div id="pinterestResults" class="pin-results"><div class="empty">Add a Pinterest URL and scan to see results.</div></div></section>
       <section class="card"><div class="section-head"><div><h2>Keyword intelligence</h2><p>AI separates extracted phrases from new suggestions.</p></div><span class="tag">AI report</span></div><div id="pinterestAiReport" class="ai-panel"><h3>No report yet</h3><p>Select a completed scan, then analyze strongest Pins.</p></div></section>
     </section>
@@ -1188,7 +1188,7 @@
       const st=socialState[platform],id=platform;
       const resultsEl=$(id+'Results'), statusEl=$(id+'ScanStatus'), btnEl=$(id==='facebook'?'analyzeFacebook':'analyzeReddit');
       if(resultsEl) resultsEl.innerHTML=st.posts.length?st.posts.map((p,i)=>`<article class="pin-result"><div class="pin-result-top"><div class="pin-result-title">${escapeHtml(p.title||p.text||`Untitled post ${i+1}`)}</div><span class="pin-score">${p.viralScore==null?'—':Number(p.viralScore).toFixed(1)}</span></div><div class="pin-meta"><span>${escapeHtml(p.publishedAt||'Date unavailable')}</span><span>${p.comments==null?'Comments unavailable':`${p.comments.toLocaleString()} comments`}</span><span>${p.reactions==null?'Reactions unavailable':`${p.reactions.toLocaleString()} reactions`}</span></div>${p.url?`<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">Open post</a>`:''}</article>`).join(''):'<div class="empty">No visible posts collected yet.</div>';
-      if(statusEl) statusEl.innerHTML=st.status?`<div class="scan-progress"><span>${escapeHtml(st.status)}</span></div>`:'';
+      if(statusEl) statusEl.innerHTML=st.status?`<div class="scan-progress"><span>${escapeHtml(st.status)}</span></div>${st.technical?`<p class="helper" style="margin-top:6px;word-break:break-all">${escapeHtml(st.technical)}</p>`:''}`:'';
       if(btnEl) btnEl.disabled=!st.posts.length||st.scanning;
     }
     function openSocialScan(platform){
@@ -1305,12 +1305,14 @@
         st.posts=accepted.map(x=>platform==='facebook'?{kind:'facebook_post',isComment:false,author:x.author||'',text:x.text||x.message||'',url:x.url||x.postUrl||'',likes:x.likes??x.reactions,comments:x.comments,shares:x.shares}:x);
         const diag=r.orbitpressDiagnostics||{};
         if(!st.posts.length){
-          const why=explainEmptyScraperResult(platform,r,rows.length,diag);
+          const why=rows.length?explainEmptyScraperResult(platform,r,rows.length,diag):(diag.emptyReason||explainEmptyScraperResult(platform,r,0,diag));
           st.status=`VPS API collected 0 ${platform==='facebook'?'original posts':'pins'}. ${why}`;
-          addLog('scan_empty',`VPS ${platform} scan returned nothing`,{errorDetails:why.slice(0,400)});
+          st.technical=diag.technical||'';
+          addLog('scan_empty',`VPS ${platform} scan returned nothing${diag.emptyCode?` (${diag.emptyCode})`:''}`,{errorDetails:`${why} ${diag.technical||''}`.trim().slice(0,600)});
           if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);
           notice(why,'bad');
         }else{
+          st.technical='';
           st.status=`VPS API collected ${st.posts.length} ${platform==='facebook'?'original posts':'pins'}${diag.sessionCookiePresent===false?' (no login session was sent — engagement numbers may be missing)':''}.`;
           if(platform==='pinterest') renderPinterestResults();else renderSocialResults(platform);notice(`VPS ${platform} scan completed.`,'good');
         }
@@ -1320,8 +1322,13 @@
 
     function explainEmptyScraperResult(platform,r,rawCount,diag){
       const label=platform==='facebook'?'Facebook':'Pinterest';
-      const msg=String(diag.serverMessage||r.error||r.message||r.warning||r.reason||'').trim();
+      const rawMsg=String(diag.serverMessage||r.error||r.message||r.warning||r.reason||'').trim();
+      const msg=/no accessible public article elements/i.test(rawMsg)?'':rawMsg;
       const finalUrl=String(diag.finalUrl||r.finalUrl||'').toLowerCase();
+      const title=String(r.title||'').toLowerCase();
+      if(rawCount===0&&r.outcome&&r.outcome!=='ok'&&msg) return msg; // scraper API 1.2+ explains the empty page itself
+      if(Number(r.loginFormCount)>0||/^log ?in|checkpoint/.test(title)) return `${label} showed a login wall to the VPS browser. Open the Page once with "Visible scan", log in inside that window, then run the VPS scan again so your session cookies are forwarded.`;
+      if(diag.serverSession===false&&diag.sessionCookiePresent!==false) return `Your ${label} session cookies were sent (${diag.cookiesSent||0}) but the VPS browser ended up logged out — ${label} rejected or expired them. Log out and back in via "Visible scan" and retry.`;
       const loginWall=r.loginRequired===true||r.blocked===true||r.checkpoint===true||/\/login|checkpoint|login\.php|\/recover/.test(finalUrl)||/log ?in|sign in|checkpoint|not logged|session|cookie|blocked|rate limit|captcha|temporarily/i.test(msg);
       if(rawCount>0) return `The VPS returned ${rawCount} item(s) but none was an original ${label} post link (comments, reel previews or off-site links were rejected). Use the Page's main URL, e.g. https://www.facebook.com/<page>/.`;
       if(loginWall) return `${label} showed a login wall to the VPS${msg?` (${msg})`:''}. Open the source once with "Visible scan", log in inside that window, then run the VPS scan again so your session cookies are forwarded.`;
@@ -1342,6 +1349,23 @@
         notice('VPS scraper is reachable.','good');
       }catch(e){if(out) out.textContent=`✗ ${e.message||'Scraper unreachable.'}`;notice(e.message||'Scraper unreachable.','bad')}
       finally{if(btn) btn.disabled=false}
+    }
+
+    async function checkScraperSession(platform){
+      const btn=$(platform==='facebook'?'facebookSessionCheck':'pinterestSessionCheck');
+      const statusEl=$(platform+'ScanStatus');
+      if(btn) btn.disabled=true;
+      if(statusEl) statusEl.innerHTML=`<div class="scan-progress"><span class="scan-dot"></span><span>Checking ${platform} login on this phone and on the VPS…</span></div>`;
+      try{
+        const r=await nativeCall('scraperSession',{platform,siteId:activeSiteId()},{timeoutMs:170000});
+        if(statusEl) statusEl.innerHTML=`<div class="scan-progress"><span>${r.ready?'✓':'✗'} ${escapeHtml(r.message||'')}</span></div>${r.technical?`<p class="helper" style="margin-top:6px;word-break:break-all">${escapeHtml(r.technical)}</p>`:''}`;
+        addLog('scan_session',`${platform} login check: phone ${r.phoneLoggedIn?'yes':'no'}, VPS ${r.serverLoggedIn?'yes':'no'}`,{errorDetails:r.ready?'':(r.message||'')});
+        notice(r.ready?`${platform} session available — VPS scan can proceed.`:`No ${platform} login yet. Use Visible scan to log in first.`,r.ready?'good':'bad');
+      }catch(e){
+        const msg=e.message||'Session check failed.';
+        if(statusEl) statusEl.innerHTML=`<div class="scan-progress"><span>✗ ${escapeHtml(msg)}</span></div>`;
+        notice(msg,'bad');
+      }finally{if(btn) btn.disabled=false}
     }
 
     function saveSettingsSection(card){
@@ -1398,12 +1422,14 @@
       const sf=$('scanFacebook');if(sf) sf.onclick=()=>openSocialScan('facebook');
       const fas=$('facebookApiScan');if(fas) fas.onclick=facebookGraphApiScan;
       const fvs=$('facebookVpsScan');if(fvs) fvs.onclick=()=>externalSocialScan('facebook');
+      const fsc=$('facebookSessionCheck');if(fsc) fsc.onclick=()=>checkScraperSession('facebook');
       const af=$('analyzeFacebook');if(af) af.onclick=()=>analyzeSocial('facebook');
       const sr=$('scanReddit');if(sr) sr.onclick=()=>openSocialScan('reddit');
       const ar=$('analyzeReddit');if(ar) ar.onclick=()=>analyzeSocial('reddit');
       const spBtn=$('scanPinterest');if(spBtn) spBtn.onclick=openPinterestScan;
       const pas=$('pinterestApiScan');if(pas) pas.onclick=pinterestApiScan;
       const pvs=$('pinterestVpsScan');if(pvs) pvs.onclick=()=>externalSocialScan('pinterest');
+      const psc=$('pinterestSessionCheck');if(psc) psc.onclick=()=>checkScraperSession('pinterest');
       const ap=$('analyzePinterest');if(ap) ap.onclick=analyzePinterest;
 
       const bd=$('backDrafts');if(bd) bd.onclick=()=>showScreen('drafts');

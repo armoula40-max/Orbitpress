@@ -55,8 +55,8 @@ android {
     applicationId = "com.askinz.publisher"
     minSdk = 26
     targetSdk = 35
-    versionCode = 13
-    versionName = "4.1.4"
+    versionCode = 14
+    versionName = "4.1.5"
     vectorDrawables { useSupportLibrary = true }
 
     buildConfigField("String", "SCRAPER_DEFAULT_URL", javaString(scraperUrl))
