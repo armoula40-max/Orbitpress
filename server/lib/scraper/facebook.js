@@ -289,6 +289,23 @@ const COLLECT_SCRIPT = `(() => {
   return { posts, pageName };
 })()`;
 
+// Cards hydrate lazily across scroll passes (text first, counters a moment
+// later). Merge later observations INTO the first one: fill nulls and keep
+// the freshest counters (reactions only grow while we scan).
+function mergeObserved(existing, incoming) {
+  for (const field of ['reactions', 'comments', 'shares', 'views']) {
+    const a = existing[field];
+    const b = incoming[field];
+    if ((a == null || Number.isNaN(a)) && b != null) existing[field] = b;
+    else if (a != null && b != null && Number(b) > Number(a)) existing[field] = Number(b);
+  }
+  if (!existing.publishedAt && incoming.publishedAt) existing.publishedAt = incoming.publishedAt;
+  if (!existing.image && incoming.image) existing.image = incoming.image;
+  if (!existing.url && incoming.url) existing.url = incoming.url;
+  if ((!existing.title || /^Facebook (post|media post)$/.test(existing.title)) && incoming.title) existing.title = incoming.title;
+  if ((!existing.text || existing.text.length < 40) && incoming.text && incoming.text.length > (existing.text || '').length) existing.text = incoming.text;
+}
+
 async function scanViaBrowser(sourceUrl, options) {
   const sessions = require('./sessions');
   const status = sessions.sessionStatus('facebook');
@@ -308,8 +325,24 @@ async function scanViaBrowser(sourceUrl, options) {
       const batch = await page.evaluate(COLLECT_SCRIPT);
       if (batch.pageName && !pageName) pageName = batch.pageName;
       (batch.posts || []).forEach((post) => {
-        const key = post.url || post.title;
-        if (!merged.has(key) && merged.size < options.maxPosts) merged.set(key, post);
+        if (!post) return;
+        const urlKey = post.url || null;
+        const titleKey = post.title ? String(post.title).slice(0, 90) : null;
+        let entry = urlKey && merged.has(urlKey) ? merged.get(urlKey) : null;
+        let entryKey = entry ? urlKey : null;
+        if (!entry && titleKey && merged.has(titleKey)) { entry = merged.get(titleKey); entryKey = titleKey; }
+        if (entry) {
+          mergeObserved(entry, post);
+          // a photo post may first be seen without a permalink, then with one —
+          // re-key instead of duplicating the row
+          if (urlKey && entryKey !== urlKey) {
+            merged.delete(entryKey);
+            entry.url = entry.url || urlKey;
+            merged.set(urlKey, entry);
+          }
+        } else if (merged.size < options.maxPosts) {
+          merged.set(urlKey || titleKey || `post-${merged.size}`, { ...post });
+        }
       });
       stagnantPasses = merged.size > lastSize ? 0 : stagnantPasses + 1;
       lastSize = merged.size;
@@ -374,7 +407,12 @@ async function scanFacebook({ url, maxPosts = 25, scrolls, windowDays = 7, useSe
     const merged = new Map(httpPosts.map((post) => [post.url || post.title, post]));
     result.posts
       .filter(keepPost)
-      .forEach((post) => { const key = post.url || post.title; if (!merged.has(key) && merged.size < limit) merged.set(key, post); });
+      .forEach((post) => {
+        const key = post.url || post.title;
+        const prev = merged.get(key);
+        if (!prev && merged.size < limit) merged.set(key, post);
+        else if (prev) mergeObserved(prev, post); // fill image / nulls; freshest counter wins
+      });
     const posts = [...merged.values()];
     if (posts.length) {
       return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName, result.coverage);
