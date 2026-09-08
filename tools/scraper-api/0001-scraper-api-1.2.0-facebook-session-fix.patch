@@ -1,0 +1,564 @@
+From 0ca3f0f0ec9ca20f0911132f54ca2e5e6f854243 Mon Sep 17 00:00:00 2001
+From: Arena Agent <agent@arena.ai>
+Date: Tue, 8 Sep 2026 01:14:50 +0000
+Subject: [PATCH] 1.2.0: fix empty Facebook results (headless fingerprint,
+ persisted app sessions, timeouts) + precise outcome diagnostics
+
+Root causes of 'Facebook returned no accessible public article elements':
+- The default Playwright headless shell identifies as HeadlessChrome; Facebook answers with a
+  login wall / empty shell. Launch the full Chromium in new headless mode (channel 'chromium',
+  BROWSER_CHANNEL, automatic fallback), plain Chrome UA matching the installed major version
+  (BROWSER_USER_AGENT override), fixed timezone/locale and navigator.webdriver hidden.
+- Cookies forwarded by the OrbitPress app were injected without 'expires' (never written to the
+  persistent profile) and never replaced a stale stored session. sanitizeForwardedCookies now
+  gives them a 30-day expiry, validates domains, and a fresh c_user+xs login clears the old one.
+- JOB_TIMEOUT_MS default 90 s -> 180 s; requests may pass timeoutSeconds (capped by
+  JOB_TIMEOUT_MAX_MS, 600 s) to match the app's 300 s read timeout.
+
+Diagnostics: describeFacebookOutcome classifies empty pages as login_wall / session_rejected /
+checkpoint / unavailable / unsupported_browser / no_posts with loginRequired and an actionable
+warning; responses add cookiesForwarded, sessionForwarded, sessionAccepted, browserChannel,
+userAgent, jobTimeoutMs; /health exposes version + browser config; session import visits the
+site so the profile is flushed and reports whether real login cookies were imported; Pinterest
+gets a specific empty-result warning. JSON body limit 256 kB. 4 new tests (11 total).
+---
+ .env.example           |  12 +++-
+ README.md              |  18 +++++-
+ README_UPDATE_AR.md    |  23 ++++++++
+ SESSION_LOGIN_AR.md    |   8 +++
+ package.json           |   2 +-
+ src/contracts.js       |  93 +++++++++++++++++++++++++++++++
+ src/server.js          | 121 +++++++++++++++++++++++++++++------------
+ test/contracts.test.js |  70 +++++++++++++++++++++++-
+ 8 files changed, 306 insertions(+), 41 deletions(-)
+
+diff --git a/.env.example b/.env.example
+index eb53957..33c8b8a 100644
+--- a/.env.example
++++ b/.env.example
+@@ -3,8 +3,16 @@ PORT=8080
+ ORBITPRESS_API_KEY=replace-with-a-long-random-secret
+ BROWSER_HEADLESS=true
+ MAX_CONCURRENT_JOBS=2
+-# مهلة كل مهمة سحب بالمللي ثانية (افتراضي 90 ثانية)
+-JOB_TIMEOUT_MS=90000
++# مهلة كل مهمة سحب بالمللي ثانية (افتراضي 180 ثانية). التطبيق يرسل timeoutSeconds مع كل طلب ويُحترم حتى JOB_TIMEOUT_MAX_MS
++JOB_TIMEOUT_MS=180000
++JOB_TIMEOUT_MAX_MS=600000
++# المتصفح: chromium = كروميوم الكامل بوضع headless الجديد (افتراضي وموصى به؛ الـ headless shell القديم يعرّف نفسه HeadlessChrome فيحصل على جدار تسجيل دخول من Facebook).
++# ضع none للعودة إلى السلوك القديم.
++BROWSER_CHANNEL=chromium
++# اختياري: تجاوز سلسلة User-Agent (افتراضياً Chrome بنفس إصدار Chromium المثبّت)
++# BROWSER_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
++# المنطقة الزمنية التي يراها الموقع من المتصفح
++BROWSER_TIMEZONE=Europe/Paris
+ # حد الطلبات لكل عنوان IP خلال نافذة زمنية
+ RATE_LIMIT_MAX=60
+ RATE_LIMIT_WINDOW_MS=60000
+diff --git a/README.md b/README.md
+index 510eef5..fa06c54 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # OrbitPress Scraper API
+ 
+-خدمة Node.js/Playwright منفصلة لتزويد تطبيق OrbitPress بنتائج من **صفحات ومشاركات Facebook العامة** و**Board/Profile/Pin العامة في Pinterest**. لا تسجل دخولاً ولا تتجاوز CAPTCHA أو الحماية، ولا تحفظ Cookies.
++خدمة Node.js/Playwright منفصلة لتزويد تطبيق OrbitPress بنتائج من **صفحات ومشاركات Facebook العامة** و**Board/Profile/Pin العامة في Pinterest**. لا تتجاوز CAPTCHA أو الحماية. تُستخدم cookies جلسة Facebook/Pinterest التي يرسلها تطبيق OrbitPress (بعد تسجيل دخول المستخدم بنفسه) وتُحفظ في ملف جلسة محلي على الخادم فقط (`./sessions`).
+ 
+ ## التشغيل عبر Docker
+ 
+@@ -16,6 +16,22 @@ curl http://127.0.0.1:8080/health
+ 
+ الاستخراج يتم مباشرة على VPS بواسطة Playwright، ولا يعتمد على Apify أو وسيط استخراج خارجي. إذا أعاد Facebook نتائج فارغة بسبب الحجب أو تغيّر HTML، تُحدّث محددات Playwright في `src/server.js`.
+ 
++### لماذا تعود `posts` فارغة؟ (الإصدار 1.2)
++
++كل استجابة سحب Facebook تحمل الآن الحقول `outcome` و`loginRequired` و`warning` التي تشرح النتيجة الفارغة بدقة بدلاً من التحذير العام القديم:
++
++| `outcome` | المعنى | ما العمل |
++| --- | --- | --- |
++| `ok` | وُجدت منشورات | — |
++| `login_wall` | Facebook عرض نموذج تسجيل الدخول ولم تكن هناك جلسة (`c_user` + `xs`) | سجّل الدخول مرة واحدة في تطبيق OrbitPress عبر **Visible scan**؛ التطبيق يرسل الـ cookies مع كل طلب وتُحفظ في ملف الجلسة على الخادم |
++| `session_rejected` | وصلت cookies الجلسة لكن Facebook أسقطها | أعد تسجيل الدخول في التطبيق، أو أنشئ جلسة على الخادم نفسه عبر المتصفح المرئي (`SESSION_LOGIN_AR.md`) |
++| `checkpoint` | Facebook حوّل الجلسة إلى نقطة تحقق أمنية | افتح Facebook في المتصفح المرئي على الخادم وأكّد الهوية |
++| `unavailable` | المحتوى غير متاح لهذا المتصفح (خاص/مقيّد/محذوف) | تحقق من الرابط وأنت مسجّل الدخول |
++| `unsupported_browser` | Facebook اعتبر المتصفح غير مدعوم | أبقِ `BROWSER_CHANNEL=chromium` أو اضبط `BROWSER_USER_AGENT` |
++| `no_posts` | المتصفح مسجّل الدخول ولم يطابق أي عنصر | استخدم رابط الصفحة الرئيسي؛ وإلا فالمحددات تحتاج تحديثاً |
++
++تُرجع الاستجابة أيضاً `sessionForwarded` (هل وصلت cookies جلسة كاملة من التطبيق) و`sessionAccepted` (هل ظل المتصفح مسجّل الدخول بعد التصفح) و`browserChannel` و`userAgent` و`jobTimeoutMs`. تقبل طلبات السحب حقلاً اختيارياً `timeoutSeconds` (يُحترم حتى `JOB_TIMEOUT_MAX_MS`).
++
+ أرسل مفتاح المصادقة في `x-orbitpress-key`.
+ 
+ ```bash
+diff --git a/README_UPDATE_AR.md b/README_UPDATE_AR.md
+index 559946a..e04b6e3 100644
+--- a/README_UPDATE_AR.md
++++ b/README_UPDATE_AR.md
+@@ -1,5 +1,28 @@
+ # تقرير تحديث OrbitPress Scraper API
+ 
++## الإصدار 1.2.0 — لماذا كانت نتائج Facebook فارغة، وكيف أُصلحت
++
++المشكلة: تطبيق OrbitPress كان يستلم دائماً `Facebook returned no accessible public article elements` حتى مع إرسال cookies الجلسة. الأسباب الثلاثة في الخادم وإصلاحها:
++
++1. **المتصفح كان يعرّف نفسه `HeadlessChrome`**: Playwright يشغّل افتراضياً «headless shell» وFacebook يرد عليه بجدار تسجيل دخول أو صفحة فارغة بلا `[role="article"]`. الآن يُستخدم Chromium الكامل بوضع headless الجديد (`channel: 'chromium'`، قابل للضبط بـ `BROWSER_CHANNEL`) مع User-Agent كروم عادي بنفس الإصدار المثبّت، `navigator.webdriver` مخفي، منطقة زمنية ولغة ثابتتان. يوجد fallback تلقائي إلى المتصفح القديم إن لم يتوفر القناة.
++2. **cookies التطبيق لم تكن تُحفظ**: كانت تُحقن بلا `expires` فيعتبرها Chromium session cookies ولا يكتبها في ملف الجلسة، ولم تكن تمسح الجلسة القديمة. الآن `sanitizeForwardedCookies` يمنحها صلاحية 30 يوماً، وتُستبدل الجلسة المخزنة عند وصول جلسة جديدة (`c_user`+`xs`)، ويُعاد `cookiesForwarded`/`sessionForwarded`/`sessionAccepted`.
++3. **المهلة**: `JOB_TIMEOUT_MS` كان 90 ثانية بينما ينتظر التطبيق 300 ثانية؛ الافتراضي الآن 180 ثانية ويُحترم `timeoutSeconds` من الطلب حتى `JOB_TIMEOUT_MAX_MS` (600 ثانية).
++
++تشخيص واضح بدلاً من التحذير العام: `describeFacebookOutcome` يعيد `outcome` ∈ `login_wall | session_rejected | checkpoint | unavailable | unsupported_browser | no_posts` مع `loginRequired` وجملة `warning` قابلة للتنفيذ (يعرضها التطبيق كما هي). `/health` يعرض `version` و`browserChannel` و`jobTimeoutMs`. استيراد الجلسة (`POST /api/session/:platform/import`) يزور الموقع مرة ليُكتب ملف الجلسة فعلاً ويعيد `sessionCookies`. أربعة اختبارات جديدة (11 إجمالاً) تغطي الدوال الصافية الجديدة.
++
++النشر على الخادم:
++
++```bash
++cd ~/orbitpress-scraper-api && git pull
++grep -q '^BROWSER_CHANNEL=' .env || echo 'BROWSER_CHANNEL=chromium' >> .env
++sed -i 's/^JOB_TIMEOUT_MS=90000/JOB_TIMEOUT_MS=180000/' .env
++sudo docker compose up -d --build
++curl -s http://127.0.0.1:8080/health   # يجب أن يظهر "version":"1.2.0","browserChannel":"chromium"
++```
++
++---
++
++
+ هذا التحديث يرفع الخدمة إلى النسخة **1.1.0**: أقسى أماناً، أثبت في الأخطاء، وأعمق في جمع النتائج — مع الحفاظ الكامل على العقد (schema) المتوقعة من تطبيق OrbitPress (`x-orbitpress-key`, HTTPS, `posts[]`, `pins[]`).
+ 
+ ## 🔐 الأمان
+diff --git a/SESSION_LOGIN_AR.md b/SESSION_LOGIN_AR.md
+index 92b631c..c898c46 100644
+--- a/SESSION_LOGIN_AR.md
++++ b/SESSION_LOGIN_AR.md
+@@ -25,6 +25,14 @@ curl -s http://127.0.0.1:8080/api/session/pinterest/check \
+   -H "x-orbitpress-key: $ORBITPRESS_API_KEY"
+ ```
+ 
++## الطريقة الأسهل: تسجيل الدخول من تطبيق OrbitPress (الإصدار 1.2)
++
++1. في التطبيق افتح صفحة Facebook عبر **Visible scan** وسجّل الدخول داخل تلك النافذة.
++2. اضغط **Check login** في بطاقة Facebook: يعرض لك إن كان الهاتف يحمل جلسة (`c_user` + `xs`) وإن كان متصفح الخادم مسجّل الدخول (`GET /api/session/facebook/check`).
++3. شغّل **VPS scan**. التطبيق يرسل cookies الجلسة مع الطلب، والخادم يمنحها مدة صلاحية ويحفظها في `./sessions/facebook`، فتبقى صالحة للطلبات التالية حتى بدون cookies من الهاتف.
++
++إذا أعاد الخادم `outcome: "session_rejected"` أو `checkpoint`، فإن Facebook رفض الجلسة القادمة من عنوان IP مختلف؛ عندها أنشئ الجلسة على الخادم نفسه بالطريقة التالية.
++
+ ## تسجيل الدخول الأولي
+ 
+ يجب إنشاء جلسة المتصفح بطريقة يدوية على جهاز موثوق ثم نقل مجلد الجلسة إلى الخادم، أو تشغيل المتصفح المرئي على الخادم عبر VNC/NoVNC. لا تضع كلمات المرور أو Cookies في `.env` أو GitHub.
+diff --git a/package.json b/package.json
+index b600421..a646a7f 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "orbitpress-scraper-api",
+-  "version": "1.1.0",
++  "version": "1.2.0",
+   "private": true,
+   "type": "module",
+   "description": "Playwright-based Facebook/Pinterest scraping API for OrbitPress with pagination, rate limiting, and hardened sessions.",
+diff --git a/src/contracts.js b/src/contracts.js
+index c890582..dd6fe9b 100644
+--- a/src/contracts.js
++++ b/src/contracts.js
+@@ -123,3 +123,96 @@ export function normalizePinterestPin(raw = {}) {
+   };
+   return pin;
+ }
++
++/* ------------------------------------------------------------------ */
++/* جلسات وتشخيص — دوال صافية تُختبر في CI بدون متصفح                     */
++/* ------------------------------------------------------------------ */
++
++const SESSION_COOKIE_NAMES = {
++  facebook: cookies => cookies.has('c_user') && cookies.has('xs'),
++  pinterest: cookies => cookies.has('_pinterest_sess') || cookies.has('pinterest_sess')
++};
++
++/** هل تحتوي قائمة الـ cookies على جلسة دخول كاملة للمنصة؟ */
++export function hasSessionCookies(platform, cookies = []) {
++  const names = new Set((Array.isArray(cookies) ? cookies : []).filter(cookie => cookie && typeof cookie.name === 'string').map(cookie => cookie.name));
++  const rule = SESSION_COOKIE_NAMES[platform];
++  return rule ? rule(names) : false;
++}
++
++/**
++ * يحوّل الـ cookies القادمة من تطبيق OrbitPress ({name, value}) إلى صيغة Playwright.
++ * بدون `expires` يعتبرها Chromium session cookies ولا يحفظها في ملف الجلسة، لذلك نمنحها مدة صلاحية.
++ */
++export function sanitizeForwardedCookies(platform, cookies = [], { nowSeconds = Math.floor(Date.now() / 1000), ttlSeconds = 30 * 24 * 3600, max = 150 } = {}) {
++  const domain = platform === 'facebook' ? '.facebook.com' : '.pinterest.com';
++  const domainMatch = platform === 'facebook' ? /(^|\.)facebook\.com$/i : /(^|\.)pinterest\.com$/i;
++  return (Array.isArray(cookies) ? cookies : [])
++    .filter(cookie => cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string' && cookie.name.length > 0 && cookie.name.length <= 160 && cookie.value.length <= 10000)
++    .filter(cookie => !cookie.domain || domainMatch.test(String(cookie.domain).replace(/^\./, '')))
++    .slice(0, max)
++    .map(cookie => {
++      const requested = Number(cookie.expires);
++      const expires = Number.isFinite(requested) && requested > nowSeconds ? Math.floor(requested) : nowSeconds + ttlSeconds;
++      return {
++        name: cookie.name,
++        value: cookie.value,
++        domain,
++        path: typeof cookie.path === 'string' && cookie.path.startsWith('/') ? cookie.path : '/',
++        expires,
++        httpOnly: Boolean(cookie.httpOnly),
++        secure: true,
++        sameSite: ['Strict', 'Lax', 'None'].includes(cookie.sameSite) ? cookie.sameSite : 'Lax'
++      };
++    });
++}
++
++/** مهلة المهمة: يحترم `timeoutSeconds` الذي يرسله التطبيق ضمن حدّ أقصى يحدده الخادم. */
++export function resolveJobTimeout({ requestedSeconds, defaultMs = 180000, maxMs = 600000, minMs = 15000 } = {}) {
++  const requested = Number(requestedSeconds);
++  if (!Number.isFinite(requested) || requested <= 0) return Math.min(defaultMs, maxMs);
++  return Math.max(minMs, Math.min(Math.round(requested * 1000), maxMs));
++}
++
++const UNAVAILABLE_PATTERNS = /(content isn't available|page isn't available|content not found|page not found|isn't available right now|no longer available|may have been removed|هذا المحتوى غير متاح)/i;
++const UNSUPPORTED_PATTERNS = /(unsupported browser|update your browser|browser is no longer supported|browser isn't supported)/i;
++
++/**
++ * يصف نتيجة سحب Facebook فارغة بحالة واحدة واضحة بدلاً من التحذير العام.
++ * state ∈ ok | checkpoint | login_wall | session_rejected | unavailable | unsupported_browser | no_posts
++ */
++export function describeFacebookOutcome({
++  postCount = 0, loginFormCount = 0, finalUrl = '', title = '', bodyPreview = '', articleCount = 0, postLinkCount = 0,
++  cookiesSent = 0, sessionForwarded = false, sessionAccepted = false
++} = {}) {
++  if (postCount > 0) return { state: 'ok', loginRequired: false, warning: undefined };
++  const url = String(finalUrl || '').toLowerCase();
++  const pageTitle = String(title || '').toLowerCase();
++  const body = String(bodyPreview || '');
++  const checkpoint = /checkpoint/.test(url) || /checkpoint/.test(pageTitle);
++  const redirectedToLogin = /\/login|login\.php|\/recover/.test(url);
++  const loginWall = checkpoint || redirectedToLogin || Number(loginFormCount) > 0 || /^log ?in(to)? facebook/.test(pageTitle);
++  if (checkpoint) {
++    return { state: 'checkpoint', loginRequired: true, warning: 'Facebook put the VPS browser session into a security checkpoint. Open Facebook once in the OrbitPress Visible scan (or the VPS visual browser), confirm your identity, then retry.' };
++  }
++  if (loginWall && !sessionForwarded && !sessionAccepted) {
++    return { state: 'login_wall', loginRequired: true, warning: `Facebook showed a login wall and the VPS browser had no login session (${Number(cookiesSent) || 0} cookie(s) received, none of them c_user+xs). Log in once through the OrbitPress Visible scan so the session is forwarded, or import a session on the VPS.` };
++  }
++  if (loginWall && !sessionAccepted) {
++    return { state: 'session_rejected', loginRequired: true, warning: 'Facebook rejected the forwarded login session: the login form is still shown and the c_user/xs cookies were dropped. Log out and back in through the Visible scan, then retry.' };
++  }
++  if (loginWall) {
++    return { state: 'login_wall', loginRequired: true, warning: 'Facebook still shows a login form to the VPS browser although session cookies are present. Retry once; if it persists, refresh the login through the Visible scan.' };
++  }
++  if (UNAVAILABLE_PATTERNS.test(body) || UNAVAILABLE_PATTERNS.test(pageTitle)) {
++    return { state: 'unavailable', loginRequired: false, warning: 'Facebook says this content is not available to the VPS browser (private, region/age restricted or removed). Check the URL in a normal browser while logged in.' };
++  }
++  if (UNSUPPORTED_PATTERNS.test(body) || UNSUPPORTED_PATTERNS.test(pageTitle)) {
++    return { state: 'unsupported_browser', loginRequired: false, warning: 'Facebook flagged the VPS browser as unsupported. Keep BROWSER_CHANNEL=chromium (new headless mode) or set a realistic BROWSER_USER_AGENT in .env.' };
++  }
++  return {
++    state: 'no_posts',
++    loginRequired: false,
++    warning: `Facebook rendered ${Number(articleCount) || 0} article element(s) and ${Number(postLinkCount) || 0} post link(s) for the VPS browser (${sessionAccepted ? 'logged in' : 'logged out'}), but none matched a public post. Use the Page's main URL (https://www.facebook.com/<page>/); if it is correct, the Playwright selectors in src/server.js need an update.`
++  };
++}
+diff --git a/src/server.js b/src/server.js
+index e4100a1..103e92e 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -4,15 +4,28 @@ import { chromium } from 'playwright';
+ import crypto from 'node:crypto';
+ import fs from 'node:fs/promises';
+ import path from 'node:path';
+-import { buildPagination, clampLimit, normalizeFacebookPost, normalizePinterestPin, parseCount, resolveOffset } from './contracts.js';
++import { buildPagination, clampLimit, describeFacebookOutcome, hasSessionCookies, normalizeFacebookPost, normalizePinterestPin, parseCount, resolveJobTimeout, resolveOffset, sanitizeForwardedCookies } from './contracts.js';
+ 
+ const app = express();
+-app.use(express.json({ limit: '64kb' }));
++app.use(express.json({ limit: '256kb' }));
+ const port = Number(process.env.PORT || 8080);
+ const apiKey = process.env.ORBITPRESS_API_KEY || '';
+ const minApiKeyLength = Number(process.env.MIN_API_KEY_LENGTH || 32);
+ const maxConcurrent = Number(process.env.MAX_CONCURRENT_JOBS || 2);
+-const jobTimeoutMs = Number(process.env.JOB_TIMEOUT_MS || 90000);
++const jobTimeoutMs = Number(process.env.JOB_TIMEOUT_MS || 180000);
++const jobTimeoutMaxMs = Number(process.env.JOB_TIMEOUT_MAX_MS || 600000);
++// Chromium's legacy "headless shell" advertises itself as HeadlessChrome and Facebook answers it with a login wall /
++// empty shell. The `chromium` channel is the full browser in new headless mode; the UA hides the Headless marker.
++const browserChannel = process.env.BROWSER_CHANNEL === 'none' ? undefined : (process.env.BROWSER_CHANNEL || 'chromium');
++// Even the new headless mode announces "HeadlessChrome/…" in navigator.userAgent, so the UA is rewritten to the plain
++// Chrome string of the SAME major version (probed once from the installed browser) to stay consistent with client hints.
++let browserUserAgent = process.env.BROWSER_USER_AGENT || '';
++const browserArgs = ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check'];
++const contextOptions = userAgent => ({ viewport: { width: 1365, height: 900 }, locale: 'en-US', timezoneId: process.env.BROWSER_TIMEZONE || 'Europe/Paris', userAgent, extraHTTPHeaders: { 'accept-language': 'en-US,en;q=0.9' } });
++const stealthScript = `Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
++if (!window.chrome) window.chrome = { runtime: {} };
++Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
++Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });`;
+ const exposeErrorDetails = process.env.EXPOSE_ERROR_DETAILS === 'true';
+ const rateLimitMax = Number(process.env.RATE_LIMIT_MAX || 60);
+ const rateLimitWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 60000);
+@@ -84,18 +97,38 @@ async function withBrowser(fn, platform = 'shared') {
+     sessionLocks.set(platform, previous.then(() => current));
+     await previous;
+     const profileDir = path.join(sessionDir, platform);
+-    const context = await chromium.launchPersistentContext(profileDir, {
+-      headless: process.env.BROWSER_HEADLESS !== 'false',
+-      viewport: { width: 1365, height: 900 },
+-      locale: 'en-US',
+-      args: ['--disable-blink-features=AutomationControlled']
+-    });
++    const userAgent = await resolveUserAgent();
++    const context = await launchWithFallback(options => chromium.launchPersistentContext(profileDir, { ...options, ...contextOptions(userAgent), headless: process.env.BROWSER_HEADLESS !== 'false', args: browserArgs }));
++    await context.addInitScript(stealthScript).catch(() => {});
+     try { return await fn(context); } finally { await context.close(); release(); }
+   }
+-  const browser = await chromium.launch({ headless: process.env.BROWSER_HEADLESS !== 'false' });
+-  const context = await browser.newContext({ viewport: { width: 1365, height: 900 }, locale: 'en-US' });
++  const userAgent = await resolveUserAgent();
++  const browser = await launchWithFallback(options => chromium.launch({ ...options, headless: process.env.BROWSER_HEADLESS !== 'false', args: browserArgs }));
++  const context = await browser.newContext(contextOptions(userAgent));
++  await context.addInitScript(stealthScript).catch(() => {});
+   try { return await fn(context); } finally { await context.close(); await browser.close(); }
+ }
++/** Plain Chrome UA matching the installed Chromium's major version; probed once, overridable with BROWSER_USER_AGENT. */
++async function resolveUserAgent() {
++  if (browserUserAgent) return browserUserAgent;
++  let major = '131';
++  try {
++    const probe = await launchWithFallback(options => chromium.launch({ ...options, headless: true, args: browserArgs }));
++    try { major = String(probe.version() || '').split('.')[0] || major; } finally { await probe.close(); }
++  } catch (error) { console.warn('Could not probe the Chromium version for the user agent:', error.message || error); }
++  browserUserAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
++  console.log(`Scraper user agent: ${browserUserAgent}`);
++  return browserUserAgent;
++}
++/** Prefer the full Chromium (new headless mode); fall back to the default headless shell when the channel is missing. */
++async function launchWithFallback(launch) {
++  if (!browserChannel) return launch({});
++  try { return await launch({ channel: browserChannel }); }
++  catch (error) {
++    console.warn(`Browser channel "${browserChannel}" unavailable (${String(error.message || error).split('\n')[0]}); falling back to the default Chromium build.`);
++    return launch({});
++  }
++}
+ function sessionProfile(platform) { return path.join(sessionDir, platform); }
+ async function sessionStatus(platform) {
+   if (!sessionPlatforms.has(platform)) throw new Error('Unsupported platform session.');
+@@ -123,11 +156,12 @@ async function checkLoggedIn(platform) {
+   }, platform);
+ }
+ async function addIncomingCookies(context, cookies, platform) {
+-  if (!Array.isArray(cookies) || !cookies.length) return;
+-  const domain = platform === 'facebook' ? '.facebook.com' : '.pinterest.com';
+-  const safe = cookies.filter(cookie => cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string')
+-    .map(cookie => ({ name: cookie.name, value: cookie.value, domain, path: '/', secure: true, sameSite: 'Lax' }));
++  if (!Array.isArray(cookies) || !cookies.length) return { forwarded: 0, sessionForwarded: false };
++  const safe = sanitizeForwardedCookies(platform, cookies);
++  // A fresh login from the app must win over a stale session stored in the persistent profile.
++  if (hasSessionCookies(platform, safe)) await context.clearCookies().catch(() => {});
+   if (safe.length) await context.addCookies(safe);
++  return { forwarded: safe.length, sessionForwarded: hasSessionCookies(platform, safe) };
+ }
+ 
+ function isFacebookPostUrl(value) {
+@@ -186,9 +220,8 @@ async function dismissFacebookLogin(page) {
+ async function facebook(url, maxPosts = 20, cookies = [], { offset = 0 } = {}) {
+   const target = offset + maxPosts;
+   return withBrowser(async browser => {
+-    await addIncomingCookies(browser, cookies, 'facebook');
+-    const page = await browser.newPage({ viewport: { width: 1365, height: 900 }, locale: 'en-US' });
+-    await page.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9' });
++    const forwarding = await addIncomingCookies(browser, cookies, 'facebook');
++    const page = await browser.newPage();
+     const networkSamples = [];
+     page.on('response', response => {
+       const responseUrl = response.url();
+@@ -279,7 +312,12 @@ async function facebook(url, maxPosts = 20, cookies = [], { offset = 0 } = {}) {
+     const articleSamples = await page.locator('[role="article"]').evaluateAll(els => els.slice(0, 5).map(el => ({ text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300), hrefs: Array.from(el.querySelectorAll('a[href]')).map(a => a.href).filter(Boolean).slice(0, 20) }))).catch(() => []);
+     const globalPostLinks = await page.locator('a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/permalink.php"], a[href*="/story.php"], a[href*="/photo.php"]').evaluateAll(els => els.map(a => a.href).filter(Boolean).slice(0, 30)).catch(() => []);
+     const collected = posts.size;
+-    return { source: url, targetUrl, postsTabClicked, posts: [...posts.values()].slice(offset, offset + maxPosts), pagination: buildPagination({ offset, limit: maxPosts, collected, exhausted }), sessionCookieCount: cookies.length, persistentCookieNames: contextCookies.map(cookie => cookie.name).filter(name => /c_user|xs|checkpoint|fr/i.test(name)), articleCount, loginFormCount, bodyPreview, articleSamples, globalPostLinks, networkSamples, mobileFallbackUsed, finalUrl: page.url(), title: await page.title(), extractionRule: mobileFallbackUsed ? 'posts-tab-with-metrics-mobile-fallback' : 'posts-tab-with-metrics-and-dialog-dismissal' };
++    const persistentCookieNames = contextCookies.map(cookie => cookie.name).filter(name => /c_user|xs|checkpoint|fr/i.test(name));
++    const sessionAccepted = persistentCookieNames.includes('c_user') && persistentCookieNames.includes('xs');
++    const finalUrl = page.url();
++    const title = await page.title().catch(() => '');
++    const outcome = describeFacebookOutcome({ postCount: collected, loginFormCount, finalUrl, title, bodyPreview, articleCount, postLinkCount: globalPostLinks.length, cookiesSent: cookies.length, sessionForwarded: forwarding.sessionForwarded, sessionAccepted });
++    return { source: url, targetUrl, postsTabClicked, posts: [...posts.values()].slice(offset, offset + maxPosts), pagination: buildPagination({ offset, limit: maxPosts, collected, exhausted }), sessionCookieCount: cookies.length, cookiesForwarded: forwarding.forwarded, sessionForwarded: forwarding.sessionForwarded, sessionAccepted, persistentCookieNames, articleCount, loginFormCount, bodyPreview, articleSamples, globalPostLinks, networkSamples, mobileFallbackUsed, finalUrl, title, browserChannel: browserChannel || 'headless-shell', userAgent: browserUserAgent, outcome: outcome.state, loginRequired: outcome.loginRequired, warning: outcome.warning, extractionRule: mobileFallbackUsed ? 'posts-tab-with-metrics-mobile-fallback' : 'posts-tab-with-metrics-and-dialog-dismissal' };
+   }, 'facebook');
+ }
+ 
+@@ -386,9 +424,8 @@ async function pinterest(url, maxItems = 50, cookies = [], { offset = 0 } = {})
+   const target = offset + maxItems;
+   const enrichLimit = clampLimit(process.env.PINTEREST_ENRICH_LIMIT, { min: 0, max: 10, fallback: 5 });
+   return withBrowser(async browser => {
+-    await addIncomingCookies(browser, cookies, 'pinterest');
+-    const page = await browser.newPage({ viewport: { width: 1365, height: 900 }, locale: 'en-US' });
+-    await page.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9' });
++    const forwarding = await addIncomingCookies(browser, cookies, 'pinterest');
++    const page = await browser.newPage();
+     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+     await page.waitForTimeout(5000);
+     const pins = new Map();
+@@ -450,11 +487,13 @@ async function pinterest(url, maxItems = 50, cookies = [], { offset = 0 } = {})
+       ordered.splice(0, ordered.length, ...deduped.values());
+     }
+     const collected = ordered.length;
+-    return { source: url, finalUrl: page.url(), title: await page.title(), sessionCookieCount: cookies.length, pins: ordered.slice(offset, offset + maxItems), pagination: buildPagination({ offset, limit: maxItems, collected, exhausted }) };
++    const pinterestCookies = await browser.cookies('https://www.pinterest.com/').catch(() => []);
++    const sessionAccepted = pinterestCookies.some(cookie => /pinterest_sess/i.test(cookie.name));
++    return { source: url, finalUrl: page.url(), title: await page.title().catch(() => ''), sessionCookieCount: cookies.length, cookiesForwarded: forwarding.forwarded, sessionForwarded: forwarding.sessionForwarded, sessionAccepted, pins: ordered.slice(offset, offset + maxItems), pagination: buildPagination({ offset, limit: maxItems, collected, exhausted }), warning: ordered.length ? undefined : `Pinterest rendered no pins for the VPS browser (${sessionAccepted ? 'logged in' : 'logged out'}). Check the Board/Profile URL; private boards need the Pinterest login forwarded from the app.` };
+   }, 'pinterest');
+ }
+ 
+-app.get('/health', rateLimit, (_req, res) => res.json({ ok: true, service: 'orbitpress-scraper-api', activeJobs, persistentSessions: usePersistentSessions }));
++app.get('/health', rateLimit, (_req, res) => res.json({ ok: true, service: 'orbitpress-scraper-api', version: '1.2.0', activeJobs, persistentSessions: usePersistentSessions, browserChannel: browserChannel || 'headless-shell', jobTimeoutMs, jobTimeoutMaxMs }));
+ app.get('/api/session/status', rateLimit, auth, async (_req, res) => {
+   try { res.json({ ok: true, sessions: { facebook: await sessionStatus('facebook'), pinterest: await sessionStatus('pinterest') } }); }
+   catch (e) { serverError(res, 500, 'Session status failed', e, 'Session status'); }
+@@ -471,38 +510,48 @@ app.post('/api/session/:platform/import', rateLimit, auth, async (req, res) => {
+   if (!secureSessionTransport(req)) return res.status(400).json({ error: 'Session transfer requires HTTPS. Do not send browser cookies over plain HTTP.' });
+   const cookies = Array.isArray(req.body?.cookies) ? req.body.cookies : [];
+   if (!cookies.length || cookies.length > 150) return res.status(400).json({ error: 'Provide a valid cookies array.' });
+-  const domainMatch = platform === 'facebook' ? /(^|\.)facebook\.com$/i : /(^|\.)pinterest\.com$/i;
+-  const safeCookies = cookies.filter(cookie => cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string' && cookie.name.length <= 160 && cookie.value.length <= 10000 && domainMatch.test(String(cookie.domain || `${platform}.com`)))
+-    .map(cookie => ({ name: cookie.name, value: cookie.value, domain: cookie.domain, path: typeof cookie.path === 'string' && cookie.path.startsWith('/') ? cookie.path : '/', expires: Number.isFinite(Number(cookie.expires)) ? Number(cookie.expires) : undefined, httpOnly: Boolean(cookie.httpOnly), secure: true, sameSite: ['Strict', 'Lax', 'None'].includes(cookie.sameSite) ? cookie.sameSite : 'Lax' }));
++  const safeCookies = sanitizeForwardedCookies(platform, cookies);
+   if (!safeCookies.length) return res.status(400).json({ error: 'No acceptable cookies were provided for this platform.' });
++  if (!usePersistentSessions) return res.status(400).json({ error: 'USE_PERSISTENT_SESSIONS=false on this server: imported sessions cannot be stored. Forward cookies with each scrape request instead.' });
++  if (!guardJob(res)) return;
+   try {
+-    await withBrowser(async context => { await context.clearCookies(); await context.addCookies(safeCookies); }, platform);
+-    res.json({ ok: true, platform, imported: safeCookies.length, message: 'Session imported securely. Run the session check endpoint now.' });
+-  } catch (e) { serverError(res, 502, 'Session import failed', e, 'Session import'); }
++    await withTimeout(withBrowser(async context => {
++      await context.clearCookies();
++      await context.addCookies(safeCookies);
++      // Visit the site once so Chromium flushes the cookie jar into the persistent profile before the context closes.
++      const page = await context.newPage();
++      await page.goto(platform === 'facebook' ? 'https://www.facebook.com/' : 'https://www.pinterest.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
++      await page.waitForTimeout(1500);
++    }, platform), jobTimeoutMs, 'Session import');
++    const sessionCookies = hasSessionCookies(platform, safeCookies);
++    res.json({ ok: true, platform, imported: safeCookies.length, sessionCookies, message: sessionCookies ? 'Session imported securely. Run the session check endpoint now.' : `Cookies imported, but no ${platform === 'facebook' ? 'c_user + xs' : '_pinterest_sess'} login cookie was among them: log in first, then import again.` });
++  } catch (e) { serverError(res, 502, 'Session import failed', e, 'Session import'); } finally { activeJobs--; }
+ });
+ 
+ app.post('/api/facebook/scrape', rateLimit, auth, async (req, res) => {
+-  const { url, maxPosts = 20, cookies = [], provider = 'playwright', onlyPostsNewerThan, onlyPostsOlderThan, sort = 'engagement', cursor, offset: rawOffset } = req.body || {};
++  const { url, maxPosts = 20, cookies = [], provider = 'playwright', onlyPostsNewerThan, onlyPostsOlderThan, sort = 'engagement', cursor, offset: rawOffset, timeoutSeconds } = req.body || {};
++  const timeoutMs = resolveJobTimeout({ requestedSeconds: timeoutSeconds, defaultMs: jobTimeoutMs, maxMs: jobTimeoutMaxMs });
+   if (!validHttpUrl(url) || !/facebook\.com$/i.test(new URL(url).hostname.replace(/^www\./, '')) && !/\.facebook\.com$/i.test(new URL(url).hostname)) return res.status(400).json({ error: 'Use an HTTPS Facebook Page or public Post URL.' });
+   if (!guardJob(res)) return;
+   try {
+     const limit = clampLimit(maxPosts, { min: 1, max: 100, fallback: 20 });
+     const { offset } = resolveOffset({ cursor, offset: rawOffset });
+     if (String(provider).toLowerCase() === 'apify') {
+-      return res.json({ ok: true, ...(await withTimeout(apifyFacebook(url, limit, { onlyPostsNewerThan, onlyPostsOlderThan, sort, offset }), jobTimeoutMs, 'Apify Facebook scrape')) });
++      return res.json({ ok: true, ...(await withTimeout(apifyFacebook(url, limit, { onlyPostsNewerThan, onlyPostsOlderThan, sort, offset }), timeoutMs, 'Apify Facebook scrape')) });
+     }
+-    const local = await withTimeout(facebook(url, limit, cookies, { offset }), jobTimeoutMs, 'Facebook scrape');
+-    return res.json({ ok: true, ...local, provider: 'playwright', warning: local.posts.length ? undefined : 'Facebook returned no accessible public article elements. The endpoint uses only your VPS Playwright browser and does not use an external scraper.' });
++    const local = await withTimeout(facebook(url, limit, cookies, { offset }), timeoutMs, 'Facebook scrape');
++    return res.json({ ok: true, ...local, provider: 'playwright', jobTimeoutMs: timeoutMs });
+   } catch (e) { serverError(res, 502, 'Facebook extraction failed', e, 'Facebook scrape'); } finally { activeJobs--; }
+ });
+ app.post('/api/pinterest/scrape', rateLimit, auth, async (req, res) => {
+-  const { url, maxItems = 50, cookies = [], cursor, offset: rawOffset } = req.body || {};
++  const { url, maxItems = 50, cookies = [], cursor, offset: rawOffset, timeoutSeconds } = req.body || {};
++  const timeoutMs = resolveJobTimeout({ requestedSeconds: timeoutSeconds, defaultMs: jobTimeoutMs, maxMs: jobTimeoutMaxMs });
+   if (!validHttpUrl(url) || !/pinterest\.com$/i.test(new URL(url).hostname.replace(/^www\./, '')) && !/\.pinterest\.com$/i.test(new URL(url).hostname)) return res.status(400).json({ error: 'Use an HTTPS Pinterest Board, Profile, or Pin URL.' });
+   if (!guardJob(res)) return;
+   try {
+     const limit = clampLimit(maxItems, { min: 1, max: 200, fallback: 50 });
+     const { offset } = resolveOffset({ cursor, offset: rawOffset });
+-    res.json({ ok: true, ...(await withTimeout(pinterest(url, limit, cookies, { offset }), jobTimeoutMs, 'Pinterest scrape')) });
++    res.json({ ok: true, ...(await withTimeout(pinterest(url, limit, cookies, { offset }), timeoutMs, 'Pinterest scrape')), jobTimeoutMs: timeoutMs });
+   } catch (e) { serverError(res, 502, 'Pinterest extraction failed', e, 'Pinterest scrape'); } finally { activeJobs--; }
+ });
+ app.listen(port, '0.0.0.0', () => console.log(`OrbitPress Scraper API listening on ${port}`));
+diff --git a/test/contracts.test.js b/test/contracts.test.js
+index 479c2bd..d3a6d35 100644
+--- a/test/contracts.test.js
++++ b/test/contracts.test.js
+@@ -5,11 +5,15 @@ import {
+   clampLimit,
+   computeViralScore,
+   decodeCursor,
++  describeFacebookOutcome,
+   encodeCursor,
++  hasSessionCookies,
+   normalizeFacebookPost,
+   normalizePinterestPin,
+   parseCount,
+-  resolveOffset
++  resolveJobTimeout,
++  resolveOffset,
++  sanitizeForwardedCookies
+ } from '../src/contracts.js';
+ 
+ test('parseCount يحوّل صيغ K/M/B والفواصل إلى أرقام', () => {
+@@ -75,3 +79,67 @@ test('normalizePinterestPin يضمن العقد ويحسب viralScore', () => {
+   assert.equal(computeViralScore({}), 0);
+   assert.equal(clampLimit(500, { min: 1, max: 100, fallback: 20 }), 100);
+ });
++
++test('hasSessionCookies يتعرف على جلسة Facebook وPinterest', () => {
++  assert.equal(hasSessionCookies('facebook', [{ name: 'c_user', value: '1' }, { name: 'xs', value: '2' }]), true);
++  assert.equal(hasSessionCookies('facebook', [{ name: 'c_user', value: '1' }]), false);
++  assert.equal(hasSessionCookies('facebook', [{ name: 'datr', value: 'x' }, { name: 'fr', value: 'y' }]), false);
++  assert.equal(hasSessionCookies('pinterest', [{ name: '_pinterest_sess', value: 'z' }]), true);
++  assert.equal(hasSessionCookies('unknown', [{ name: 'c_user', value: '1' }]), false);
++  assert.equal(hasSessionCookies('facebook', null), false);
++});
++
++test('sanitizeForwardedCookies يضيف expires ونطاق المنصة ويرفض الغريب', () => {
++  const now = 1_700_000_000;
++  const cookies = sanitizeForwardedCookies('facebook', [
++    { name: 'c_user', value: '123' },
++    { name: 'xs', value: 'abc', expires: now + 60 },
++    { name: 'stale', value: 'old', expires: now - 5 },
++    { name: 'evil', value: 'x', domain: 'attacker.com' },
++    { name: 'ok', value: 'y', domain: '.facebook.com', path: '/x', httpOnly: true, sameSite: 'None' },
++    { name: '', value: 'empty' },
++    { name: 'novalue' },
++    null
++  ], { nowSeconds: now, ttlSeconds: 100 });
++  assert.deepEqual(cookies.map(cookie => cookie.name), ['c_user', 'xs', 'stale', 'ok']);
++  assert.equal(cookies[0].expires, now + 100); // بدون expires → مهلة افتراضية حتى يحفظها Chromium في ملف الجلسة
++  assert.equal(cookies[1].expires, now + 60); // يحترم expires صالح
++  assert.equal(cookies[2].expires, now + 100); // expires منتهٍ → يُستبدل بدلاً من إسقاط الكوكي
++  assert.ok(cookies.every(cookie => cookie.domain === '.facebook.com' && cookie.secure === true));
++  assert.equal(cookies[3].path, '/x');
++  assert.equal(cookies[3].httpOnly, true);
++  assert.equal(cookies[3].sameSite, 'None');
++  assert.equal(cookies[0].sameSite, 'Lax');
++  assert.equal(sanitizeForwardedCookies('pinterest', [{ name: 'a', value: 'b' }])[0].domain, '.pinterest.com');
++  assert.equal(sanitizeForwardedCookies('facebook', new Array(200).fill({ name: 'n', value: 'v' })).length, 150);
++});
++
++test('resolveJobTimeout يحترم timeoutSeconds من التطبيق ضمن حدود الخادم', () => {
++  assert.equal(resolveJobTimeout({ requestedSeconds: undefined, defaultMs: 180000, maxMs: 600000 }), 180000);
++  assert.equal(resolveJobTimeout({ requestedSeconds: 300, defaultMs: 180000, maxMs: 600000 }), 300000);
++  assert.equal(resolveJobTimeout({ requestedSeconds: 5000, defaultMs: 180000, maxMs: 600000 }), 600000);
++  assert.equal(resolveJobTimeout({ requestedSeconds: 1, defaultMs: 180000, maxMs: 600000 }), 15000);
++  assert.equal(resolveJobTimeout({ requestedSeconds: 'abc', defaultMs: 90000, maxMs: 60000 }), 60000);
++});
++
++test('describeFacebookOutcome يشرح النتيجة الفارغة بدقة بدلاً من التحذير العام', () => {
++  assert.equal(describeFacebookOutcome({ postCount: 3 }).state, 'ok');
++  const wall = describeFacebookOutcome({ postCount: 0, loginFormCount: 2, finalUrl: 'https://www.facebook.com/page/posts/', title: 'Log into Facebook', cookiesSent: 0 });
++  assert.equal(wall.state, 'login_wall');
++  assert.equal(wall.loginRequired, true);
++  assert.match(wall.warning, /0 cookie\(s\) received/);
++  const rejected = describeFacebookOutcome({ postCount: 0, loginFormCount: 1, cookiesSent: 12, sessionForwarded: true, sessionAccepted: false });
++  assert.equal(rejected.state, 'session_rejected');
++  const checkpoint = describeFacebookOutcome({ postCount: 0, finalUrl: 'https://www.facebook.com/checkpoint/1501092823525282/', sessionForwarded: true, sessionAccepted: true });
++  assert.equal(checkpoint.state, 'checkpoint');
++  const unavailable = describeFacebookOutcome({ postCount: 0, bodyPreview: "This content isn't available right now", sessionAccepted: true });
++  assert.equal(unavailable.state, 'unavailable');
++  const unsupported = describeFacebookOutcome({ postCount: 0, bodyPreview: 'Update your browser to use Facebook', sessionAccepted: false });
++  assert.equal(unsupported.state, 'unsupported_browser');
++  const none = describeFacebookOutcome({ postCount: 0, articleCount: 4, postLinkCount: 0, sessionForwarded: true, sessionAccepted: true, finalUrl: 'https://www.facebook.com/page/posts/' });
++  assert.equal(none.state, 'no_posts');
++  assert.equal(none.loginRequired, false);
++  assert.match(none.warning, /4 article element\(s\) and 0 post link\(s\)/);
++  assert.match(none.warning, /logged in/);
++  assert.doesNotMatch(none.warning, /no accessible public article elements/);
++});
+-- 
+2.39.5
+
