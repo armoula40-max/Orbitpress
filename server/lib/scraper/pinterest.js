@@ -145,6 +145,12 @@ async function scanViaHttp(sourceUrl, options) {
     collectPinsFromJson(root, options.maxItems, merged);
     if (merged.size >= options.maxItems) break;
   }
+  if (!merged.size) {
+    const wall = /authwall|unauth|login|sign\s?up|captcha|Access Denied|robot/i.test(html) || html.length < 20000;
+    throw new Error(wall
+      ? 'Pinterest served a login/bot wall from this server IP (no pin data embedded) — connect your Pinterest account in Settings and retry'
+      : 'No pins found in the served page (empty feed or changed markup)');
+  }
   return { pins: [...merged.values()], html };
 }
 
@@ -180,6 +186,10 @@ async function scanViaBrowser(sourceUrl, options) {
   try {
     await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(3500);
+    if (!status.connected) {
+      const wall = await page.evaluate(`(() => { const t = (document.body && document.body.innerText || '').slice(0, 5000); return /log\\s?in|sign\\s?up|تسجيل الدخول|إنشاء حساب/i.test(t) && !document.querySelector('a[href*="/pin/"]'); })()`).catch(() => false);
+      if (wall) throw new Error('Pinterest shows a login wall to this server (datacenter IP) — connect your Pinterest account in Settings, then scan again');
+    }
     const scrolls = Math.min(10, Math.max(1, options.scrolls || 6));
     const merged = new Map();
     for (let pass = 0; pass < scrolls; pass += 1) {

@@ -289,6 +289,27 @@ const COLLECT_SCRIPT = `(() => {
   return { posts, pageName };
 })()`;
 
+function upsertMerged(merged, post, max) {
+  if (!post) return 'skip';
+  const urlKey = post.url || null;
+  const titleKey = post.title ? String(post.title).slice(0, 90) : null;
+  let entry = urlKey && merged.has(urlKey) ? merged.get(urlKey) : null;
+  let entryKey = entry ? urlKey : null;
+  if (!entry && titleKey && merged.has(titleKey)) { entry = merged.get(titleKey); entryKey = titleKey; }
+  if (entry) {
+    mergeObserved(entry, post);
+    if (urlKey && entryKey !== urlKey) {
+      merged.delete(entryKey);
+      entry.url = entry.url || urlKey;
+      merged.set(urlKey, entry);
+    }
+    return 'merged';
+  }
+  if (merged.size >= max) return 'full';
+  merged.set(urlKey || titleKey || `post-${merged.size}`, { ...post });
+  return 'new';
+}
+
 // Cards hydrate lazily across scroll passes (text first, counters a moment
 // later). Merge later observations INTO the first one: fill nulls and keep
 // the freshest counters (reactions only grow while we scan).
@@ -305,6 +326,25 @@ function mergeObserved(existing, incoming) {
   if ((!existing.title || /^Facebook (post|media post)$/.test(existing.title)) && incoming.title) existing.title = incoming.title;
   if ((!existing.text || existing.text.length < 40) && incoming.text && incoming.text.length > (existing.text || '').length) existing.text = incoming.text;
 }
+
+// Every photo thumbnail on a page links to its own permalink (fbid or
+// /photos/.../<id>); harvest them for the deep photo pass.
+const PHOTO_LINKS_SCRIPT = `(() => {
+  const seenSet = new Set();
+  const out = [];
+  document.querySelectorAll('a[href]').forEach((a) => {
+    const href = String(a.href || '');
+    let id = null;
+    const m1 = href.match(/[?&]fbid=(\\d{6,})/);
+    if (m1) id = m1[1];
+    if (!id) { const m2 = href.match(/\\/photos?\\/(?:[^/]+\\/)?(\\d{6,})\\/?(?:[?#]|$)/); if (m2) id = m2[1]; }
+    if (!id || seenSet.has(id)) return;
+    seenSet.add(id);
+    const img = a.querySelector('img[src]');
+    out.push({ id, url: href.split('#')[0], image: img ? (img.currentSrc || img.src) : null });
+  });
+  return out.slice(0, 40);
+})()`;
 
 async function scanViaBrowser(sourceUrl, options) {
   const sessions = require('./sessions');
@@ -329,26 +369,7 @@ async function scanViaBrowser(sourceUrl, options) {
       const batch = await page.evaluate(COLLECT_SCRIPT);
       rawFound += (batch.posts || []).length;
       if (batch.pageName && !pageName) pageName = batch.pageName;
-      (batch.posts || []).forEach((post) => {
-        if (!post) return;
-        const urlKey = post.url || null;
-        const titleKey = post.title ? String(post.title).slice(0, 90) : null;
-        let entry = urlKey && merged.has(urlKey) ? merged.get(urlKey) : null;
-        let entryKey = entry ? urlKey : null;
-        if (!entry && titleKey && merged.has(titleKey)) { entry = merged.get(titleKey); entryKey = titleKey; }
-        if (entry) {
-          mergeObserved(entry, post);
-          // a photo post may first be seen without a permalink, then with one —
-          // re-key instead of duplicating the row
-          if (urlKey && entryKey !== urlKey) {
-            merged.delete(entryKey);
-            entry.url = entry.url || urlKey;
-            merged.set(urlKey, entry);
-          }
-        } else if (merged.size < options.maxPosts) {
-          merged.set(urlKey || titleKey || `post-${merged.size}`, { ...post });
-        }
-      });
+      (batch.posts || []).forEach((post) => upsertMerged(merged, post, options.maxPosts));
       stagnantPasses = merged.size > lastSize ? 0 : stagnantPasses + 1;
       lastSize = merged.size;
       if (merged.size >= options.maxPosts) { stoppedBy = 'post-cap'; break; }
@@ -367,11 +388,41 @@ async function scanViaBrowser(sourceUrl, options) {
       await page.waitForTimeout(1400);
     }
     if (Date.now() >= deadline && stoppedBy === 'scroll-cap') stoppedBy = 'time-limit';
+    // Photo deep pass: page homes surface photos only as a thumbnail strip
+    // (no full cards), which made reels look like 'the only posts'. Harvest
+    // recent photo links and visit a handful as single-post pages where the
+    // same extractor reads their full counters/date/text.
+    let photoPosts = 0;
+    if (options.includePhotos !== false && Date.now() < deadline) {
+      const photoDeadline = Date.now() + 90000;
+      const photoCap = Math.min(12, Math.max(0, Number(options.photoCap != null ? options.photoCap : 8)));
+      let photoLinks = [];
+      try { photoLinks = await page.evaluate(PHOTO_LINKS_SCRIPT) || []; } catch { photoLinks = []; }
+      for (const link of photoLinks) {
+        if (photoPosts >= photoCap || Date.now() > photoDeadline) break;
+        const already = [...merged.keys()].some((k) => String(k).includes(link.id));
+        if (already) continue;
+        try {
+          await page.goto(link.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          await page.waitForTimeout(1800);
+          const batch = await page.evaluate(COLLECT_SCRIPT);
+          let picked = (batch.posts || []).filter((post) => String(post.url || '').includes(link.id));
+          if (!picked.length && batch.posts && batch.posts.length) {
+            // single-post page: take the richest card and force its URL key
+            picked = [batch.posts.slice().sort((a, b) => String(b.text || '').length - String(a.text || '').length)[0]];
+            if (picked[0]) picked[0] = { ...picked[0], url: link.url };
+          }
+          let added = 0;
+          picked.forEach((post) => { if (upsertMerged(merged, post, options.maxPosts) === 'new') added += 1; });
+          if (added) photoPosts += added;
+        } catch { /* individual photo page failed — keep scanning others */ }
+      }
+    }
     const dates = [...merged.values()].map((p) => p.publishedAt && Date.parse(p.publishedAt)).filter(Boolean);
     const coverage = dates.length
       ? { from: new Date(Math.min(...dates)).toISOString(), to: new Date(Math.max(...dates)).toISOString(), complete: !!(windowStartMs && Math.min(...dates) <= windowStartMs), windowDays: options.windowDays || null }
       : { from: null, to: null, complete: false, windowDays: options.windowDays || null };
-    return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage, browserDiag: { rawFound, unique: merged.size, passes: passesDone, stoppedBy } };
+    return { posts: [...merged.values()], sessionUsed: status.connected, pageName, coverage, browserDiag: { rawFound, unique: merged.size, passes: passesDone, stoppedBy, photos: photoPosts } };
   } finally {
     await page.close().catch(() => {});
   }
@@ -422,7 +473,7 @@ async function scanFacebook({ url, maxPosts = 25, scrolls, windowDays = 7, useSe
       });
     const posts = [...merged.values()];
     if (posts.length) {
-      const pipeline = { http: httpPosts.length, browserUnique: result.browserDiag ? result.browserDiag.unique : 0, browserRaw: result.browserDiag ? result.browserDiag.rawFound : 0, passes: result.browserDiag ? result.browserDiag.passes : 0, stoppedBy: result.browserDiag ? result.browserDiag.stoppedBy : null, final: Math.min(posts.length, limit) };
+      const pipeline = { http: httpPosts.length, browserUnique: result.browserDiag ? result.browserDiag.unique : 0, browserRaw: result.browserDiag ? result.browserDiag.rawFound : 0, passes: result.browserDiag ? result.browserDiag.passes : 0, stoppedBy: result.browserDiag ? result.browserDiag.stoppedBy : null, photos: result.browserDiag ? result.browserDiag.photos : 0, final: Math.min(posts.length, limit) };
       return finalize(posts.slice(0, limit), sourceUrl, (httpPosts.length ? 'server_rendered_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : ''), posts.length >= limit ? 'full' : 'partial', result.pageName, result.coverage, pipeline);
     }
   } catch (error) {

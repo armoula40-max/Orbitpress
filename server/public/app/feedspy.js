@@ -232,7 +232,7 @@
       var covText = cov && cov.from ? ' · التغطية: ' + cov.from.slice(0, 10) + ' ← ' + cov.to.slice(0, 10) + (cov.complete ? ' (مكتملة ✓)' : ' (حتى ما هو متاح)') : '';
       var pipe = spy[platform].pipeline;
       var REASON_AR = { 'post-cap': 'بلغ حد العدد', 'scroll-cap': 'بلغ حد التمريرات', 'window-covered': 'اكتملت النافذة', 'no-older-posts': 'لا منشورات أقدم بالصفحة', 'no-new-posts': 'توقف ظهور الجديد', 'time-limit': 'انتهت المهلة', 'browser-failed': 'فشل مسار المتصفح' };
-      var pipeText = pipe ? ' · تشخيص: HTTP ' + pipe.http + ' + متصفح ' + pipe.browserUnique + ' (' + pipe.passes + ' تمريرة' + (pipe.stoppedBy && REASON_AR[pipe.stoppedBy] ? '، توقف: ' + REASON_AR[pipe.stoppedBy] : '') + ')' : '';
+      var pipeText = pipe ? ' · تشخيص: HTTP ' + pipe.http + ' + متصفح ' + pipe.browserUnique + ' (' + pipe.passes + ' تمريرة' + (pipe.stoppedBy && REASON_AR[pipe.stoppedBy] ? '، توقف: ' + REASON_AR[pipe.stoppedBy] : '') + (pipe.photos ? '، صور عميقة ' + pipe.photos : '') + ')' : '';
       countNote.textContent = filtered.length + ' / ' + all.length + (stats.withMetricsCount < all.length ? ' · ' + (all.length - stats.withMetricsCount) + ' بدون مقاييس ظاهرة' : '') + covText + pipeText;
     }
   }
