@@ -140,13 +140,18 @@ async function scanViaHttp(sourceUrl, options) {
 
 const COLLECT_SCRIPT = `(() => {
   const clean = v => String(v || '').replace(/\\s+/g, ' ').trim().slice(0, 2200);
+  const SUFFIXES = { k: 1e3, 'ألف': 1e3, 'الالف': 1e3, 'الآف': 1e3, m: 1e6, 'مليون': 1e6, b: 1e9, 'مليار': 1e9 };
+  const normDigits = v => String(v || '').replace(/[\u0660-\u0669]/g, d => String('\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669'.indexOf(d))).replace(/\u066b/g, '.').replace(/\u066c/g, '');
   const toNumber = value => {
-    if (!value) return null;
-    const match = String(value).replace(/,/g, '').match(/(\\d+(?:\\.\\d+)?)\\s*([kKmM])?/);
-    if (!match) return null;
-    let n = parseFloat(match[1]);
-    if (match[2]) n *= match[2].toLowerCase() === 'k' ? 1000 : 1000000;
-    return Math.round(n);
+    const s = normDigits(value);
+    if (!s) return null;
+    const suffixed = s.match(/(\\d[\\d,.]*?)\\s*(ألف|الالف|الآف|مليون|مليار|[kmb])(?![a-zA-Z\u0600-\u06FF])/i);
+    if (suffixed) {
+      const base = parseFloat(suffixed[1].replace(/,(?=\\d{3}(?:\\D|$))/g, ''));
+      return Number.isNaN(base) ? null : Math.round(base * (SUFFIXES[suffixed[2].toLowerCase()] || 1));
+    }
+    const plain = s.replace(/[,\s]/g, '').match(/\\d+/);
+    return plain ? Math.round(parseFloat(plain[0], 10)) : null;
   };
   // relative timestamps ("3 h", "12 mins", "Yesterday", "2 days") -> ISO
   const relativeToIso = (label) => {
@@ -154,6 +159,16 @@ const COLLECT_SCRIPT = `(() => {
     if (!t) return null;
     if (/^just now/.test(t)) return new Date().toISOString();
     if (/^yesterday/.test(t)) return new Date(Date.now() - 864e5).toISOString();
+    if (/الآن|قبل قليل/.test(t) || /^(منذ\s*)?الآن/.test(t)) return new Date().toISOString();
+    if (/أمس|امس/.test(t)) return new Date(Date.now() - 864e5).toISOString();
+    if (/منذ|^قبل/.test(t)) {
+      const am = normDigits(t).match(/(\\d+)\\s*(ثانية|ثواني?|دقيقة|دقائق|ساعة|ساعات|يوم|أيام|ايام|أسبوع|اسبوع|أسابيع|اسابيع|شهر|شهور|أشهر)/);
+      if (am) {
+        const nA = parseInt(am[1], 10);
+        const msA = /ثان|ثوان/.test(am[2]) ? 1e3 : /دقيقة|دقائق/.test(am[2]) ? 6e4 : /ساعة|ساعات/.test(am[2]) ? 36e5 : /يوم|أيام|ايام/.test(am[2]) ? 864e5 : /أسبوع|اسبوع|أسابيع|اسابيع/.test(am[2]) ? 6048e5 : 2592e6;
+        return new Date(Date.now() - nA * msA).toISOString();
+      }
+    }
     const m = t.match(/^(\\d+)\\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\\b/);
     if (!m) return null;
     const n = parseInt(m[1], 10);
@@ -164,8 +179,12 @@ const COLLECT_SCRIPT = `(() => {
   const posts = [];
   const seen = new Set();
   document.querySelectorAll('[role="article"],div[data-pagelet*="FeedUnit"],div[aria-posinset]').forEach(node => {
+    // never treat nested cards (expanded comments are role=article too) as posts —
+    // they polluted titles and stole metrics from the parent post
+    if (node.parentElement && node.parentElement.closest('[role="article"],div[data-pagelet*="FeedUnit"],div[aria-posinset]')) return;
     const text = clean(node.innerText || node.textContent);
-    if (text.length < 25) return;
+    const hasMedia = !!node.querySelector('img[src], video, [data-video-id]');
+    if (text.length < 10 || (text.length < 25 && !hasMedia)) return;
     const anchors = Array.from(node.querySelectorAll('a[href]'));
     const permalink = anchors.find(a => /\\/(posts|permalink\\.php|videos|photos|photo|reel|share\\/p|share\\/v)\\b/.test(a.href) || /(story_fbid=|photo_id=|video_id=)/.test(a.href) || /story\\.php/.test(a.href));
     const heading = node.querySelector('h2,h3,h4,[role="heading"]');
@@ -179,25 +198,42 @@ const COLLECT_SCRIPT = `(() => {
       title = clean(lines.find(l => l && l !== authorName && !/^(just now|yesterday|\\d+\\s*(m|mins?|h|hrs?|hours?|d|days?|w|weeks?)\\b)/i.test(l)) || lines[1] || text);
     }
     const url = permalink ? permalink.href.split('?')[0].endsWith('/') ? permalink.href : permalink.href : null;
+    if (!title) title = url ? 'Facebook post' : 'Facebook media post';
     let publishedAt = null;
     const timeEl = node.querySelector('abbr[data-utime]');
     if (timeEl && timeEl.getAttribute('data-utime')) {
       publishedAt = new Date(Number(timeEl.getAttribute('data-utime')) * 1000).toISOString();
     } else {
-      const timeLink = anchors.find(a => /^(just now|yesterday|\\d+\\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)|[A-Z][a-z]+ \\d+)$/i.test((a.innerText || a.getAttribute('aria-label') || '').trim()));
+      const timeLink = anchors.find(a => /^(just now|yesterday|منذ|قبل|أمس|امس|الآن|\\d+\\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)|[A-Z][a-z]+ \\d+)/i.test((a.innerText || a.getAttribute('aria-label') || '').trim()));
       if (timeLink) publishedAt = relativeToIso((timeLink.innerText || timeLink.getAttribute('aria-label') || '').trim());
     }
     let reactions = null, comments = null, shares = null;
+    const RE_REACT = /(reaction|like|أعج|إعجاب|اعجاب|تفاعل)/i;
+    const RE_COMMENT = /(comment|تعليق)/i;
+    const RE_SHARE = /(share|مشارك)/i;
+    // 1) the stats row ("139 · 12 تعليقًا · 4 مشاركات") is the trustworthy source
+    const statsLines = lines.filter(l => (RE_COMMENT.test(l) || RE_SHARE.test(l)) && /[0-9٠-٩]/.test(l));
+    const statsLine = statsLines.slice(-2).join(' · ');
+    if (statsLine) {
+      statsLine.split(/[·|،‐-]/).map(s => s.trim()).filter(Boolean).forEach(seg => {
+        if (comments == null && RE_COMMENT.test(seg)) comments = toNumber(seg);
+        else if (shares == null && RE_SHARE.test(seg)) shares = toNumber(seg);
+        else if (reactions == null && !/مشاهد|view/i.test(seg)) reactions = toNumber(seg);
+      });
+    }
+    // 2) aria-labels (bilingual)
     Array.from(node.querySelectorAll('[aria-label]')).forEach(el => {
       const label = el.getAttribute('aria-label') || '';
-      if (reactions == null && /(reaction|like)/i.test(label) && /\\d/.test(label)) reactions = toNumber(label);
-      if (comments == null && /\\d.*comment/i.test(label)) comments = toNumber(label);
-      if (shares == null && /\\d.*share/i.test(label)) shares = toNumber(label);
+      if (!/[0-9\u0660-\u0669]/.test(label)) return;
+      if (reactions == null && RE_REACT.test(label) && !RE_COMMENT.test(label)) reactions = toNumber(label);
+      if (comments == null && RE_COMMENT.test(label)) comments = toNumber(label);
+      if (shares == null && RE_SHARE.test(label)) shares = toNumber(label);
     });
+    // 3) loose tail fallback (bilingual, order-invariant)
     const tail = lines.slice(-6).join(' ');
-    if (comments == null) comments = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+comments?/i) || [])[1]);
-    if (shares == null) shares = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+shares?/i) || [])[1]);
-    if (reactions == null) reactions = toNumber((tail.match(/([\\d.,]+[KMkm]?)\\s+(?:likes?|reactions?)/i) || [])[1]);
+    if (comments == null) comments = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:comments?|تعليقات?)/i) || [])[1]);
+    if (shares == null) shares = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:shares?|مشاركات?|مشاركة)/i) || [])[1]);
+    if (reactions == null) reactions = toNumber((tail.match(/([\\d.,٬٫]+\s*(?:ألف|الالف|الآف|مليون|[kKmM])?)\\s+(?:likes?|reactions?|إعجاب|اعجاب)/i) || [])[1]);
     const key = url || title.slice(0, 90);
     if (!key || seen.has(key)) return;
     seen.add(key);
@@ -208,6 +244,7 @@ const COLLECT_SCRIPT = `(() => {
       publishedAt,
       author: authorAnchor ? clean(authorAnchor.innerText) : null,
       reactions, comments, shares, saves: null,
+      image: (node.querySelector('img[src]') || {}).src || null,
       platform: 'facebook', kind: 'facebook_post', isComment: false,
     });
   });
@@ -276,7 +313,8 @@ const ORIGINAL_POST_RE = /(?:\/posts\/|\/permalink\.php|\/story\.php|\/photo\.ph
 // shows them too); keep them when the text is substantial.
 function keepPost(post) {
   if (post.url && ORIGINAL_POST_RE.test(post.url)) return true;
-  return !post.url && String(post.text || '').length >= 60;
+  // photo posts often carry no visible permalink and only a short caption
+  return !post.url && (String(post.text || '').length >= 50 || !!post.image);
 }
 
 async function scanFacebook({ url, maxPosts = 25, scrolls, windowDays = 7, useSession = true, baseUrl }) {
