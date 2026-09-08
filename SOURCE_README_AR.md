@@ -38,6 +38,42 @@ gradle :app:assembleRelease
 
 يستطيع التطبيق توليد صور Featured وPinterest عبر مزود الصور المحدد، وحفظها محلياً وإضافتها إلى المقال، كما يدعم إنشاء Pin عبر Pinterest API بعد إعداد OAuth وBoard ID. أضيف حد WorkManager وجدولة محلية مقاومة لإعادة تشغيل التطبيق؛ أما تنفيذ توليد أو نشر شبكي كامل من الخلفية فيحتاج استكمال ربط طابور Room وتجديد OAuth قبل تفعيله في الإنتاج. التحديث والمزامنة والتوليد ورفع الصور والنشر إجراءات يطلقها المستخدم صراحة. صورة Pinterest يجب أن تكون JPEG أو PNG أو WebP بنسبة عمودية exact 2:3، بينما يتحقق مسار WordPress من نوع البايت الحقيقي قبل الرفع.
 
+## قيم VPS Scraper الافتراضية أثناء البناء (`.env`)
+
+يمكن تضمين عنوان ومفتاح خادم Scraper داخل الـ APK وقت البناء بدل إدخالهما يدوياً في كل تثبيت. انسخ `.env.example` إلى `.env` في جذر المشروع (الملف مستثنى من Git) واملأ:
+
+```ini
+ORBITPRESS_SCRAPER_URL=https://23.95.186.208.sslip.io
+ORBITPRESS_SCRAPER_KEY=<المفتاح من .env على السيرفر>
+```
+
+يقرأ `app/build.gradle.kts` القيمتين (من `.env` ثم من خاصية Gradle `-P` ثم من متغيرات البيئة) ويضعهما في `BuildConfig.SCRAPER_DEFAULT_URL` و`BuildConfig.SCRAPER_DEFAULT_KEY`. القاعدة داخل التطبيق (`ScraperDefaultsContract`): ما يكتبه المستخدم في الإعدادات له الأولوية دائماً، وتُستخدم قيم البناء فقط عندما يكون الحقل فارغاً. يُرفض أي عنوان غير HTTPS عند البناء وعند التشغيل.
+
+**مهلة الفحص (timeout):** فحوصات Playwright على الـ VPS قد تستغرق أكثر من دقيقة، لذلك تنتظر التطبيق افتراضياً **300 ثانية** لرد الـ scraper (كانت 60 ثانية سابقاً). يمكن تغييرها من **Settings → VPS Scraper API → Scraper timeout** بين 30 و900 ثانية. تُرسل القيمة نفسها للسيرفر في حقل `timeoutSeconds` داخل الطلب، فإن كان لديك حد أقصى على الـ VPS (مثل `proxy_read_timeout` في nginx أو مهلة داخل خدمة Playwright) اجعله مساوياً أو أكبر.
+
+**خطأ `Unable to resolve host "…sslip.io"`:** بعض شبكات الهاتف (خاصة بيانات الجوال) ترفض حلّ نطاقات sslip.io/nip.io. العنوان من الشكل `x.x.x.x.sslip.io` يحمل عنوان IP داخله، لذلك يستخرجه التطبيق (`EmbeddedIpHostContract`) ويتصل بالـ IP مباشرة عبر `DirectTlsHttpClient` مع إبقاء SNI والتحقق من الشهادة وترويسة `Host` على اسم النطاق الأصلي — فلا حاجة لـ DNS ولا تنازل عن HTTPS. زر **Test scraper connection** في الإعدادات يجرّب `GET /health` بنفس المسار ويعرض سبب الفشل بدقة (DNS، اتصال، TLS، مفتاح مرفوض).
+
+**نتيجة `VPS API collected 0 original posts`:** الطلب وصل للسيرفر ورجع بنجاح لكن بلا منشورات. السبب الأغلب أن فيسبوك أظهر للـ VPS صفحة تسجيل دخول: التطبيق يرسل مع كل طلب **كوكيز جلسة فيسبوك المخزنة في التطبيق نفسه** (`c_user` و`xs`)، ولا توجد جلسة ما لم تسجّل الدخول مرة واحدة داخل نافذة **Visible scan** (تبقى الجلسة على الهاتف فقط). يظهر التطبيق الآن السبب الفعلي بدل الصفر الصامت: لا جلسة / جدار دخول / رسالة السيرفر / عناصر رُفضت لأنها ليست روابط منشورات أصلية، ويسجّل الحدث في **Activity**.
+
+**الإصدار 4.1.5 + خادم السحب 1.2.0**: زر **Check login** في بطاقتي Facebook وPinterest يفحص بنقرة واحدة ما إذا كان الهاتف يحمل جلسة تسجيل دخول وما إذا كان متصفح الخادم مسجّل الدخول (`GET /api/session/<platform>/check`). عند نتيجة فارغة يعرض التطبيق تشخيص الخادم نفسه (`outcome`: `login_wall`، `session_rejected`، `checkpoint`، `unavailable`، `no_posts`) مع سطر تقني (عدد الـ cookies المرسلة، هل قبلها الخادم، عدد عناصر المنشورات، الرابط النهائي) في بطاقة النتائج وفي سجل النشاط. السبب الجذري لرسالة `Facebook returned no accessible public article elements` كان في الخادم: متصفح Playwright الـ headless القديم يعرّف نفسه `HeadlessChrome` فيتلقى جدار تسجيل دخول، وcookies التطبيق لم تكن تُحفظ في ملف الجلسة؛ أُصلح ذلك في `orbitpress-scraper-api` 1.2.0 (قناة `chromium` بوضع headless الجديد + User-Agent عادي + حفظ الجلسة المُرسلة + احترام `timeoutSeconds`).
+
+على GitHub Actions يكتب الـ workflow ملف `.env` تلقائياً: العنوان من مدخل `scraper_url` عند التشغيل اليدوي أو من متغير المستودع `ORBITPRESS_SCRAPER_URL` (وإلا العنوان الافتراضي أعلاه)، والمفتاح من السر `ORBITPRESS_SCRAPER_KEY` فقط. إن لم يُضبط السر يُبنى الـ APK بدون مفتاح ويكفي لصق المفتاح مرة واحدة في الإعدادات — وهو الخيار الموصى به للمستودعات العامة لأن أي مفتاح مضمّن في APK يمكن استخراجه.
+
+## توقيع نسخة release (اختياري)
+
+بدون مفتاح توقيع تُنتج CI نسخة release **غير موقّعة** لا يقبلها Android، لذلك ثبّت نسخة debug. لتوقيعها تلقائياً:
+
+1. أنشئ keystore مرة واحدة على جهازك (احتفظ به وبكلمة السر في مكان آمن؛ فقدانه يعني عدم القدرة على تحديث التطبيق فوق النسخة المثبتة):
+   ```bash
+   keytool -genkeypair -v -keystore orbitpress-release.jks -alias orbitpress -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. حوّله إلى نص: `base64 -w0 orbitpress-release.jks` (على macOS: `base64 -i orbitpress-release.jks | tr -d '\n'`).
+3. أضف في GitHub → Settings → Secrets and variables → Actions:
+   `ORBITPRESS_KEYSTORE_BASE64` (الناتج أعلاه)، `ORBITPRESS_KEYSTORE_PASSWORD`، `ORBITPRESS_KEY_ALIAS` (مثل `orbitpress`)، و`ORBITPRESS_KEY_PASSWORD` (اختياري، يساوي كلمة سر الـ keystore إن تُرك فارغاً).
+4. أعد تشغيل الـ workflow: يظهر artifact باسم `OrbitPress-release-apk-…-signed` ويُثبَّت مباشرة. محلياً يكفي وضع القيم في `.env` (انظر `.env.example`) مع مسار الملف في `ORBITPRESS_KEYSTORE_FILE`.
+
+ملفات `*.jks` و`*.keystore` و`*.p12` مستثناة من Git، والـ workflow يحذف الـ keystore و`.env` في نهاية كل تشغيل.
+
 ## ما تم استبعاده عمدًا
 
 تم استبعاد `local.properties` و`.gradle` وملفات `build` وملفات التوقيع والمفاتيح وأي أسرار وAPKات كبيرة من نسخة المصدر. كما أن مفتاح توقيع الإصدار الموجود على جهاز البناء ليس جزءًا من الحزمة. استخدم مفتاح توقيعك الخاص عند توزيع نسخة إنتاجية.

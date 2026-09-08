@@ -3,7 +3,6 @@ package com.askinz.publisher
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -11,6 +10,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -39,7 +39,7 @@ class SocialScanActivity : Activity() {
 
     statusView = TextView(this).apply {
       text = "Loading ${platform.replaceFirstChar { it.uppercase() }}…"
-      setTextColor(Color.DKGRAY)
+      setTextColor(Color.parseColor("#475569"))
       setPadding(24, 18, 24, 18)
       textSize = 14f
     }
@@ -62,18 +62,22 @@ class SocialScanActivity : Activity() {
     }
 
     webView = WebView(this).apply {
-      settings.javaScriptEnabled = true
-      settings.domStorageEnabled = true
-      settings.allowFileAccess = false
-      settings.allowContentAccess = false
-      settings.javaScriptCanOpenWindowsAutomatically = false
+      setLayerType(View.LAYER_TYPE_HARDWARE, null)
+      settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        databaseEnabled = false
+        allowFileAccess = false
+        allowContentAccess = false
+        javaScriptCanOpenWindowsAutomatically = false
+        cacheMode = WebSettings.LOAD_NO_CACHE
+        mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+      }
       webChromeClient = WebChromeClient()
       webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = handleNavigation(request?.url?.toString().orEmpty(), view)
-
         @Suppress("DEPRECATION")
         override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = handleNavigation(url.orEmpty(), view)
-
         override fun onPageFinished(view: WebView?, loadedUrl: String?) {
           super.onPageFinished(view, loadedUrl)
           val url = loadedUrl.orEmpty()
@@ -85,13 +89,17 @@ class SocialScanActivity : Activity() {
             pageReady = false
             scanButton.isEnabled = false
             removeResultBridge()
-            statusView.text = "Navigation outside ${platform.replaceFirstChar { it.uppercase() }} was blocked. Return to a supported page before scanning."
+            statusView.text = "Navigation outside ${platform.replaceFirstChar { it.uppercase() }} was blocked."
             return
           }
           pageReady = true
           scanButton.isEnabled = true
           installResultBridge()
-          statusView.text = if (facebookDeepLinkSeen) {
+          CookieManager.getInstance().flush()
+          val loggedIn = platform != "facebook" || hasFacebookSession()
+          statusView.text = if (!loggedIn) {
+            "Not logged in to Facebook. Log in on this page first (the session stays on this phone and is reused by VPS scans), then start the scan."
+          } else if (facebookDeepLinkSeen) {
             "Page loaded. Facebook app-link was blocked; you can now start the scan."
           } else {
             "Page ready. Review or sign in, then start the scan."
@@ -100,10 +108,9 @@ class SocialScanActivity : Activity() {
             val generation = ++scanGeneration
             view?.postDelayed({
               if (generation == scanGeneration && pageReady && !scanStarted) scanButton.performClick()
-            }, 3500)
+            }, 3000)
           }
         }
-
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
           if (request?.isForMainFrame == true) {
             pageReady = false
@@ -111,10 +118,15 @@ class SocialScanActivity : Activity() {
             statusView.text = "Page could not be loaded: ${error?.description ?: "network error"}"
           }
         }
+        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+          finishWithError("Renderer crashed, please retry.")
+          return true
+        }
       }
     }
 
-    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+    CookieManager.getInstance().setAcceptCookie(true)
+    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
 
     val root = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
@@ -139,6 +151,15 @@ class SocialScanActivity : Activity() {
     }
     removeResultBridge()
     return true
+  }
+
+  private fun hasFacebookSession(): Boolean {
+    val manager = CookieManager.getInstance()
+    val names = listOf("https://www.facebook.com/", "https://facebook.com/", "https://m.facebook.com/")
+      .flatMap { manager.getCookie(it).orEmpty().split(';') }
+      .mapNotNull { part -> part.substringBefore('=', "").trim().takeIf { it.isNotBlank() } }
+      .toSet()
+    return "c_user" in names && "xs" in names
   }
 
   private fun normalizeStartUrl(source: String, url: String): String? {
@@ -178,9 +199,12 @@ class SocialScanActivity : Activity() {
   override fun onDestroy() {
     scanGeneration++
     removeResultBridge()
+    CookieManager.getInstance().flush()
     if (::webView.isInitialized) {
-      webView.stopLoading()
-      webView.destroy()
+      try {
+        webView.stopLoading()
+        webView.destroy()
+      } catch (_: Exception) {}
     }
     super.onDestroy()
   }
@@ -199,14 +223,14 @@ class SocialScanActivity : Activity() {
         let pass = 0;
         const maxPosts = $maxPosts;
         const maxScrolls = $maxScrolls;
-        const clean = value => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 2200);
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 2200);
         const selectors = '$platform' === 'facebook'
           ? '[role="article"],div[data-pagelet*="FeedUnit"]'
           : 'shreddit-post,a[data-testid="post-title"],a[data-click-id="body"],article';
         const extract = () => Array.from(document.querySelectorAll(selectors)).map(node => {
           const anchor = node.matches('a') ? node : node.querySelector('a[href]');
           const text = clean(node.innerText || node.textContent);
-          const title = clean(node.getAttribute('aria-label') || node.getAttribute('data-title') || (anchor && anchor.innerText) || text.split('\\n')[0]);
+          const title = clean(node.getAttribute('aria-label') || node.getAttribute('data-title') || (anchor && anchor.innerText) || text.split('\n')[0]);
           const url = anchor && anchor.href ? anchor.href : location.href;
           return { title, text, url, publishedAt: null, metrics: [], comments: null, reactions: null, saves: null, viralScore: null };
         }).filter(item => item.title && item.text.length > 12 && item.url);
@@ -218,9 +242,9 @@ class SocialScanActivity : Activity() {
           merge(extract());
           if (pass++ < maxScrolls) {
             window.scrollTo(0, document.body.scrollHeight);
-            window.setTimeout(tick, 850);
+            window.setTimeout(tick, 750);
           } else {
-            OrbitPressSocial.done(JSON.stringify({ok:true, platform:'$platform', source:document.title || location.hostname, posts, collectionMethod:'visible_webview', completeness:'partial'}));
+            try { OrbitPressSocial.done(JSON.stringify({ok:true, platform:'$platform', source:document.title || location.hostname, posts, collectionMethod:'visible_webview'})); } catch(e) {}
           }
         };
         tick();

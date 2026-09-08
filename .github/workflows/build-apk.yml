@@ -1,50 +1,140 @@
-name: Build OrbitPress APK
+name: Build OrbitPress APK - Modern Efficient
 
 on:
   workflow_dispatch:
+    inputs:
+      scraper_url:
+        description: "ORBITPRESS_SCRAPER_URL baked into the APK (HTTPS). Leave empty to use the repository variable or the default."
+        required: false
+        default: ""
   push:
     branches:
       - main
+      - arena/*
   pull_request:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 25
     steps:
-      - name: Download source
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Install Java 17
-        uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
 
       - name: Install Android packages
         run: |
-          sdkmanager "platform-tools"
-          sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Make Gradle executable
         run: chmod +x ./gradlew
 
+      # Build-time defaults for the VPS Scraper. The URL comes from the workflow input or the
+      # repository variable ORBITPRESS_SCRAPER_URL (falls back to the sslip.io VPS). The key is
+      # read ONLY from the repository secret ORBITPRESS_SCRAPER_KEY; when the secret is missing the
+      # APK ships without a key and the user pastes it once in Settings.
+      - name: Write .env for the build
+        id: dotenv
+        env:
+          INPUT_URL: ${{ github.event.inputs.scraper_url }}
+          VAR_URL: ${{ vars.ORBITPRESS_SCRAPER_URL }}
+          SECRET_KEY: ${{ secrets.ORBITPRESS_SCRAPER_KEY }}
+          KEYSTORE_BASE64: ${{ secrets.ORBITPRESS_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ORBITPRESS_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ORBITPRESS_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ORBITPRESS_KEY_PASSWORD }}
+        run: |
+          URL="${INPUT_URL:-${VAR_URL:-https://23.95.186.208.sslip.io}}"
+          {
+            echo "ORBITPRESS_SCRAPER_URL=${URL}"
+            echo "ORBITPRESS_SCRAPER_KEY=${SECRET_KEY}"
+          } > .env
+          echo "Scraper URL baked into APK: ${URL}"
+          if [ -z "${SECRET_KEY}" ]; then echo "::notice::ORBITPRESS_SCRAPER_KEY secret not set - APK ships without a default key (enter it in Settings)."; else echo "Scraper key: provided via secret"; fi
+
+          # Optional release signing: decode the keystore secret and point Gradle at it.
+          if [ -n "${KEYSTORE_BASE64}" ] && [ -n "${KEYSTORE_PASSWORD}" ] && [ -n "${KEY_ALIAS}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > orbitpress-release.jks
+            {
+              echo "ORBITPRESS_KEYSTORE_FILE=orbitpress-release.jks"
+              echo "ORBITPRESS_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}"
+              echo "ORBITPRESS_KEY_ALIAS=${KEY_ALIAS}"
+              echo "ORBITPRESS_KEY_PASSWORD=${KEY_PASSWORD:-${KEYSTORE_PASSWORD}}"
+            } >> .env
+            echo "release_signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing: enabled"
+          else
+            echo "release_signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release signing secrets not set - release APK will be unsigned (install the debug APK). See SOURCE_README_AR.md."
+          fi
+
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace --parallel --max-workers=4 --build-cache
 
-      - name: Build APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace --parallel --build-cache
 
-      - name: Upload APK
+      - name: Build Release APK
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --parallel --build-cache
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrbitPress-debug-apk
+          name: OrbitPress-debug-apk-v4.1.5
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
 
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbitPress-release-apk-v4.1.5${{ steps.dotenv.outputs.release_signed == 'true' && '-signed' || '-unsigned' }}
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f orbitpress-release.jks .env
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - run: chmod +x ./gradlew
+      - name: Lint
+        run: ./gradlew :app:lintDebug --no-daemon

@@ -10,7 +10,7 @@ object SettingsPersistenceContract {
 
   fun merge(existing: JSONObject, incoming: JSONObject): JSONObject {
     val merged = JSONObject(existing.toString())
-    listOf("articleBaseUrl", "articleModel", "wordpressBaseUrl", "wordpressUsername", "categoryId", "imageProvider", "imageBaseUrl", "imageAccountId", "imageModel", "pinterestBoardId", "facebookAppId", "facebookGraphVersion", "pinterestClientId", "pinterestRedirectUri", "textPrompt", "imagePrompt", "pinterestPrompt", "articleImageCount", "scraperApiBaseUrl").forEach { key ->
+    listOf("articleBaseUrl", "articleModel", "wordpressBaseUrl", "wordpressUsername", "categoryId", "imageProvider", "imageBaseUrl", "imageAccountId", "imageModel", "pinterestBoardId", "facebookAppId", "facebookGraphVersion", "pinterestClientId", "pinterestRedirectUri", "textPrompt", "imagePrompt", "pinterestPrompt", "articleImageCount", "scraperApiBaseUrl", "scraperTimeoutSeconds").forEach { key ->
       merged.put(key, incoming.optString(key).trim())
     }
     listOf("articleApiKey", "wordpressAppPassword", "imageApiToken", "pinterestAccessToken", "facebookAccessToken", "scraperApiKey").forEach { key ->
