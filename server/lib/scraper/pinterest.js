@@ -41,7 +41,12 @@ function classifySource(url, { allowAnyHost = false } = {}) {
   if (/\/pin\/\d+/.test(path)) return { kind: 'pin', path };
   if (/^\/search\//.test(path) || parsed.searchParams.get('q')) return { kind: 'search', path, query: parsed.searchParams.get('q') || '' };
   const segments = path.split('/').filter(Boolean);
-  if (segments.length >= 2) return { kind: 'board', path, user: segments[0], board: segments[1] };
+  if (segments.length >= 2) {
+    if (segments[1] === '_created' || segments[1] === '_saved') {
+      return { kind: 'profile', path, user: segments[0], tab: segments[1].slice(1) };
+    }
+    return { kind: 'board', path, user: segments[0], board: segments[1] };
+  }
   if (segments.length === 1) return { kind: 'profile', path, user: segments[0] };
   return { kind: 'home', path: '/' };
 }
@@ -273,10 +278,15 @@ async function scanViaBrowser(sourceUrl, options) {
             overlay.reactions = choose(mine && mine.reactions, null);
             overlay.outboundUrl = (mine && mine.outboundUrl) || null;
             ['title', 'text', 'imageUrl', 'publishedAt', 'saves', 'comments', 'reactions', 'outboundUrl'].forEach((f) => { if (overlay[f] == null) delete overlay[f]; });
-            merged.set(id, { ...existing, ...overlay });
-            detailsFetched += 1;
+            if (Object.keys(overlay).length) {
+              merged.set(id, { ...existing, ...overlay });
+              detailsFetched += 1;
+            }
           }
         } catch { /* individual pin page failed — keep going */ }
+      }
+      if (merged.size && !detailsFetched && options.includeDetails !== false) {
+        await sessions.captureDebug('pinterest', page, 'details-all-empty').catch(() => {});
       }
     }
     if (!merged.size) {
