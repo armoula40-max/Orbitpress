@@ -318,7 +318,7 @@ async function scanViaBrowser(sourceUrl, options) {
 async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
   const sessions = require('./sessions');
   const cookieHeader = useSession === false ? '' : await sessions.cookieHeader('pinterest').catch(() => '');
-  const targets = pins.filter((pin) => !pin.title || !pin.title.trim()).slice(0, max);
+  const targets = pins.filter((pin) => !pin.title || !pin.title.trim() || /^pin on\s/i.test(pin.title)).slice(0, max);
   const ua = { ...BROWSER_HEADERS };
   if (cookieHeader) ua.Cookie = cookieHeader;
   let enriched = 0;
@@ -341,13 +341,19 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
         }
         mine = merged2.get(pin.id) || null;
         const titleRaw = (mine && mine.title) || og('title');
-        const titleClean = titleRaw ? String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim() : '';
-        if (titleClean && !/^(pinterest|page not found|show[_ ]error)$/i.test(titleClean)) overlay.title = titleClean;
         const text = (mine && mine.text) || og('description');
+        let titleClean = titleRaw ? String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim() : '';
+        // Pinterest falls back to "Pin on <board name>" for untitled pins —
+        // the pin's real description is the honest headline instead
+        if (/^pin on\s/i.test(titleClean) && text) titleClean = String(text).split('\n')[0].trim().slice(0, 160);
+        if (titleClean && !/^(pinterest|page not found|show[_ ]error)$/i.test(titleClean)) overlay.title = titleClean;
         if (text) overlay.text = text;
         const imageUrl = (mine && mine.imageUrl) || og('image');
         if (imageUrl) overlay.imageUrl = imageUrl;
-        const publishedAt = (mine && mine.publishedAt) || (() => { const m = html.match(/<time[^>]+datetime=["']([^"']+)/i); return m ? m[1] : null; })();
+        const publishedAt = (mine && mine.publishedAt)
+          || (() => { const m = html.match(/<time[^>]+datetime=["']([^"']+)/i); return m ? m[1] : null; })()
+          || (() => { const m = html.match(/"created_at"\s*:\s*"([^"]{10,40})"/); return m ? m[1] : null; })()
+          || (() => { const m = html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)/i); return m ? m[1] : null; })();
         if (publishedAt) overlay.publishedAt = publishedAt;
         if (mine && mine.saves != null) overlay.saves = mine.saves;
         if (mine && mine.comments != null) overlay.comments = mine.comments;
@@ -389,7 +395,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
     httpPins = result.pins;
     if (httpPins.length >= limit && source.kind !== 'profile') {
       const sliced = httpPins.slice(0, limit);
-      const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+      const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
       return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'full', { http: httpPins.length, enriched });
     }
   } catch (error) {
@@ -411,7 +417,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
       const pins = [...merged.values()];
       if (pins.length) {
         const sliced = pins.slice(0, limit);
-        const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+        const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
         const method = (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (enriched ? `+enriched${enriched}` : '') + (isFallback ? '+tab-fallback' : '');
         return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
       }
@@ -422,7 +428,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
 
   if (httpPins.length) {
     const sliced = httpPins.slice(0, limit);
-    const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 12, useSession }).catch(() => 0);
+    const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
     return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'partial', { http: httpPins.length, enriched });
   }
   const needsSession = /login|403|429|captcha|blocked|Could not/i.test(errors.join(' '));
