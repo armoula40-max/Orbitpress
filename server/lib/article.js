@@ -182,6 +182,68 @@ async function analyzeKeywords(request, platformHint) {
   return { ok: true, report };
 }
 
+/**
+ * Viral handoff: for each supplied post, ask the configured Article API for
+ * ONE keyword (and the angle to write it from) in the site's language. The
+ * app already has this analyzer — keyword guessing with regex is only the
+ * fallback when the AI is unreachable.
+ */
+async function viralKeywords(request) {
+  const settings = requireStoredSettings(request);
+  const language = String(request.language || 'en').startsWith('ar') ? 'ar' : 'en';
+  const posts = (Array.isArray(request.posts) ? request.posts : []).slice(0, 12).map((post) => ({
+    id: String(post.id || ''),
+    title: String(post.title || '').slice(0, 300),
+    text: String(post.text || '').slice(0, 700),
+    boardName: post.boardName || null,
+    sourceUrl: post.outboundUrl || null,
+    saves: post.saves ?? null,
+    reactions: post.reactions ?? null,
+    comments: post.comments ?? null,
+    viralScore: Number(post.viralScore) || 0,
+  }));
+  if (!posts.length) throw new Error('There are no posts to extract keywords from.');
+  const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
+  const system = language === 'ar'
+    ? 'أنت محرر SEO. لكل منشور مرقق، اقترح كلمة مفتاحية بحثية واحدة دقيقة وزاوية كتابة واضحة ونوع المحتوى (recipe أو article). أعد JSON صارماً: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. لا تنسخ عنوان المنشور حرفياً.'
+    : 'You are an SEO editor. For each supplied post propose exactly one precise search keyword, a writing angle and the content type (recipe or article). Return strict JSON: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. Never copy the post title verbatim.';
+  const user = JSON.stringify({ task: 'Turn each viral post into one keyword to publish against.', language, posts });
+  const body = {
+    model: provider.model,
+    temperature: 0.2,
+    response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+  };
+  let response;
+  try {
+    response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
+  } catch (error) {
+    const message = String(error.message || '').toLowerCase();
+    if (message.includes('response_format') || message.includes('json')) {
+      delete body.response_format;
+      response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
+    } else {
+      throw new Error(ProviderCompatibilityContract.diagnostic(error.message));
+    }
+  }
+  const content = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;
+  let parsed = {};
+  try { parsed = JSON.parse(stripCodeFence(content)); } catch { parsed = {}; }
+  const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+  const siteId = String(request.siteId || 'site-default');
+  const items = rawItems
+    .map((item) => ({
+      id: String(item.id || ''),
+      keyword: String(item.keyword || item.primaryKeyword || '').trim().slice(0, 120),
+      angle: String(item.angle || '').trim().slice(0, 400),
+      contentType: String(item.contentType || '').toLowerCase() === 'recipe' ? 'recipe' : 'article',
+    }))
+    .filter((item) => item.keyword.length >= 3)
+    .slice(0, 12);
+  void siteId;
+  return { ok: true, items };
+}
+
 async function analyzeSocialKeywords(request) {
   return analyzeKeywords(request, String(request.platform || 'facebook'));
 }
@@ -254,6 +316,7 @@ async function feedspyReport(request) {
 }
 
 module.exports = {
+  viralKeywords,
   generate,
   analyzeSocialKeywords,
   analyzePinterestKeywords,

@@ -200,6 +200,24 @@ function startArticleApiMock(options = {}) {
     req.on('end', () => {
       const parsed = body ? JSON.parse(body) : {};
       calls.push(parsed);
+      const system = JSON.stringify(parsed.messages || []);
+      if (system.includes('items')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: JSON.stringify({
+                items: [
+                  { id: '111111111111111111', keyword: 'sourdough starter discard recipes', angle: 'Use discard in weeknight bakes', contentType: 'recipe' },
+                  { id: '222222222222222222', keyword: 'no knead sourdough bread', angle: 'Beginner proofing timeline', contentType: 'article' },
+                ],
+              }),
+            },
+          }],
+        }));
+        return;
+      }
       if (options.rejectResponseFormat && parsed.response_format) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'unsupported parameter: response_format json_schema' } }));

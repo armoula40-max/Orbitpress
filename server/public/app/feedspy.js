@@ -396,6 +396,42 @@
     return raw.slice(0, 70).trim();
   }
 
+  function pack(post, keyword, extra) {
+    if (!keyword) return null;
+    var row = {
+      keyword: keyword,
+      pinTitle: String(post.title || '').slice(0, 200),
+      pinText: String(post.text || '').slice(0, 600),
+      pinUrl: post.url || '',
+      sourceUrl: post.outboundUrl || '',
+      imageUrl: post.imageUrl || '',
+      saves: post.saves == null ? null : Number(post.saves),
+      reactions: post.reactions == null ? null : Number(post.reactions),
+      viralScore: post.viralScore == null ? null : Number(post.viralScore),
+      platform: 'pinterest',
+    };
+    if (extra) { row.angle = extra.angle || ''; row.contentType = extra.contentType || ''; }
+    return row;
+  }
+
+  function finishHandoff(rows, viaAi) {
+    if (!rows.length) return spyNotice('لا توجد نتائج صالحة للتحويل ضمن الفلاتر الحالية.', 'bad');
+    if (typeof window.__orbitpressEnqueueKeywords !== 'function') {
+      return spyNotice('واجهة الكلمات غير متاحة — أعد تحميل الصفحة.', 'bad');
+    }
+    var result = window.__orbitpressEnqueueKeywords(rows) || {};
+    if (result.added) {
+      spyNotice('أُضيفت ' + result.added + ' كلمة ' + (viaAi ? 'من محلل AI ' : '') + 'إلى طابور الاستوديو' + (result.duplicates ? ' (' + result.duplicates + ' مكررة/غير صالحة)' : '') + '.', 'good');
+    } else {
+      spyNotice(result.message || 'لم تُضف أي كلمة — اختر تصنيفاً في شاشة الاستوديو أولاً.', 'bad');
+    }
+  }
+
+  /**
+   * Viral -> article handoff. The app already ships an AI analyzer, so the
+   * keyword comes from it (per post, in the site's language) and the crude
+   * headline trimmer is only the fallback when the AI is unreachable.
+   */
   function sendTopToKeywords(platform) {
     var id = platform === 'pinterest' ? 'spyP' : 'spyF';
     var select = document.getElementById(id + 'TopN');
@@ -403,31 +439,44 @@
     var top = applyFilters(spy[platform].posts, platform).slice().sort(function (a, b) {
       return (Number(b.viralScore) || 0) - (Number(a.viralScore) || 0);
     }).slice(0, count);
-    // Carry the pin along: the generator can then use the original headline,
-    // description and source link instead of writing blind from a keyword.
-    var keywords = top.map(function (post) {
-      var keyword = pinKeyword(post);
-      if (!keyword) return null;
-      return {
-        keyword: keyword,
-        pinTitle: String(post.title || '').slice(0, 200),
-        pinText: String(post.text || '').slice(0, 600),
-        pinUrl: post.url || '',
-        sourceUrl: post.outboundUrl || '',
-        imageUrl: post.imageUrl || '',
-        saves: post.saves == null ? null : Number(post.saves),
-        reactions: post.reactions == null ? null : Number(post.reactions),
-        viralScore: post.viralScore == null ? null : Number(post.viralScore),
-        platform: platform,
-      };
-    }).filter(Boolean);
-    if (!keywords.length) return spyNotice('لا توجد نتائج صالحة للتحويل ضمن الفلاتر الحالية.', 'bad');
-    if (typeof window.__orbitpressEnqueueKeywords !== 'function') {
-      return spyNotice('واجهة الكلمات غير متاحة — أعد تحميل الصفحة.', 'bad');
-    }
-    var result = window.__orbitpressEnqueueKeywords(keywords) || {};
-    if (result.added) spyNotice('أُضيفت ' + result.added + ' كلمة إلى طابور الاستوديو' + (result.duplicates ? ' (' + result.duplicates + ' مكررة/غير صالحة)' : '') + '.', 'good');
-    else spyNotice(result.message || 'لم تُضف أي كلمة — اختر تصنيفاً في شاشة الاستوديو أولاً.', 'bad');
+    if (!top.length) return spyNotice('لا توجد نتائج ضمن الفلاتر الحالية.', 'bad');
+    var button = document.getElementById(id + 'ToKeywords');
+    if (button) { button.disabled = true; button.textContent = '🧠 يستخرج الكلمات…'; }
+
+    fetch('/api/bridge/call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'viralKeywords',
+        language: 'en',
+        posts: top.map(function (post) {
+          return {
+            id: post.id, title: post.title, text: post.text, boardName: post.boardName,
+            outboundUrl: post.outboundUrl, saves: post.saves, reactions: post.reactions,
+            comments: post.comments, viralScore: post.viralScore,
+          };
+        }),
+        siteId: (typeof state !== 'undefined' && state.workspace && state.workspace.activeSiteId) || 'site-default',
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        var items = (result && result.ok && Array.isArray(result.items)) ? result.items : [];
+        var byId = {};
+        items.forEach(function (item) { byId[String(item.id)] = item; });
+        var rows = top.map(function (post) {
+          var ai = byId[String(post.id)];
+          // AI keyword when we have one, headline trimmer otherwise.
+          return pack(post, (ai && ai.keyword) || pinKeyword(post), ai);
+        }).filter(Boolean);
+        finishHandoff(rows, items.length > 0);
+      })
+      .catch(function () {
+        finishHandoff(top.map(function (post) { return pack(post, pinKeyword(post)); }).filter(Boolean), false);
+      })
+      .then(function () {
+        if (button) { button.disabled = false; button.textContent = '⚡ حول الأعلى إلى كلمات'; }
+      });
   }
 
   // ---- intercept scan results to seed the spy store ------------------------------

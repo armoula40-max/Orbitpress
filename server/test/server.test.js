@@ -131,6 +131,30 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('viral handoff asks the AI analyzer for one keyword per pin', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k', wordpressBaseUrl: 'https://wp.example.com', wordpressUsername: 'a', wordpressAppPassword: 'p' }, 'site-viral');
+  const result = await article.viralKeywords({
+    siteId: 'site-viral',
+    language: 'en',
+    posts: [
+      { id: '111111111111111111', title: 'Sourdough: 7 Steps', text: 'starter discard ideas', saves: 1200, viralScore: 100 },
+      { id: '222222222222222222', title: 'No Knead Bread', text: 'easy loaf', saves: 400, viralScore: 40 },
+    ],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].keyword, 'sourdough starter discard recipes');
+  assert.equal(result.items[0].contentType, 'recipe');
+  assert.ok(result.items[1].angle.length > 3);
+  // the posts are what the model receives — no invented context
+  const sent = api.calls[api.calls.length - 1];
+  assert.equal(sent.messages[1].content.includes('starter discard ideas'), true);
+});
+
+// ---------------------------------------------------------------------------
+
 test('pinterest resource layer reads the JSON the Pinterest front-end uses', async (t) => {
   const mock = await mocks.startPinterestResourceMock();
   t.after(() => mock.server.close());

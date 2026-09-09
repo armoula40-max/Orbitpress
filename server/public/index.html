@@ -200,7 +200,7 @@
         if(keyword.length<3||keyword.length>120||existing.has(normalized)){duplicates++;return}
         var row={id:makeId('keyword'),siteId:activeSiteId(),keyword:keyword,niche:$('contentNiche').value,priority:$('priority').value,contentType:$('contentType').value,categoryId:chosen.id,categoryName:chosen.name,status:'queued',source:'viral-scan',createdAt:Date.now()};
         if(entry&&typeof entry==='object'){
-          row.viral={title:entry.pinTitle||'',text:entry.pinText||'',url:entry.pinUrl||'',sourceUrl:entry.sourceUrl||'',imageUrl:entry.imageUrl||'',saves:entry.saves,reactions:entry.reactions,viralScore:entry.viralScore,platform:entry.platform||''};
+          row.viral={title:entry.pinTitle||'',text:entry.pinText||'',url:entry.pinUrl||'',sourceUrl:entry.sourceUrl||'',imageUrl:entry.imageUrl||'',saves:entry.saves,reactions:entry.reactions,viralScore:entry.viralScore,platform:entry.platform||'',angle:entry.angle||'',contentType:entry.contentType||''};
         }
         state.workspace.keywords.unshift(row);
         existing.add(normalized);added++;
