@@ -22,14 +22,24 @@ function engagementOf(post) {
   return reactions + saves * 2 + comments * 2 + shares * 3;
 }
 
-/** Assigns a 0–100 viral score relative to the strongest post in the same batch. */
+/**
+ * Assigns a 0–100 viral score relative to the strongest post in the same batch.
+ * Relative scoring only means something when the batch actually contains a
+ * signal: if even the best post has almost no engagement, every post would
+ * otherwise score 100 and the report would advertise "viral" content that is
+ * simply quiet. Below VIRAL_MIN_SIGNAL the whole batch scores 0 and the raw
+ * counters stay visible instead.
+ */
+const VIRAL_MIN_SIGNAL = 5;
+
 function rankPosts(posts) {
   const engagements = posts.map(engagementOf);
   const max = Math.max(1, ...engagements);
+  const hasSignal = max >= VIRAL_MIN_SIGNAL;
   return posts.map((post, index) => ({
     ...post,
     engagement: engagements[index],
-    viralScore: Math.round((engagements[index] / max) * 1000) / 10,
+    viralScore: hasSignal ? Math.round((engagements[index] / max) * 1000) / 10 : 0,
   }));
 }
 

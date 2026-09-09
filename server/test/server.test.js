@@ -175,6 +175,21 @@ test('pinterest resource layer reads the JSON the Pinterest front-end uses', asy
 
 // ---------------------------------------------------------------------------
 
+test('viral score stays honest when a batch carries no engagement signal', () => {
+  const quiet = analyzer.rankPosts([
+    { id: '1', saves: 1 }, { id: '2', saves: 1 }, { id: '3', reactions: 2 },
+  ]);
+  quiet.forEach((post) => assert.equal(post.viralScore, 0, 'a quiet batch must not advertise 100'));
+
+  const loud = analyzer.rankPosts([
+    { id: '1', saves: 1 }, { id: '2', saves: 200, comments: 10 },
+  ]);
+  assert.equal(loud.find((post) => post.id === '2').viralScore, 100);
+  assert.ok(loud.find((post) => post.id === '1').viralScore < 5);
+});
+
+// ---------------------------------------------------------------------------
+
 test('pinterest HTTP scanner mines the embedded JSON island', async (t) => {
   const pin = await mocks.startPinterestMock();
   t.after(() => pin.server.close());
