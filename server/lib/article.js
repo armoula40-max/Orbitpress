@@ -244,6 +244,47 @@ async function viralKeywords(request) {
   return { ok: true, items };
 }
 
+/**
+ * Connectivity probe for the configured Article API: one tiny completion,
+ * no WordPress involved, so the user can confirm the provider works (or see
+ * the exact failure) without connecting a site.
+ */
+async function testArticleApi(request) {
+  const settings = requireAiSettings(request);
+  const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
+  const body = {
+    model: provider.model,
+    temperature: 0,
+    max_tokens: 24,
+    messages: [
+      { role: 'system', content: 'You are a connectivity probe.' },
+      { role: 'user', content: 'Reply with exactly: OK' },
+    ],
+  };
+  const started = Date.now();
+  try {
+    const response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
+    const choice = response && response.choices && response.choices[0];
+    const content = choice && choice.message && choice.message.content;
+    if (content == null || String(content).trim() === '') {
+      return { ok: false, model: provider.model, latencyMs: Date.now() - started, message: 'المزوّد ردّ بدون محتوى — تحقق من اسم الموديل.' };
+    }
+    return {
+      ok: true,
+      model: provider.model,
+      latencyMs: Date.now() - started,
+      sample: String(content).trim().slice(0, 80),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      model: provider.model,
+      latencyMs: Date.now() - started,
+      message: ProviderCompatibilityContract.diagnostic(error.message),
+    };
+  }
+}
+
 async function analyzeSocialKeywords(request) {
   return analyzeKeywords(request, String(request.platform || 'facebook'));
 }
@@ -317,6 +358,7 @@ async function feedspyReport(request) {
 
 module.exports = {
   viralKeywords,
+  testArticleApi,
   generate,
   analyzeSocialKeywords,
   analyzePinterestKeywords,

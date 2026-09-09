@@ -131,6 +131,28 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('Article API probe reports a working provider and a failing one', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k' }, 'site-probe');
+  const good = await article.testArticleApi({ siteId: 'site-probe' });
+  assert.equal(good.ok, true);
+  assert.equal(good.model, 'gen-x');
+  assert.ok(good.latencyMs >= 0);
+
+  // unreachable provider -> ok:false with a message, never a crash
+  store.saveSiteSettings({ articleBaseUrl: 'https://127.0.0.1:9/v1', articleModel: 'gen-x', articleApiKey: 'k' }, 'site-probe-down');
+  const bad = await article.testArticleApi({ siteId: 'site-probe-down' });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.message && bad.message.length > 5);
+
+  // no settings at all -> asks for the AI fields by name
+  store.saveSiteSettings({}, 'site-probe-empty');
+  await assert.rejects(() => article.testArticleApi({ siteId: 'site-probe-empty' }), /Article API settings/);
+});
+
+// ---------------------------------------------------------------------------
+
 test('AI settings and WordPress settings gate independently', async (t) => {
   const api = await mocks.startArticleApiMock();
   t.after(() => api.server.close());
