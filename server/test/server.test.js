@@ -463,6 +463,37 @@ test('publishing uploads the markup the article preview showed', async (t) => {
   }));
 });
 
+test('a probe that reports failure still reaches the UI with its full report', async (t) => {
+  const started = await startServer();
+  t.after(() => new Promise((resolve) => { started.close(resolve); }));
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  wp.data.expectedAuth = 'Basic ' + Buffer.from('admin:app-pass', 'utf8').toString('base64');
+
+  // an image provider that cannot be reached: the probe must say so, not vanish
+  store.saveSiteSettings({ imageProvider: 'openai-compatible', imageBaseUrl: 'https://127.0.0.1:1/v1', imageApiToken: 'k' }, 'site-verdict');
+  let res = await fetch(`${started.url}/api/bridge/call`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'v1', type: 'testImageApi', siteId: 'site-verdict' }),
+  });
+  const probe = await res.json();
+  assert.equal(probe.ok, true, 'the call itself completed, so the transport must not fail');
+  assert.equal(probe.verdict, false, "the probe's own verdict travels as its own field");
+  assert.ok(probe.message, 'and the reason travels with it');
+
+  // the WordPress diagnostic: a refused connection is a finding, not an error
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'wrong' }, 'site-verdict-wp');
+  res = await fetch(`${started.url}/api/bridge/call`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'v2', type: 'diagnoseWordPress', siteId: 'site-verdict-wp' }),
+  });
+  const diagnosis = await res.json();
+  assert.equal(diagnosis.ok, true, 'a refused connection is a report the UI must receive');
+  assert.equal(diagnosis.verdict, false);
+  assert.ok(diagnosis.steps.length >= 3, 'every probe is delivered');
+  assert.ok(diagnosis.advice.length >= 1, 'with the advice the user needs');
+});
+
 test('stored images are served to the browser, and only stored images', async (t) => {
   const stored = imagesLib.storeImage({ kind: 'featured', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), siteId: 'site-serve' });
   const file = stored.reference.slice('local://'.length);

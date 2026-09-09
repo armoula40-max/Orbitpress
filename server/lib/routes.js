@@ -132,7 +132,16 @@ router.post('/bridge/call', asyncRoute(async (req, res) => {
   const operation = BRIDGE_OPERATIONS[String(request.type || '')];
   if (!operation) throw new Error('Unknown operation.');
   const result = await operation(request);
-  res.json(result && typeof result === 'object' ? { ok: true, ...result } : { ok: true, result });
+  // `ok` is the transport flag: nativeCall rejects when it is false. An
+  // operation that reports a *verdict* of its own — a probe that failed on
+  // purpose, like the WordPress diagnostic or the API test buttons — must not
+  // be able to turn its own finding into a transport failure, which is what
+  // happened when the payload spread overrode ok:true and the UI showed a
+  // bare "Request failed." instead of the report.
+  const payload = result && typeof result === 'object' ? { ...result } : { result };
+  const envelope = { ok: true, ...payload, ok: true };
+  if (payload.ok === false) envelope.verdict = false;
+  res.json(envelope);
 }));
 
 // ---------------------------------------------------------------------------
