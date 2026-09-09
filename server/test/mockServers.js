@@ -214,4 +214,59 @@ function startArticleApiMock(options = {}) {
   });
 }
 
-module.exports = { tinyPng, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, sampleArticleJson };
+function socialFetchPin(id, title, metrics) {
+  return {
+    id: String(id),
+    url: `https://www.pinterest.com/pin/${id}/`,
+    title,
+    description: `${title} — a mocked description.`,
+    link: 'https://example.test/recipe',
+    domain: 'example.test',
+    createdAt: 'Tue, 07 Jan 2025 18:23:09 +0000',
+    image: { url: `https://i.pinimg.com/originals/${id}.jpg`, width: 1024, height: 1536 },
+    pinner: { id: '9', username: 'mockuser', fullName: 'Mock User' },
+    board: { id: '8', name: 'Recipes', url: 'https://www.pinterest.com/mockuser/recipes/' },
+    metrics: metrics || { saves: null, repins: null },
+  };
+}
+
+/** Minimal socialfetch.dev mock: same envelope, 1 credit per request. */
+function startSocialFetchMock() {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    calls.push(url.pathname + (url.search || ''));
+    const json = (payload, status = 200) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    };
+    if (String(req.headers['x-api-key'] || '') !== 'sfk_test') {
+      return json({ error: { message: 'missing or invalid api key' } }, 401);
+    }
+    const wrap = (data) => ({ data, meta: { requestId: 'req_mock', creditsCharged: 1, version: 'v1' } });
+    if (url.pathname === '/v1/pinterest/search') {
+      return json(wrap({
+        query: url.searchParams.get('query'),
+        pins: [socialFetchPin('111111111111111111', 'Savory Italian Pot Roast'), socialFetchPin('222222222222222222', 'Slow Cooker Pot Roast')],
+        page: { hasMore: false },
+      }));
+    }
+    if (/^\/v1\/pinterest\/profiles\/[^/]+\/boards$/.test(url.pathname)) {
+      return json(wrap({ boards: [{ id: '8', name: 'Recipes', url: 'https://www.pinterest.com/mockuser/recipes/' }], page: { hasMore: false } }));
+    }
+    if (url.pathname === '/v1/pinterest/boards/pins') {
+      return json(wrap({ pins: [socialFetchPin('333333333333333333', 'Board Pin One')], page: { hasMore: false } }));
+    }
+    if (url.pathname === '/v1/pinterest/pins') {
+      const pinUrl = url.searchParams.get('url') || '';
+      const id = (pinUrl.match(/\/pin\/(\d+)/) || [])[1] || '0';
+      return json(wrap({ lookupStatus: 'found', pin: socialFetchPin(id, `Pin ${id}`, { saves: 418, comments: 3, reactions: 2, repins: 6826, shares: 439 }) }));
+    }
+    return json({ error: { message: `unmocked route ${url.pathname}` } }, 404);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, calls }));
+  });
+}
+
+module.exports = { tinyPng, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startSocialFetchMock, sampleArticleJson };

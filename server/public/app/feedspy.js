@@ -239,6 +239,9 @@
         if (pipe.browserUnique != null) parts.push('متصفح ' + pipe.browserUnique + ' (' + (pipe.passes || 0) + ' تمريرة)');
         if (pipe.details) parts.push('تفاصيل عميقة ' + pipe.details);
         if (pipe.enriched) parts.push('إثراء HTTP ' + pipe.enriched);
+        if (pipe.provider != null) parts.push('مزوّد ' + pipe.provider);
+        if (pipe.metrics) parts.push('أرقام ' + pipe.metrics);
+        if (pipe.credits != null) parts.push('كريدت ' + pipe.credits);
         if (pipe.photos) parts.push('صور عميقة ' + pipe.photos);
         if (pipe.stoppedBy && REASON_AR[pipe.stoppedBy]) parts.push('توقف: ' + REASON_AR[pipe.stoppedBy]);
       }

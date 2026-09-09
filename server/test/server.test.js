@@ -131,6 +131,48 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('pinterest provider (socialfetch) is inert without a key, and full with one', async (t) => {
+  const mock = await mocks.startSocialFetchMock();
+  const pinMockSite = await mocks.startPinterestMock();
+  t.after(() => { mock.server.close(); pinMockSite.server.close(); });
+  const savedKey = process.env.SOCIALFETCH_API_KEY;
+  const savedBase = process.env.SOCIALFETCH_BASE_URL;
+  t.after(() => {
+    if (savedKey == null) delete process.env.SOCIALFETCH_API_KEY; else process.env.SOCIALFETCH_API_KEY = savedKey;
+    if (savedBase == null) delete process.env.SOCIALFETCH_BASE_URL; else process.env.SOCIALFETCH_BASE_URL = savedBase;
+  });
+
+  // 1. No key -> provider must never be contacted and the scan still works.
+  delete process.env.SOCIALFETCH_API_KEY;
+  delete process.env.SOCIALFETCH_BASE_URL;
+  const plain = await scanPinterest({ url: pinMockSite.url + '/swaliha/', maxItems: 5, baseUrl: pinMockSite.url });
+  assert.equal(plain.ok, true);
+  assert.ok(!String(plain.collectionMethod).includes('socialfetch'), 'provider must stay off without a key');
+
+  // 2. With a key -> provider serves the scan, metrics included.
+  process.env.SOCIALFETCH_API_KEY = 'sfk_test';
+  process.env.SOCIALFETCH_BASE_URL = mock.url;
+  process.env.SOCIALFETCH_METRICS_LIMIT = '2';
+  const result = await scanPinterest({ url: mock.url + '/search/pins/?q=pot%20roast', maxItems: 5, baseUrl: mock.url });
+  assert.equal(result.ok, true);
+  assert.ok(String(result.collectionMethod).startsWith('socialfetch'), `expected provider, got ${result.collectionMethod}`);
+  assert.equal(result.posts.length, 2);
+  assert.equal(result.pipeline.provider, 2);
+  assert.equal(result.pipeline.metrics, 2);
+  assert.ok(result.pipeline.credits >= 3, 'credits must be reported for every metered call');
+  const first = result.posts.find((post) => post.id === '111111111111111111');
+  assert.equal(first.title, 'Savory Italian Pot Roast');
+  assert.equal(first.publishedAt, '2025-01-07T18:23:09.000Z');
+  assert.equal(first.saves, 418); // only the single-pin endpoint serves metrics
+  assert.equal(first.comments, 3);
+  assert.equal(first.boardName, 'Recipes');
+  assert.equal(first.outboundUrl, 'https://example.test/recipe');
+  assert.ok(first.imageUrl.includes('111111111111111111'));
+  delete process.env.SOCIALFETCH_METRICS_LIMIT;
+});
+
+// ---------------------------------------------------------------------------
+
 test('pinterest HTTP scanner mines the embedded JSON island', async (t) => {
   const pin = await mocks.startPinterestMock();
   t.after(() => pin.server.close());

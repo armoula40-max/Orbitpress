@@ -19,6 +19,9 @@ services:
       - "${ORBITPRESS_PORT:-8080}:8080"
     environment:
       ORBITPRESS_TOKEN: ${ORBITPRESS_TOKEN:?Set ORBITPRESS_TOKEN in .env — this is your access password}
+      # مزوّد بيانات خارجي اختياري (socialfetch.dev) — إن تُرِك فارغاً يبقى الزاحف المدمج هو المستخدم:
+      # SOCIALFETCH_API_KEY: ${SOCIALFETCH_API_KEY:-}
+      # SOCIALFETCH_METRICS_LIMIT: ${SOCIALFETCH_METRICS_LIMIT:-20}
       # ORBITPRESS_SECRET_KEY يُولَّد تلقائياً ويُحفظ داخل volume — لا تضعه هنا إلا لو فقدت النسخة
     volumes:
       - orbitpress-data:/app/data

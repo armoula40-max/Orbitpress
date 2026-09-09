@@ -436,6 +436,55 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
 }
 
 /**
+ * Optional external provider pass (socialfetch.dev). Returns null when the
+ * provider is not configured or cannot serve this source kind, so the caller
+ * falls back to the built-in scraper.
+ */
+async function scanViaProvider(source, { limit, base, sourceUrl }) {
+  const provider = require('../socialfetch');
+  if (!provider.enabled()) return null;
+  const creditsBefore = provider.spentCredits();
+  let pins = [];
+  if (source.kind === 'search') {
+    pins = await provider.searchPins(source.query, { maxItems: limit });
+  } else if (source.kind === 'pin') {
+    const pin = await provider.getPin(sourceUrl);
+    pins = pin ? [pin] : [];
+  } else if (source.kind === 'board') {
+    pins = await provider.listBoardPins(`${base}/${source.user}/${source.board}/`, { maxItems: limit });
+  } else if (source.kind === 'profile' && source.user) {
+    const boards = await provider.listProfileBoards(source.user);
+    if (!boards.length) return null;
+    for (const board of boards) {
+      if (pins.length >= limit) break;
+      const boardPins = await provider.listBoardPins(board.url, { maxItems: limit - pins.length });
+      pins.push(...boardPins);
+    }
+  } else {
+    return null;
+  }
+  if (!pins.length) return null;
+  const sliced = pins.slice(0, limit);
+  // Engagement numbers are only served by the single-pin endpoint (1 credit
+  // each), so they are a bounded second pass — never silently unbounded.
+  let metricLookups = 0;
+  if (source.kind !== 'pin') {
+    try {
+      metricLookups = await provider.enrichMetrics(sliced);
+    } catch (error) {
+      metricLookups = 0; // metered pass must never break the scan
+    }
+  }
+  const credits = provider.spentCredits() - creditsBefore;
+  const method = 'socialfetch' + (metricLookups ? `+metrics${metricLookups}` : '');
+  return finalize(sliced, source, sourceUrl, method, sliced.length >= limit ? 'full' : 'partial', {
+    provider: sliced.length,
+    metrics: metricLookups,
+    credits,
+  });
+}
+
+/**
  * Scan a Pinterest source (profile / board / pin / search URL or raw query).
  */
 async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSession = true, baseUrl }) {
@@ -454,6 +503,14 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   const limit = Math.min(200, Math.max(1, Number(maxItems) || 20));
 
   const errors = [];
+  // Optional external provider (socialfetch.dev). Runs only when a key is
+  // configured; on any failure the built-in scraper below still runs.
+  try {
+    const provider = await scanViaProvider(source, { limit, base, sourceUrl });
+    if (provider) return provider;
+  } catch (error) {
+    errors.push(`Social Fetch: ${error.message}`);
+  }
   // Profile tab URLs (/_created, /_saved) are walled to datacenter crawlers;
   // the parent profile serves those same pins publicly (created-first).
   const httpUrl = source.kind === 'profile' && source.tab ? `${base}/${source.user}` : sourceUrl;
