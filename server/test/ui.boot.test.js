@@ -154,6 +154,26 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   await new Promise((resolve) => setTimeout(resolve, 800)); // design autosave is debounced
   const saved = JSON.parse(window.Native.loadWorkspace()).drafts.find((item) => item.id === 'd1');
   assert.equal(saved.pinDesign.template, 'card', 'the design travels with the draft');
+
+  // the article preview offers both readings of the same draft
+  assert.ok(document.getElementById('previewModePublished'), 'published preview toggle');
+  document.getElementById('previewModeDraft').click();
+  assert.match(document.getElementById('previewNote').textContent, /exactly as it was generated/i);
+  assert.ok(document.getElementById('articlePreview').innerHTML.includes('Hello'));
+
+  // clicking a stored image opens the lightbox over the whole draft gallery
+  assert.equal(document.getElementById('lightbox').hidden, true);
+  document.getElementById('featuredPreview').click();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(document.getElementById('lightbox').hidden, false, 'the lightbox opened');
+  assert.match(document.getElementById('lightboxTitle').textContent, /Featured image/);
+  assert.match(document.getElementById('lightboxTitle').textContent, /1 of 3/, 'featured, pinterest and the live pin');
+  assert.ok(document.getElementById('lightboxDownload').getAttribute('download').includes('easy-sourdough-bread'));
+  document.getElementById('lightboxNext').click();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.match(document.getElementById('lightboxTitle').textContent, /2 of 3/, 'the gallery moves through every image');
+  window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(document.getElementById('lightbox').hidden, true, 'Escape closes it again');
   assert.deepEqual(fatalErrors(errors), []);
   close();
 });

@@ -3,6 +3,8 @@
  * routes.js — HTTP API that replaces the Android Native bridge.
  */
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const store = require('./store');
 const wordpress = require('./wordpress');
 const images = require('./images');
@@ -94,11 +96,35 @@ const BRIDGE_OPERATIONS = {
   loadImage: (req) => images.loadImage(req),
   removeImage: (req) => images.removeImage(req),
   repairPreview: (req) => wordpress.repairPreview(req),
+  previewArticle: (req) => wordpress.previewArticle(req),
   repairApply: (req) => wordpress.repairApply(req),
   generateImage: (req) => wordpress.generateImage(req),
   publishPinterest: (req) => wordpress.publishPinterest(req),
   publish: (req) => wordpress.publish(req),
 };
+
+/**
+ * Stored images, served to the browser for previews. The filename is the
+ * local:// reference the workspace carries; anything else is rejected, so
+ * this cannot be used to read arbitrary files from the data directory.
+ */
+router.get('/images/:filename', (req, res) => {
+  const siteId = String(req.query.siteId || 'site-default');
+  let filename;
+  try {
+    filename = images.safeImageFilename(`local://${req.params.filename}`);
+  } catch {
+    return res.status(404).json({ ok: false, message: 'Image not found.' });
+  }
+  const file = path.join(images.imageDirectory(siteId), filename);
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    return res.status(404).json({ ok: false, message: 'This image is no longer stored on this server.' });
+  }
+  const extension = filename.split('.').pop().toLowerCase();
+  res.setHeader('Content-Type', extension === 'jpg' ? 'image/jpeg' : `image/${extension}`);
+  res.setHeader('Cache-Control', 'private, max-age=600');
+  fs.createReadStream(file).pipe(res);
+});
 
 router.post('/bridge/call', asyncRoute(async (req, res) => {
   const request = req.body || {};

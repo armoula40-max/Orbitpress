@@ -284,6 +284,64 @@ async function requireExistingCategory(root, settings, categoryId) {
   }
 }
 
+/**
+ * The exact HTML that reaches WordPress. `publish` and the article preview
+ * both build it here, so what the user previews is what gets published — a
+ * preview that re-implements the layout would drift from the real post.
+ */
+function assemblePublishedHtml({ draft, root, slug, featuredUrl, pinterestUrl, additionalUrls }) {
+  const blocks = [];
+  if (featuredUrl) {
+    blocks.push(WordPressMarkup.featuredImage(featuredUrl, PublishingContracts.featuredImageAltText(draft.title, draft.contentType)));
+  }
+  blocks.push(String(draft.htmlContent || ''));
+  (additionalUrls || []).forEach((url, index) => {
+    if (url) blocks.push(WordPressMarkup.featuredImage(url, `${draft.title || ''} image ${index + 1}`));
+  });
+  const canonical = `${root}/${slug}/`;
+  const share = 'https://www.pinterest.com/pin/create/button/?url=' + encodeURIComponent(canonical)
+    + '&media=' + encodeURIComponent(pinterestUrl || '')
+    + '&description=' + encodeURIComponent(String(draft.pinterestTitle || draft.title || '').trim());
+  blocks.push(WordPressMarkup.pinterestSaveButton(share));
+  blocks.push(WordPressMarkup.structuredData(JSON.stringify(
+    DraftContract.buildSchema(draft, canonical, [featuredUrl, pinterestUrl].filter(Boolean)),
+  )));
+  return blocks.join('');
+}
+
+/**
+ * Preview of the post as it will be published, built from the images stored on
+ * this server — nothing is uploaded and WordPress is not contacted. The image
+ * URLs point at /api/images, so the preview shows the real files.
+ */
+async function previewArticle(request) {
+  const draft = request.draft || {};
+  const images = request.images || {};
+  const siteId = request.siteId || 'site-default';
+  const settings = storedSettings(siteId);
+  const slug = DraftContract.cleanSlug(draft.slug || '') || 'preview';
+  const configured = String(settings.wordpressBaseUrl || '').trim();
+  const root = configured ? wpRoot(configured) : 'https://your-site.com';
+  const localUrl = (reference) => `/api/images/${String(reference || '').replace(/^local:\/\//, '')}?siteId=${encodeURIComponent(siteId)}`;
+  const additional = (Array.isArray(images.additional) ? images.additional.slice(0, 8) : []).filter(Boolean).map(localUrl);
+  const html = assemblePublishedHtml({
+    draft,
+    root,
+    slug,
+    featuredUrl: images.featured ? localUrl(images.featured) : '',
+    pinterestUrl: images.pinterest ? localUrl(images.pinterest) : '',
+    additionalUrls: additional,
+  });
+  return {
+    ok: true,
+    html,
+    canonical: `${root}/${slug}/`,
+    placeholderLinks: !configured,
+    title: String(draft.title || ''),
+    categoryName: String(draft.categoryName || ''),
+  };
+}
+
 async function publish(request) {
   const settings = requireWordPressSettings(request);
   const draft = request.draft || {};
@@ -303,26 +361,27 @@ async function publish(request) {
   await requireExistingCategory(root, settings, categoryId);
   const featuredMedia = await uploadMedia(root, settings, featured, `${slug}-featured`, featuredAlt);
   const pinterestMedia = await uploadMedia(root, settings, pinterest, `${slug}-pinterest`, pinterestAlt);
-  let extraBlocks = '';
   const additional = Array.isArray(images.additional) ? images.additional : [];
+  const uploadedAdditional = [];
   for (let index = 0; index < Math.min(additional.length, 8); index += 1) {
     const reference = String(additional[index] || '').trim();
     if (!reference) continue;
     const media = await uploadMedia(root, settings, parseImage(reference, false, request.siteId || 'site-default'), `${slug}-inline-${index + 1}`, `${draft.title || ''} image ${index + 1}`);
-    extraBlocks += WordPressMarkup.featuredImage(media.source_url, `${draft.title || ''} image ${index + 1}`);
+    uploadedAdditional.push(media.source_url);
   }
-  const featuredMediaUrl = featuredMedia.source_url;
-  const pinterestMediaUrl = pinterestMedia.source_url;
-  const pinTitle = String(draft.pinterestTitle || draft.title || '').trim();
-  const share = 'https://www.pinterest.com/pin/create/button/?url=' + encodeURIComponent(`${root}/${slug}/`) + '&media=' + encodeURIComponent(pinterestMediaUrl) + '&description=' + encodeURIComponent(pinTitle);
-  const featuredBlock = WordPressMarkup.featuredImage(featuredMediaUrl, featuredAlt);
-  const pinBlock = WordPressMarkup.pinterestSaveButton(share);
-  const schema = DraftContract.buildSchema(draft, `${root}/${slug}/`, [featuredMediaUrl, pinterestMediaUrl]);
+  const content = assemblePublishedHtml({
+    draft,
+    root,
+    slug,
+    featuredUrl: featuredMedia.source_url,
+    pinterestUrl: pinterestMedia.source_url,
+    additionalUrls: uploadedAdditional,
+  });
   const post = {
     title: String(draft.title || ''),
     slug,
     status: PublishingContracts.normalizePostStatus(request.postStatus || draft.postStatus || 'publish'),
-    content: featuredBlock + String(draft.htmlContent || '') + extraBlocks + pinBlock + WordPressMarkup.structuredData(JSON.stringify(schema)),
+    content,
     excerpt: draft.metaDescription || '',
     featured_media: featuredMedia.id,
     categories: [categoryId],
@@ -524,6 +583,8 @@ module.exports = {
   repairPreview,
   repairApply,
   publish,
+  assemblePublishedHtml,
+  previewArticle,
   publishPinterest,
   generateImage,
   imageShapeFor,

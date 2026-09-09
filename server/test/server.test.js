@@ -352,6 +352,86 @@ test('pin fitting crops to cover and letterboxes to contain', () => {
   assert.deepEqual(pin.fitRect(0, 0, 1000, 1500, 'cover'), { x: 0, y: 0, width: 1000, height: 1500 });
 });
 
+test('the article preview is the exact markup publish sends, using local images', async () => {
+  const featured = imagesLib.storeImage({ kind: 'featured', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), siteId: 'site-prev' });
+  const pinterest = imagesLib.storeImage({ kind: 'pinterest', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-prev' });
+  const inline = imagesLib.storeImage({ kind: 'article', dataUrl: mocks.makeDataUrl(mocks.tinyPng(800, 600)), siteId: 'site-prev' });
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  const images = { featured: featured.reference, pinterest: pinterest.reference, additional: [inline.reference] };
+  const localUrl = (reference) => `/api/images/${String(reference).slice('local://'.length)}?siteId=site-prev`;
+
+  // without WordPress the preview still builds and admits its links are placeholders
+  store.saveSiteSettings({ wordpressBaseUrl: '' }, 'site-prev');
+  const preview = await wordpress.previewArticle({ siteId: 'site-prev', draft, images });
+  assert.equal(preview.placeholderLinks, true);
+  assert.ok(preview.html.includes(localUrl(featured.reference)), 'the preview shows the real stored file');
+  assert.ok(preview.html.includes(localUrl(inline.reference)), 'inline images are placed as they will be published');
+  assert.ok(preview.html.includes('Save on Pinterest'));
+  assert.ok(preview.html.includes(String(draft.htmlContent).slice(0, 40)));
+
+  // with WordPress configured, byte-identical to publish's own markup
+  store.saveSiteSettings({ wordpressBaseUrl: 'https://wp.example.com' }, 'site-prev');
+  const configured = await wordpress.previewArticle({ siteId: 'site-prev', draft, images });
+  assert.equal(configured.placeholderLinks, false);
+  assert.equal(configured.html, wordpress.assemblePublishedHtml({
+    draft,
+    root: 'https://wp.example.com',
+    slug: draft.slug,
+    featuredUrl: localUrl(featured.reference),
+    pinterestUrl: localUrl(pinterest.reference),
+    additionalUrls: [localUrl(inline.reference)],
+  }));
+});
+
+test('publishing uploads the markup the article preview showed', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({
+    wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw', categoryId: '3',
+  }, 'site-preview-publish');
+  const featured = imagesLib.storeImage({ kind: 'featured', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), siteId: 'site-preview-publish' });
+  const pinterest = imagesLib.storeImage({ kind: 'pinterest', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-preview-publish' });
+  const inline = imagesLib.storeImage({ kind: 'article', dataUrl: mocks.makeDataUrl(mocks.tinyPng(800, 600)), siteId: 'site-preview-publish' });
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  await wordpress.publish({
+    siteId: 'site-preview-publish',
+    draft,
+    images: { featured: featured.reference, pinterest: pinterest.reference, additional: [inline.reference] },
+    categoryId: '3',
+    postStatus: 'publish',
+  });
+  const post = wp.data.posts[wp.data.posts.length - 1];
+  const [featuredMedia, pinterestMedia, inlineMedia] = wp.data.media;
+  assert.equal(post.content.raw, wordpress.assemblePublishedHtml({
+    draft,
+    root: wp.url,
+    slug: draft.slug,
+    featuredUrl: featuredMedia.source_url,
+    pinterestUrl: pinterestMedia.source_url,
+    additionalUrls: [inlineMedia.source_url],
+  }));
+});
+
+test('stored images are served to the browser, and only stored images', async (t) => {
+  const stored = imagesLib.storeImage({ kind: 'featured', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), siteId: 'site-serve' });
+  const file = stored.reference.slice('local://'.length);
+  const started = await startServer();
+  t.after(() => new Promise((resolve) => { started.close(resolve); }));
+
+  const res = await fetch(`${started.url}/api/images/${file}?siteId=site-serve`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  const served = Buffer.from(await res.arrayBuffer());
+  assert.equal(served.length, mocks.tinyPng(1200, 800).length, 'the stored bytes come back unchanged');
+
+  // another site's image, a traversal attempt and a made-up name are all refused
+  assert.equal((await fetch(`${started.url}/api/images/${file}?siteId=site-other`)).status, 404);
+  assert.equal((await fetch(`${started.url}/api/images/..%2F..%2Fsettings.json?siteId=site-serve`)).status, 404);
+  assert.equal((await fetch(`${started.url}/api/images/not-a-file.txt?siteId=site-serve`)).status, 404);
+});
+
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 
 test('Article API probe reports a working provider and a failing one', async (t) => {
