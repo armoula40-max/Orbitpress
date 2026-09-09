@@ -232,6 +232,23 @@ function startArticleApiMock(options = {}) {
   });
 }
 
+/** Minimal OpenAI-compatible images endpoint. */
+function startImageApiMock() {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      calls.push(body ? JSON.parse(body) : {});
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ b64_json: tinyPng(64, 64).toString('base64') }] }));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, calls }));
+  });
+}
+
 /** Minimal mock of the internal Pinterest resource GET endpoints. */
 function startPinterestResourceMock() {
   const calls = [];
@@ -276,4 +293,4 @@ function startPinterestResourceMock() {
   });
 }
 
-module.exports = { tinyPng, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };
+module.exports = { tinyPng, startImageApiMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };

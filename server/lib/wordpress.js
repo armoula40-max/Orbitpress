@@ -51,6 +51,22 @@ function requireWordPressSettings(request) {
   return settings;
 }
 
+/** Image generation is AI work: it needs the image settings, not WordPress. */
+function requireImageSettings(request) {
+  const settings = storedSettings(request.siteId || 'site-default');
+  const provider = String(settings.imageProvider || 'cloudflare').toLowerCase();
+  const missing = [];
+  if (!String(settings.imageApiToken || '').trim()) missing.push('Image API token');
+  if (provider === 'cloudflare') {
+    if (!String(settings.imageAccountId || '').trim()) missing.push('Cloudflare Account ID');
+  } else if (!String(settings.imageBaseUrl || '').trim()) {
+    missing.push('Image API base URL');
+  }
+  if (missing.length) throw new Error(`Complete and save the image settings first: ${missing.join(', ')}.`);
+  if (provider !== 'cloudflare') PublishingContracts.requireHttpsUrl(settings.imageBaseUrl, 'Image API URL');
+  return settings;
+}
+
 function requireStoredSettings(request) {
   const settings = requireAiSettings(request);
   requireWordPressSettings(request);
@@ -347,7 +363,7 @@ async function publishPinterest(request) {
 // --- image generation (Cloudflare Workers AI / OpenAI-compatible) ----------
 
 async function generateImage(request) {
-  const settings = requireWordPressSettings(request);
+  const settings = requireImageSettings(request);
   const provider = String(settings.imageProvider || 'cloudflare').toLowerCase();
   const kind = String(request.kind || 'featured');
   const configuredPrompt = String(kind === 'pinterest' ? (settings.pinterestPrompt || '') : (settings.imagePrompt || '')).trim();
@@ -373,6 +389,36 @@ async function generateImage(request) {
   const reference = `local://${require('crypto').randomUUID()}.${validated.extension}`;
   fs.writeFileSync(path.join(require('./images').imageDirectory(request.siteId || 'site-default'), reference.slice('local://'.length)), validated.bytes, { mode: 0o600 });
   return { ok: true, reference, mimeType: validated.mimeType, provider };
+}
+
+/**
+ * Connectivity probe for the image provider: one small image, metadata only
+ * (the bytes are discarded). Providers differ in supported sizes, so the
+ * probe asks for the smallest widely supported one and reports the exact
+ * error when the provider refuses.
+ */
+async function testImageApi(request) {
+  const settings = requireImageSettings(request);
+  const provider = String(settings.imageProvider || 'cloudflare').toLowerCase();
+  const prompt = 'A single red apple on a plain white background, studio lighting';
+  const started = Date.now();
+  try {
+    const image = provider === 'cloudflare'
+      ? await generateCloudflareImage(settings, prompt)
+      : await generateOpenAiCompatibleImage(settings, prompt, 512, 512);
+    const bytes = image.bytes && image.bytes.length ? image.bytes.length : 0;
+    if (!bytes) return { ok: false, provider, latencyMs: Date.now() - started, message: 'The provider returned an empty image.' };
+    return {
+      ok: true,
+      provider,
+      model: String(settings.imageModel || (provider === 'cloudflare' ? '@cf/black-forest-labs/flux-1-schnell' : 'default')),
+      latencyMs: Date.now() - started,
+      bytes,
+      mimeType: image.mimeType,
+    };
+  } catch (error) {
+    return { ok: false, provider, latencyMs: Date.now() - started, message: String(error.message || 'Image API test failed.').slice(0, 300) };
+  }
 }
 
 async function generateCloudflareImage(settings, prompt) {
@@ -406,6 +452,7 @@ module.exports = {
   requireStoredSettings,
   requireAiSettings,
   requireWordPressSettings,
+  requireImageSettings,
   categories,
   testConnection,
   syncPublishedPosts,
@@ -414,6 +461,7 @@ module.exports = {
   publish,
   publishPinterest,
   generateImage,
+  testImageApi,
   inspectPublishedPost,
   findTrackedPost,
 };

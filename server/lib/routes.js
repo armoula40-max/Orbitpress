@@ -81,6 +81,7 @@ const BRIDGE_OPERATIONS = {
   analyzePinterestKeywords: (req) => article.analyzePinterestKeywords(req),
   viralKeywords: (req) => article.viralKeywords(req),
   testArticleApi: (req) => article.testArticleApi(req),
+  testImageApi: (req) => wordpress.testImageApi(req),
   facebookGraphScan: (req) => socialapi.facebookGraphScan(req),
   pinterestApiScan: (req) => socialapi.pinterestApiScan(req),
   scraperFacebook: (req) => socialapi.scraperScan(req, 'facebook'),

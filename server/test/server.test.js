@@ -131,6 +131,23 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('image API probe works from the image settings alone', async (t) => {
+  const api = await mocks.startImageApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'test-image', imageApiToken: 'k' }, 'site-img');
+  const result = await wordpress.testImageApi({ siteId: 'site-img' });
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.provider, 'openai-compatible');
+  assert.ok(result.bytes > 0);
+  assert.equal(result.mimeType, 'image/png');
+
+  // image generation must not be gated behind WordPress
+  store.saveSiteSettings({ imageProvider: 'cloudflare', imageAccountId: '', imageApiToken: '' }, 'site-img-empty');
+  await assert.rejects(() => wordpress.testImageApi({ siteId: 'site-img-empty' }), /image settings/);
+});
+
+// ---------------------------------------------------------------------------
+
 test('Article API probe reports a working provider and a failing one', async (t) => {
   const api = await mocks.startArticleApiMock();
   t.after(() => api.server.close());
