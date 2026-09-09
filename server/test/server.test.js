@@ -131,44 +131,46 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
-test('pinterest provider (socialfetch) is inert without a key, and full with one', async (t) => {
-  const mock = await mocks.startSocialFetchMock();
-  const pinMockSite = await mocks.startPinterestMock();
-  t.after(() => { mock.server.close(); pinMockSite.server.close(); });
-  const savedKey = process.env.SOCIALFETCH_API_KEY;
-  const savedBase = process.env.SOCIALFETCH_BASE_URL;
+test('pinterest resource layer reads the JSON the Pinterest front-end uses', async (t) => {
+  const mock = await mocks.startPinterestResourceMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
   t.after(() => {
-    if (savedKey == null) delete process.env.SOCIALFETCH_API_KEY; else process.env.SOCIALFETCH_API_KEY = savedKey;
-    if (savedBase == null) delete process.env.SOCIALFETCH_BASE_URL; else process.env.SOCIALFETCH_BASE_URL = savedBase;
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
   });
+  const resource = require('../lib/scraper/pinterestResource');
 
-  // 1. No key -> provider must never be contacted and the scan still works.
-  delete process.env.SOCIALFETCH_API_KEY;
-  delete process.env.SOCIALFETCH_BASE_URL;
-  const plain = await scanPinterest({ url: pinMockSite.url + '/swaliha/', maxItems: 5, baseUrl: pinMockSite.url });
-  assert.equal(plain.ok, true);
-  assert.ok(!String(plain.collectionMethod).includes('socialfetch'), 'provider must stay off without a key');
+  // direct calls
+  const boardPins = await resource.boardPins('mockuser', 'recipes', { maxItems: 5 });
+  assert.equal(boardPins.length, 2);
+  assert.equal(boardPins[0].title, 'Board Pin One');
+  assert.equal(boardPins[0].saves, 418); // engagement actually survives here
+  assert.equal(boardPins[0].comments, 3);
+  assert.equal(boardPins[0].publishedAt, '2025-01-07T18:23:09.000Z');
+  assert.equal(boardPins[0].boardName, 'Recipes');
+  assert.equal(boardPins[0].author, 'Mock User');
 
-  // 2. With a key -> provider serves the scan, metrics included.
-  process.env.SOCIALFETCH_API_KEY = 'sfk_test';
-  process.env.SOCIALFETCH_BASE_URL = mock.url;
-  process.env.SOCIALFETCH_METRICS_LIMIT = '2';
-  const result = await scanPinterest({ url: mock.url + '/search/pins/?q=pot%20roast', maxItems: 5, baseUrl: mock.url });
+  const boards = await resource.profileBoards('mockuser', {});
+  assert.equal(boards.length, 1);
+  assert.equal(boards[0].name, 'Recipes');
+
+  const searched = await resource.searchPins('pot roast', { maxItems: 5 });
+  assert.equal(searched.length, 1);
+  assert.equal(searched[0].title, 'Search Result One');
+
+  const detail = await resource.pinDetail('444444444444444444', {});
+  assert.equal(detail.title, 'Detailed Pin');
+
+  // and through the scanner itself, merged ahead of the HTML islands
+  const result = await scanPinterest({ url: 'https://www.pinterest.com/mockuser/recipes/', maxItems: 5 });
   assert.equal(result.ok, true);
-  assert.ok(String(result.collectionMethod).startsWith('socialfetch'), `expected provider, got ${result.collectionMethod}`);
-  assert.equal(result.posts.length, 2);
-  assert.equal(result.pipeline.provider, 2);
-  assert.equal(result.pipeline.metrics, 2);
-  assert.ok(result.pipeline.credits >= 3, 'credits must be reported for every metered call');
-  const first = result.posts.find((post) => post.id === '111111111111111111');
-  assert.equal(first.title, 'Savory Italian Pot Roast');
-  assert.equal(first.publishedAt, '2025-01-07T18:23:09.000Z');
-  assert.equal(first.saves, 418); // only the single-pin endpoint serves metrics
-  assert.equal(first.comments, 3);
-  assert.equal(first.boardName, 'Recipes');
-  assert.equal(first.outboundUrl, 'https://example.test/recipe');
-  assert.ok(first.imageUrl.includes('111111111111111111'));
-  delete process.env.SOCIALFETCH_METRICS_LIMIT;
+  assert.ok(String(result.collectionMethod).includes('resource_api'), `expected resource_api, got ${result.collectionMethod}`);
+  assert.equal(result.pipeline.resource, 2);
+  const merged = result.posts.find((post) => post.id === '111111111111111111');
+  assert.equal(merged.title, 'Board Pin One');
+  assert.equal(merged.saves, 418);
 });
 
 // ---------------------------------------------------------------------------

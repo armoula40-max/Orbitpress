@@ -139,6 +139,15 @@ function numberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Dates arrive in several shapes; keep one ISO form so sorting, CSV and the
+ *  activity reports all agree. Unparseable values are preserved as-is. */
+function normalizeDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  return String(value);
+}
+
 function normalizePin(pin) {
   const stats = ((pin.aggregated_pin_data || {}).aggregated_stats) || {};
   const saves = numberOrNull(stats.saves ?? stats.save ?? pin.save_count ?? pin.repin_count);
@@ -153,7 +162,7 @@ function normalizePin(pin) {
     kind: 'pinterest_pin',
     title: String(pin.title || pin.grid_title || (pin.rich_summary && pin.rich_summary.display_name) || '').slice(0, 300),
     text: String(pin.description || pin.closeup_description || (pin.rich_summary && pin.rich_summary.display_description) || '').slice(0, 2000),
-    publishedAt: pin.created_at || pin.createdAt || null,
+    publishedAt: normalizeDate(pin.created_at || pin.createdAt),
     url: `https://www.pinterest.com/pin/${id}/`,
     outboundUrl: pin.link || pin.domain || null,
     imageUrl,
@@ -436,52 +445,46 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
 }
 
 /**
- * Optional external provider pass (socialfetch.dev). Returns null when the
- * provider is not configured or cannot serve this source kind, so the caller
- * falls back to the built-in scraper.
+ * Merge two pin lists: `preferred` supplies the values, `secondary` only fills
+ * fields that are still empty (resource data is richer than the HTML islands).
  */
-async function scanViaProvider(source, { limit, base, sourceUrl }) {
-  const provider = require('../socialfetch');
-  if (!provider.enabled()) return null;
-  const creditsBefore = provider.spentCredits();
-  let pins = [];
+function mergePinLists(preferred, secondary) {
+  const merged = new Map();
+  for (const pin of preferred) merged.set(pin.id, { ...pin });
+  for (const pin of secondary) {
+    const existing = merged.get(pin.id);
+    if (!existing) { merged.set(pin.id, { ...pin }); continue; }
+    for (const [key, value] of Object.entries(pin)) {
+      if (existing[key] == null || existing[key] === '') existing[key] = value;
+    }
+  }
+  return [...merged.values()];
+}
+
+/**
+ * In-house pass over the JSON endpoints Pinterest's own front-end calls.
+ * Uses the server-side session when one is connected; anonymous resource calls
+ * still work on some Pinterest hosts.
+ */
+async function scanViaResource(source, { limit, useSession }) {
+  const sessions = require('./sessions');
+  const resource = require('./pinterestResource');
+  const cookieHeader = useSession === false ? '' : await sessions.cookieHeader('pinterest').catch(() => '');
   if (source.kind === 'search') {
-    pins = await provider.searchPins(source.query, { maxItems: limit });
-  } else if (source.kind === 'pin') {
-    const pin = await provider.getPin(sourceUrl);
-    pins = pin ? [pin] : [];
-  } else if (source.kind === 'board') {
-    pins = await provider.listBoardPins(`${base}/${source.user}/${source.board}/`, { maxItems: limit });
-  } else if (source.kind === 'profile' && source.user) {
-    const boards = await provider.listProfileBoards(source.user);
-    if (!boards.length) return null;
-    for (const board of boards) {
-      if (pins.length >= limit) break;
-      const boardPins = await provider.listBoardPins(board.url, { maxItems: limit - pins.length });
-      pins.push(...boardPins);
-    }
-  } else {
-    return null;
+    return resource.searchPins(source.query, { cookieHeader, maxItems: limit });
   }
-  if (!pins.length) return null;
-  const sliced = pins.slice(0, limit);
-  // Engagement numbers are only served by the single-pin endpoint (1 credit
-  // each), so they are a bounded second pass — never silently unbounded.
-  let metricLookups = 0;
-  if (source.kind !== 'pin') {
-    try {
-      metricLookups = await provider.enrichMetrics(sliced);
-    } catch (error) {
-      metricLookups = 0; // metered pass must never break the scan
-    }
+  if (source.kind === 'board') {
+    return resource.boardPins(source.user, source.board, { cookieHeader, maxItems: limit });
   }
-  const credits = provider.spentCredits() - creditsBefore;
-  const method = 'socialfetch' + (metricLookups ? `+metrics${metricLookups}` : '');
-  return finalize(sliced, source, sourceUrl, method, sliced.length >= limit ? 'full' : 'partial', {
-    provider: sliced.length,
-    metrics: metricLookups,
-    credits,
-  });
+  if (source.kind === 'profile' && source.user) {
+    return resource.profilePins(source.user, { cookieHeader, maxItems: limit });
+  }
+  if (source.kind === 'pin') {
+    const id = (String(source.path).match(/\/pin\/(\d+)/) || [])[1];
+    const pin = id ? await resource.pinDetail(id, { cookieHeader }) : null;
+    return pin ? [pin] : [];
+  }
+  return [];
 }
 
 /**
@@ -503,13 +506,14 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   const limit = Math.min(200, Math.max(1, Number(maxItems) || 20));
 
   const errors = [];
-  // Optional external provider (socialfetch.dev). Runs only when a key is
-  // configured; on any failure the built-in scraper below still runs.
-  try {
-    const provider = await scanViaProvider(source, { limit, base, sourceUrl });
-    if (provider) return provider;
-  } catch (error) {
-    errors.push(`Social Fetch: ${error.message}`);
+  // In-house resource pass: same JSON calls the Pinterest front-end makes.
+  let resourcePins = [];
+  if (!testMode) {
+    try {
+      resourcePins = await scanViaResource(source, { limit, useSession });
+    } catch (error) {
+      errors.push(`Resource API: ${error.message}`);
+    }
   }
   // Profile tab URLs (/_created, /_saved) are walled to datacenter crawlers;
   // the parent profile serves those same pins publicly (created-first).
@@ -521,11 +525,12 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
     if (httpPins.length >= limit && source.kind !== 'profile') {
       const sliced = httpPins.slice(0, limit);
       const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
-      return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'full', { http: httpPins.length, enriched });
+      return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'full', { resource: resourcePins.length, http: httpPins.length, enriched });
     }
   } catch (error) {
     errors.push(`HTTP scan: ${error.message}`);
   }
+  if (resourcePins.length) httpPins = mergePinLists(resourcePins, httpPins);
 
   // Escalate to the server browser to top up (JS-rendered or session-gated feeds).
   const browserTargets = [sourceUrl];
@@ -543,8 +548,8 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
       if (pins.length) {
         const sliced = pins.slice(0, limit);
         const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
-        const method = (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (enriched ? `+enriched${enriched}` : '') + (isFallback ? '+tab-fallback' : '');
-        return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
+        const method = (resourcePins.length ? 'resource_api+' : '') + (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (enriched ? `+enriched${enriched}` : '') + (isFallback ? '+tab-fallback' : '');
+        return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { resource: resourcePins.length, http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
       }
     } catch (error) {
       errors.push(`Browser scan (${isFallback ? 'profile fallback' : 'tab url'}): ${error.message}`);
@@ -554,7 +559,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   if (httpPins.length) {
     const sliced = httpPins.slice(0, limit);
     const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
-    return finalize(sliced, source, sourceUrl, enriched ? `embedded_json+enriched${enriched}` : 'embedded_json', 'partial', { http: httpPins.length, enriched });
+    return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'partial', { resource: resourcePins.length, http: httpPins.length, enriched });
   }
   const needsSession = /login|403|429|captcha|blocked|Could not/i.test(errors.join(' '));
   const message = `Pinterest scan failed. ${needsSession ? 'The platform is likely requiring a signed-in session from this server — connect Pinterest in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim();
