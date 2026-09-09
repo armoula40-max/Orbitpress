@@ -163,7 +163,9 @@
           '<div class="spy-cell"><label>' + AR.max + '</label><input id="' + id + 'Max" type="number" min="0" placeholder="—"></div>' +
           '<div class="spy-cell spy-check"><label class="spy-switch"><input type="checkbox" id="' + id + 'HideViewed"><span>' + AR.hideViewed + '</span></label></div>' +
           '<div class="spy-cell spy-actions"><button type="button" class="small-button" id="' + id + 'Csv">' + AR.exportCsv + '</button>' +
-          '<button type="button" class="small-button spy-ai" id="' + id + 'AiReport">🧠 ' + AR.aiReport + '</button></div>' +
+          '<button type="button" class="small-button spy-ai" id="' + id + 'AiReport">🧠 ' + AR.aiReport + '</button>' +
+          '<select id="' + id + 'TopN" aria-label="عدد النتائج المحوّلة"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>' +
+          '<button type="button" class="small-button spy-viral" id="' + id + 'ToKeywords">⚡ حول الأعلى إلى كلمات</button></div>' +
         '</div>' +
       '</div>';
   }
@@ -363,6 +365,7 @@
     document.getElementById(id + 'HideViewed').onchange = function () { spy[platform].hideViewed = this.checked; R(); };
     document.getElementById(id + 'Csv').onclick = function () { exportCsv(platform); };
     document.getElementById(id + 'AiReport').onclick = function () { requestAiReport(platform); };
+    document.getElementById(id + 'ToKeywords').onclick = function () { sendTopToKeywords(platform); };
     var analyzeBtn = document.getElementById(platform === 'pinterest' ? 'analyzePinterest' : 'analyzeFacebook');
     if (analyzeBtn && analyzeBtn.parentElement) {
       var note = document.createElement('p');
@@ -370,6 +373,41 @@
       note.textContent = 'زر "Analyze with AI" يعمل كما في السابق — زر "تقرير AI شامل" في شريط FeedSpy يُنتج تقريراً عربياً كاملاً.';
       analyzeBtn.parentElement.appendChild(note);
     }
+  }
+
+  /**
+   * Viral -> article handoff: turn the strongest posts of the current view
+   * into keyword queue entries. Pinterest titles are listicle headlines
+   * ("X: 7 Proven Steps to Y"), so the keyword is the topic before the colon
+   * or pipe, with listicle numbering and hashtags stripped.
+   */
+  function pinKeyword(post) {
+    var raw = String(post.title || post.text || '');
+    raw = raw.split('|')[0].split(' – ')[0].split(' - ')[0];
+    var colon = raw.indexOf(':');
+    if (colon > 12) raw = raw.slice(0, colon);
+    raw = raw.replace(/#\S+/g, ' ').replace(/^\s*\d+\s+/, ' ');
+    try { raw = raw.replace(/[^\p{L}\p{N}\s'&-]/gu, ' '); } catch (e) { raw = raw.replace(/[^\w\s'&-]/g, ' '); }
+    raw = raw.replace(/\s+/g, ' ').trim();
+    if (raw.split(' ').length < 2 && post.boardName) raw = String(post.boardName);
+    return raw.slice(0, 70).trim();
+  }
+
+  function sendTopToKeywords(platform) {
+    var id = platform === 'pinterest' ? 'spyP' : 'spyF';
+    var select = document.getElementById(id + 'TopN');
+    var count = Number(select && select.value) || 5;
+    var top = applyFilters(spy[platform].posts, platform).slice().sort(function (a, b) {
+      return (Number(b.viralScore) || 0) - (Number(a.viralScore) || 0);
+    }).slice(0, count);
+    var keywords = top.map(pinKeyword).filter(Boolean);
+    if (!keywords.length) return spyNotice('لا توجد نتائج صالحة للتحويل ضمن الفلاتر الحالية.', 'bad');
+    if (typeof window.__orbitpressEnqueueKeywords !== 'function') {
+      return spyNotice('واجهة الكلمات غير متاحة — أعد تحميل الصفحة.', 'bad');
+    }
+    var result = window.__orbitpressEnqueueKeywords(keywords) || {};
+    if (result.added) spyNotice('أُضيفت ' + result.added + ' كلمة إلى طابور الاستوديو' + (result.duplicates ? ' (' + result.duplicates + ' مكررة/غير صالحة)' : '') + '.', 'good');
+    else spyNotice(result.message || 'لم تُضف أي كلمة — اختر تصنيفاً في شاشة الاستوديو أولاً.', 'bad');
   }
 
   // ---- intercept scan results to seed the spy store ------------------------------

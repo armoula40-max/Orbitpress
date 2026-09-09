@@ -100,3 +100,13 @@ html[data-theme="night"] .spy-verify { background: #2a2210; border-color: #6b5a2
 .spy-verify-hint { margin: 0 0 6px; font-weight: 700; color: #79521d; }
 html[data-theme="night"] .spy-verify-hint { color: #ffd98a; }
 .spy-verify input { letter-spacing: .3em; text-align: center; font-size: 17px; font-weight: 800; }
+
+.spy-viral {
+  border-color: #f0a35e !important;
+  color: #ffd9b3 !important;
+}
+.spy-toolbar .spy-actions select {
+  width: auto;
+  min-width: 56px;
+  padding: 4px 6px;
+}
