@@ -210,7 +210,7 @@
       return '<article class="pin-result spy-post' + (isSeen ? ' seen' : '') + '">' +
         '<div class="pin-result-top"><div class="pin-result-title">' + (post.url ? '<a href="' + esc(post.url) + '" target="_blank" rel="noopener">' + esc(post.title || post.text || ('Untitled ' + (index + 1))) + '</a>' : esc(post.title || post.text || ('Untitled ' + (index + 1)))) + '</div>' +
         '<span class="pin-score ' + viralClass(num(post.viralScore)) + '">' + (post.viralScore == null ? '—' : Number(post.viralScore).toFixed(1)) + '</span></div>' +
-        '<div class="pin-meta"><span>🕑 ' + (post.publishedAtSource === 'id' ? '≈ ' : '') + esc(fmtDate(post.publishedAt)) + (post.publishedAtSource === 'id' ? ' <span class="spy-note-inline" title="مُستنتج من معرّف الدبوس (Pinterest لا يعرض التاريخ)">مُستنتج</span>' : '') + '</span>' + chips + '</div>' +
+        '<div class="pin-meta"><span>🕑 ' + esc(fmtDate(post.publishedAt)) + '</span>' + chips + '</div>' +
         '<div class="spy-post-actions"><button type="button" class="small-button plain spy-seen" data-spy-seen="' + esc(postKey(post)) + '" data-platform="' + platform + '">' + (isSeen ? '✓ شوهد' : AR.seen) + '</button>' +
         (post.url ? '<a class="small-button spy-open" href="' + esc(post.url) + '" target="_blank" rel="noopener">' + AR.openPost + '</a>' : '') + '</div>' +
       '</article>';
@@ -239,7 +239,6 @@
         if (pipe.browserUnique != null) parts.push('متصفح ' + pipe.browserUnique + ' (' + (pipe.passes || 0) + ' تمريرة)');
         if (pipe.details) parts.push('تفاصيل عميقة ' + pipe.details);
         if (pipe.enriched) parts.push('إثراء HTTP ' + pipe.enriched);
-        if (pipe.dateDerived) parts.push('تاريخ مُستنتج ' + pipe.dateDerived);
         if (pipe.photos) parts.push('صور عميقة ' + pipe.photos);
         if (pipe.stoppedBy && REASON_AR[pipe.stoppedBy]) parts.push('توقف: ' + REASON_AR[pipe.stoppedBy]);
       }

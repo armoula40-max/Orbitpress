@@ -100,12 +100,3 @@ html[data-theme="night"] .spy-verify { background: #2a2210; border-color: #6b5a2
 .spy-verify-hint { margin: 0 0 6px; font-weight: 700; color: #79521d; }
 html[data-theme="night"] .spy-verify-hint { color: #ffd98a; }
 .spy-verify input { letter-spacing: .3em; text-align: center; font-size: 17px; font-weight: 800; }
-
-.spy-note-inline {
-  font-size: 10px;
-  opacity: 0.65;
-  border: 1px solid currentColor;
-  border-radius: 6px;
-  padding: 0 4px;
-  margin-right: 4px;
-}

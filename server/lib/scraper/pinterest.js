@@ -85,38 +85,6 @@ function firstMatch(text, re) {
   return m ? m[1] : null;
 }
 
-/**
- * Pinterest IDs are Twitter-epoch snowflakes: (id >> 22) + 1288834974657 ms.
- * Pinterest hides creation dates from non-API clients, so when a pin page
- * carries no date we derive it from the id — and always label it as derived
- * (publishedAtSource: 'id') so no one mistakes it for a served value.
- */
-const SNOWFLAKE_EPOCH_MS = 1288834974657;
-function snowflakeDate(id) {
-  if (!/^\d{15,25}$/.test(String(id || ''))) return null;
-  try {
-    const ms = Number(BigInt(String(id)) >> 22n) + SNOWFLAKE_EPOCH_MS;
-    const date = new Date(ms);
-    const year = date.getUTCFullYear();
-    if (!Number.isFinite(ms) || year < 2010 || year > new Date().getUTCFullYear() + 1) return null;
-    if (ms > Date.now() + 86400000) return null;
-    return date.toISOString();
-  } catch { return null; }
-}
-
-function applyDerivedDates(pins) {
-  let derived = 0;
-  for (const pin of pins) {
-    if (pin.publishedAt) continue;
-    const date = snowflakeDate(pin.id);
-    if (!date) continue;
-    pin.publishedAt = date;
-    pin.publishedAtSource = 'id';
-    derived += 1;
-  }
-  return derived;
-}
-
 function extractBoardName(html) {
   return firstMatch(html, /"board"\s*:\s*\{[^}]{0,400}?"name"\s*:\s*"([^"]{1,120})"/)
     || firstMatch(html, /"board_name"\s*:\s*"([^"]{1,120})"/)
@@ -537,11 +505,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
 }
 
 function finalize(pins, source, sourceUrl, method, completeness, pipeline) {
-  // Pinterest serves no creation date to non-API clients; derive it from the
-  // snowflake id and report how many were derived (never silently).
-  const derivedDates = applyDerivedDates(pins);
   const ranked = analyzer.rankPosts(pins);
-  if (derivedDates && pipeline) pipeline.dateDerived = derivedDates;
   return {
     ok: true,
     platform: 'pinterest',
