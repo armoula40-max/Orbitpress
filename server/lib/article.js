@@ -42,6 +42,38 @@ function articleResponseFormat() {
   return { type: 'json_schema', json_schema: { name: 'askinz_niche_article', strict: true, schema } };
 }
 
+/**
+ * Providers disagree about response_format: some reject json_object, some
+ * ignore it and answer in prose. Try structured output, fall back to a
+ * plain request, then salvage the first JSON object from the text.
+ */
+async function requestCompletion({ baseUrl, apiKey, model, messages, temperature = 0.2, responseFormat }) {
+  const body = { model, temperature, messages };
+  if (responseFormat) body.response_format = responseFormat;
+  try {
+    return await requestJson(chatEndpoint(baseUrl), 'POST', { Authorization: `Bearer ${apiKey}` }, body);
+  } catch (error) {
+    if (!responseFormat) throw error;
+    const message = String(error.message || '').toLowerCase();
+    const rejectsFormat = /response_format|json|schema|unsupported|invalid_request|400|422/.test(message);
+    if (!rejectsFormat) throw error;
+    delete body.response_format;
+    return requestJson(chatEndpoint(baseUrl), 'POST', { Authorization: `Bearer ${apiKey}` }, body);
+  }
+}
+
+/** Parse a model reply into JSON: fences, prose around it, or nothing. */
+function parseModelJson(content) {
+  const cleaned = stripCodeFence(String(content || '').trim());
+  try { return JSON.parse(cleaned); } catch { /* continue */ }
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { /* fall through */ }
+  }
+  return null;
+}
+
 function stripCodeFence(content) {
   return String(content || '').trim().replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '').trim();
 }
@@ -162,23 +194,22 @@ async function analyzeKeywords(request, platformHint) {
   };
   let response;
   try {
-    response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
+    response = await requestCompletion({
+      baseUrl: provider.baseUrl,
+      apiKey: settings.articleApiKey,
+      model: provider.model,
+      messages: body.messages,
+      temperature: body.temperature,
+      responseFormat: body.response_format,
+    });
   } catch (error) {
-    const message = String(error.message || '').toLowerCase();
-    if (message.includes('response_format') || message.includes('json')) {
-      delete body.response_format;
-      response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
-    } else {
-      throw new Error(ProviderCompatibilityContract.diagnostic(error.message));
-    }
+    throw new Error(ProviderCompatibilityContract.diagnostic(error.message));
   }
   const content = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;
-  let report;
-  try {
-    report = JSON.parse(stripCodeFence(content));
-  } catch {
-    report = { summary: content, primaryKeywords: [] };
-  }
+  const parsed = parseModelJson(content);
+  // A provider that answers in prose still produced an analysis: keep it
+  // instead of throwing away the whole run.
+  const report = parsed || { summary: String(content || '').slice(0, 2000), primaryKeywords: [] };
   return { ok: true, report };
 }
 
