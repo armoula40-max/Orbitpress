@@ -234,7 +234,7 @@
       var REASON_AR = { 'post-cap': 'بلغ حد العدد', 'scroll-cap': 'بلغ حد التمريرات', 'window-covered': 'اكتملت النافذة', 'no-older-posts': 'لا منشورات أقدم بالصفحة', 'no-new-posts': 'توقف ظهور الجديد', 'time-limit': 'انتهت المهلة', 'browser-failed': 'فشل مسار المتصفح' };
       var parts = [];
       if (pipe) {
-        if (pipe.resource != null) parts.push('مورد ' + pipe.resource);
+        if (pipe.resource != null) parts.push('مورد ' + pipe.resource + (pipe.resourceNote ? ' (' + pipe.resourceNote + ')' : ''));
         if (pipe.http != null) parts.push('HTTP ' + pipe.http);
         if (pipe.browser != null) parts.push('متصفح ' + pipe.browser);
         if (pipe.browserUnique != null) parts.push('متصفح ' + pipe.browserUnique + ' (' + (pipe.passes || 0) + ' تمريرة)');

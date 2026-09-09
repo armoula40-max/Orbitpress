@@ -19,6 +19,8 @@ services:
       - "${ORBITPRESS_PORT:-8080}:8080"
     environment:
       ORBITPRESS_TOKEN: ${ORBITPRESS_TOKEN:?Set ORBITPRESS_TOKEN in .env — this is your access password}
+      # 1 = يكتب نتيجة كل استدعاء لموارد Pinterest في data/debug/ داخل الحاوية (افتراضي 0)
+      ORBITPRESS_PINTEREST_PROBE: ${ORBITPRESS_PINTEREST_PROBE:-0}
       # ORBITPRESS_SECRET_KEY يُولَّد تلقائياً ويُحفظ داخل volume — لا تضعه هنا إلا لو فقدت النسخة
     volumes:
       - orbitpress-data:/app/data

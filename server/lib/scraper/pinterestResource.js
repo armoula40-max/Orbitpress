@@ -36,6 +36,21 @@ const BASE_HEADERS = {
   'X-APP-VERSION': APP_VERSION,
 };
 
+/** Rolling log of the last attempts, so a scan can report WHY this layer
+ *  produced nothing (walled host, renamed resource, bad session…). */
+const attempts = [];
+function recordAttempt(entry) {
+  attempts.push(entry);
+  if (attempts.length > 40) attempts.splice(0, attempts.length - 40);
+  return entry;
+}
+function attemptsSince(mark) {
+  return attempts.slice(mark);
+}
+function attemptMark() {
+  return attempts.length;
+}
+
 function cookieValue(cookieHeader, name) {
   const match = String(cookieHeader || '').split(';')
     .map((part) => part.trim())
@@ -65,9 +80,11 @@ async function callResource(name, { host, sourceUrl, data, cookieHeader, timeout
     let json = null;
     try { json = JSON.parse(text); } catch { /* not JSON: blocked or HTML wall */ }
     logProbe(name, { host, url, status: 200, text, json });
+    recordAttempt({ name, host, status: 200, ok: Boolean(json), bytes: String(text).length });
     return { ok: Boolean(json), status: 200, json, text, host };
   } catch (error) {
     logProbe(name, { host, url, status: error.status || 0, error: error.message });
+    recordAttempt({ name, host, status: error.status || 0, ok: false, bytes: 0, error: String((error && error.message) || '').slice(0, 80) });
     return { ok: false, status: error.status || 0, json: null, text: String((error && error.message) || ''), host, error };
   }
 }
@@ -237,6 +254,8 @@ async function pinDetail(pinId, { cookieHeader } = {}) {
 }
 
 module.exports = {
+  attemptMark,
+  attemptsSince,
   callResource,
   pinsFromResourceJson,
   boardPins,

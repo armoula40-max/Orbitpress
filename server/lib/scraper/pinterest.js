@@ -470,21 +470,25 @@ async function scanViaResource(source, { limit, useSession }) {
   const sessions = require('./sessions');
   const resource = require('./pinterestResource');
   const cookieHeader = useSession === false ? '' : await sessions.cookieHeader('pinterest').catch(() => '');
+  const mark = resource.attemptMark();
+  let pins = [];
   if (source.kind === 'search') {
-    return resource.searchPins(source.query, { cookieHeader, maxItems: limit });
-  }
-  if (source.kind === 'board') {
-    return resource.boardPins(source.user, source.board, { cookieHeader, maxItems: limit });
-  }
-  if (source.kind === 'profile' && source.user) {
-    return resource.profilePins(source.user, { cookieHeader, maxItems: limit });
-  }
-  if (source.kind === 'pin') {
+    pins = await resource.searchPins(source.query, { cookieHeader, maxItems: limit });
+  } else if (source.kind === 'board') {
+    pins = await resource.boardPins(source.user, source.board, { cookieHeader, maxItems: limit });
+  } else if (source.kind === 'profile' && source.user) {
+    pins = await resource.profilePins(source.user, { cookieHeader, maxItems: limit });
+  } else if (source.kind === 'pin') {
     const id = (String(source.path).match(/\/pin\/(\d+)/) || [])[1];
     const pin = id ? await resource.pinDetail(id, { cookieHeader }) : null;
-    return pin ? [pin] : [];
+    pins = pin ? [pin] : [];
   }
-  return [];
+  // Nothing found? Say why, in the UI, instead of failing silently.
+  const note = pins.length ? '' : resource.attemptsSince(mark)
+    .slice(-4)
+    .map((attempt) => `${attempt.name}:${attempt.status || 'err'}`)
+    .join(' ');
+  return { pins, note };
 }
 
 /**
@@ -508,10 +512,14 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   const errors = [];
   // In-house resource pass: same JSON calls the Pinterest front-end makes.
   let resourcePins = [];
+  let resourceNote = '';
   if (!testMode) {
     try {
-      resourcePins = await scanViaResource(source, { limit, useSession });
+      const attempted = await scanViaResource(source, { limit, useSession });
+      resourcePins = attempted.pins || [];
+      resourceNote = attempted.note || '';
     } catch (error) {
+      resourceNote = `error:${String(error.message).slice(0, 60)}`;
       errors.push(`Resource API: ${error.message}`);
     }
   }
@@ -525,7 +533,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
     if (httpPins.length >= limit && source.kind !== 'profile') {
       const sliced = httpPins.slice(0, limit);
       const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
-      return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'full', { resource: resourcePins.length, http: httpPins.length, enriched });
+      return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'full', { resource: resourcePins.length, resourceNote, http: httpPins.length, enriched });
     }
   } catch (error) {
     errors.push(`HTTP scan: ${error.message}`);
@@ -549,7 +557,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
         const sliced = pins.slice(0, limit);
         const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
         const method = (resourcePins.length ? 'resource_api+' : '') + (httpPins.length ? 'embedded_json+' : '') + 'server_browser' + (result.sessionUsed ? '+session' : '') + (result.detailsFetched ? `+details${result.detailsFetched}` : '') + (enriched ? `+enriched${enriched}` : '') + (isFallback ? '+tab-fallback' : '');
-        return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { resource: resourcePins.length, http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
+        return finalize(sliced, source, sourceUrl, method, pins.length >= limit ? 'full' : 'partial', { resource: resourcePins.length, resourceNote, http: httpPins.length, browser: result.pins.length, details: result.detailsFetched || 0, enriched });
       }
     } catch (error) {
       errors.push(`Browser scan (${isFallback ? 'profile fallback' : 'tab url'}): ${error.message}`);
@@ -559,7 +567,7 @@ async function scanPinterest({ url, query, maxItems = 20, scrolls = 6, useSessio
   if (httpPins.length) {
     const sliced = httpPins.slice(0, limit);
     const enriched = testMode ? 0 : await enrichPinsViaHttp(sliced, { max: 20, useSession }).catch(() => 0);
-    return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'partial', { resource: resourcePins.length, http: httpPins.length, enriched });
+    return finalize(sliced, source, sourceUrl, (resourcePins.length ? 'resource_api+' : '') + (enriched ? `embedded_json+enriched${enriched}` : 'embedded_json'), 'partial', { resource: resourcePins.length, resourceNote, http: httpPins.length, enriched });
   }
   const needsSession = /login|403|429|captcha|blocked|Could not/i.test(errors.join(' '));
   const message = `Pinterest scan failed. ${needsSession ? 'The platform is likely requiring a signed-in session from this server — connect Pinterest in Settings, then retry. ' : ''}${errors.join(' | ')}`.trim();
