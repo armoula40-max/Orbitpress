@@ -200,13 +200,21 @@
     var filtered = applyFilters(all, platform);
     var stats = spy[platform].stats || computeStats(all);
     var seen = viewedSet(platform);
+    // A metric the source never reports (every post 0/empty) must not be
+    // rendered as a real measurement.
+    var reported = {
+      reactions: all.some(function (p) { return Number(p.reactions) > 0; }),
+      saves: all.some(function (p) { return Number(p.saves) > 0; }),
+      comments: all.some(function (p) { return Number(p.comments) > 0; }),
+      shares: all.some(function (p) { return Number(p.shares) > 0; }),
+    };
     var rows = filtered.map(function (post, index) {
       var isSeen = seen.has(postKey(post));
       var chips =
-        (post.reactions != null ? '<span class="spy-chip">👍 ' + fmtNum(post.reactions) + '</span>' : '') +
-        (post.saves != null ? '<span class="spy-chip">📌 ' + fmtNum(post.saves) + '</span>' : '') +
-        (post.comments != null ? '<span class="spy-chip">💬 ' + fmtNum(post.comments) + '</span>' : '') +
-        (post.shares != null ? '<span class="spy-chip">↗ ' + fmtNum(post.shares) + '</span>' : '');
+        (reported.reactions && post.reactions != null ? '<span class="spy-chip">👍 ' + fmtNum(post.reactions) + '</span>' : '') +
+        (reported.saves && post.saves != null ? '<span class="spy-chip">📌 ' + fmtNum(post.saves) + '</span>' : '') +
+        (reported.comments && post.comments != null ? '<span class="spy-chip">💬 ' + fmtNum(post.comments) + '</span>' : '') +
+        (reported.shares && post.shares != null ? '<span class="spy-chip">↗ ' + fmtNum(post.shares) + '</span>' : '');
       return '<article class="pin-result spy-post' + (isSeen ? ' seen' : '') + '">' +
         '<div class="pin-result-top"><div class="pin-result-title">' + (post.url ? '<a href="' + esc(post.url) + '" target="_blank" rel="noopener">' + esc(post.title || post.text || ('Untitled ' + (index + 1))) + '</a>' : esc(post.title || post.text || ('Untitled ' + (index + 1)))) + '</div>' +
         '<span class="pin-score ' + viralClass(num(post.viralScore)) + '">' + (post.viralScore == null ? '—' : Number(post.viralScore).toFixed(1)) + '</span></div>' +
