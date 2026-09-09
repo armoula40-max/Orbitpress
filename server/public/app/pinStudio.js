@@ -100,6 +100,22 @@
     };
   }
 
+  /**
+   * Fit an image into a box: 'cover' fills the box and crops the overflow,
+   * 'contain' keeps the whole image and leaves background around it.
+   */
+  function fitRect(imageWidth, imageHeight, boxWidth, boxHeight, mode) {
+    if (!(imageWidth > 0 && imageHeight > 0 && boxWidth > 0 && boxHeight > 0)) {
+      return { x: 0, y: 0, width: boxWidth, height: boxHeight };
+    }
+    const scale = mode === 'contain'
+      ? Math.min(boxWidth / imageWidth, boxHeight / imageHeight)
+      : Math.max(boxWidth / imageWidth, boxHeight / imageHeight);
+    const width = imageWidth * scale;
+    const height = imageHeight * scale;
+    return { x: (boxWidth - width) / 2, y: (boxHeight - height) / 2, width, height };
+  }
+
   /** Cover-fit an image into a box; focusY decides what survives the crop. */
   function coverRect(imageWidth, imageHeight, boxWidth, boxHeight, focusY) {
     if (!(imageWidth > 0 && imageHeight > 0 && boxWidth > 0 && boxHeight > 0)) {
@@ -166,6 +182,49 @@
 
   function fontSpec(weight, size, familyName) {
     return `${weight} ${size}px ${FONTS[familyName] ? FONTS[familyName] : FONTS.sans}`;
+  }
+
+  // --- loading and fitting images (browser only) -----------------------------
+
+  function loadBrowserImage(dataUrl, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      const timer = setTimeout(() => reject(new Error('This image could not be decoded in time.')), timeoutMs || 15000);
+      image.onload = () => { clearTimeout(timer); resolve(image); };
+      image.onerror = () => { clearTimeout(timer); reject(new Error('This image cannot be read.')); };
+      image.src = dataUrl;
+    });
+  }
+
+  /** Read the real pixel size of an image without keeping it around. */
+  function imageSize(dataUrl) {
+    return loadBrowserImage(dataUrl).then((image) => ({
+      width: image.naturalWidth || image.width || 0,
+      height: image.naturalHeight || image.height || 0,
+    }));
+  }
+
+  /**
+   * Draw an image into an exact-size canvas — the way generated images are
+   * made 2:3. Most text-to-image models answer with a square or a fixed
+   * landscape, and Pinterest refuses anything but 2:3, so the shape is fixed
+   * here, in the browser, where a canvas exists.
+   */
+  function fitImage(dataUrl, options) {
+    const size = (options && options.size) || PIN_SIZE;
+    const mode = (options && options.mode) || 'cover';
+    const background = (options && options.background) || '#ffffff';
+    return loadBrowserImage(dataUrl).then((image) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, size.width, size.height);
+      const rect = fitRect(image.naturalWidth || image.width, image.naturalHeight || image.height, size.width, size.height, mode);
+      ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+      return canvas;
+    });
   }
 
   // --- defaults derived from the article ------------------------------------
@@ -386,6 +445,9 @@
     pinText,
     layout,
     coverRect,
+    fitRect,
+    fitImage,
+    imageSize,
     wrapLines,
     fitText,
     fontSpec,

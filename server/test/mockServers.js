@@ -273,14 +273,25 @@ function startPinterestPublishMock() {
   });
 }
 
-/** Minimal OpenAI-compatible images endpoint. */
-function startImageApiMock() {
+/**
+ * Minimal OpenAI-compatible images endpoint.
+ * `rejectSize` makes the provider refuse anything but that one size, the way
+ * DALL·E 3 and friends behave.
+ */
+function startImageApiMock(options) {
   const calls = [];
+  const rejectSize = options && options.rejectSize ? String(options.rejectSize) : '';
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
-      calls.push(body ? JSON.parse(body) : {});
+      const parsed = body ? JSON.parse(body) : {};
+      calls.push(parsed);
+      if (rejectSize && parsed.size !== rejectSize) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `unsupported size ${parsed.size}` } }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ data: [{ b64_json: tinyPng(64, 64).toString('base64') }] }));
     });

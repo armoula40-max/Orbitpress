@@ -308,6 +308,50 @@ test('image API probe works from the image settings alone', async (t) => {
   await assert.rejects(() => wordpress.testImageApi({ siteId: 'site-img-empty' }), /image settings/);
 });
 
+test('generating a Pinterest image asks for a portrait and hands back raw bytes to fit', async (t) => {
+  const api = await mocks.startImageApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'test-image', imageApiToken: 'k' }, 'site-gen');
+
+  // store:false is how the UI gets the provider's own shape so it can fit the
+  // image to 2:3 in the browser — the server must not reject a square result.
+  const raw = await wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread', store: false });
+  assert.equal(api.calls[0].size, '1024x1536', 'a pin slot asks for a portrait');
+  assert.ok(raw.dataUrl.startsWith('data:image/png;base64,'));
+  assert.equal(raw.height, 64, 'the provider shape is reported so the UI knows it must fit');
+  assert.equal('reference' in raw, false, 'nothing is stored until the fitted image comes back');
+
+  // storing the same square image directly is still refused: the shape matters
+  await assert.rejects(() => wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread' }), /2:3/);
+
+  const featured = await wordpress.generateImage({ siteId: 'site-gen', kind: 'featured', prompt: 'sourdough bread', store: false });
+  assert.ok(featured.dataUrl.startsWith('data:image/png;base64,'));
+  assert.equal(api.calls[api.calls.length - 1].size, '1536x1024', 'a featured slot asks for a landscape');
+});
+
+test('a provider that only accepts square images is retried instead of failing', async (t) => {
+  const api = await mocks.startImageApiMock({ rejectSize: '1024x1024' });
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'dall-e-3', imageApiToken: 'k' }, 'site-strict');
+  const raw = await wordpress.generateImage({ siteId: 'site-strict', kind: 'pinterest', prompt: 'sourdough bread', store: false });
+  assert.deepEqual(api.calls.map((call) => call.size), ['1024x1536', '1024x1024']);
+  assert.ok(raw.dataUrl.startsWith('data:image/png;base64,'));
+  assert.equal(raw.width, 64);
+});
+
+test('pin fitting crops to cover and letterboxes to contain', () => {
+  const pin = require('../public/app/pinStudio.js');
+  const cover = pin.fitRect(1200, 800, 1000, 1500, 'cover');
+  assert.equal(cover.height, 1500);
+  assert.ok(cover.width >= 1000);
+  assert.equal(cover.x, (1000 - cover.width) / 2);
+  const contain = pin.fitRect(1200, 800, 1000, 1500, 'contain');
+  assert.equal(contain.width, 1000);
+  assert.ok(contain.height <= 1500);
+  assert.equal(contain.y, (1500 - contain.height) / 2);
+  assert.deepEqual(pin.fitRect(0, 0, 1000, 1500, 'cover'), { x: 0, y: 0, width: 1000, height: 1500 });
+});
+
 // ---------------------------------------------------------------------------
 
 test('Article API probe reports a working provider and a failing one', async (t) => {

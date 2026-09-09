@@ -91,6 +91,9 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
 
   assert.equal(window.document.querySelector('#screen-studio').classList.contains('active'), true, 'studio screen active');
   assert.equal(typeof window.Native === 'object', true, 'web bridge installed');
+  // the inline app script parsed and ran: a syntax error would leave the boot
+  // data in place while every handler silently disappeared
+  assert.equal(typeof window.openDraft, 'function', 'the app script parsed and installed its handlers');
   assert.equal(typeof window.Native.openPinterestScanner === 'function', true);
   assert.equal(typeof window.Native.call === 'function', true);
 

@@ -401,23 +401,48 @@ async function generateImage(request) {
     .replace(/\{\{keyword\}\}/g, String(request.keyword || ''));
   const { MediaPublishingContract } = require('./contracts');
   const normalized = MediaPublishingContract.normalizePrompt(prompt);
-  const width = Math.min(2048, Math.max(512, Number(request.width) || 1024));
-  const height = Math.min(2048, Math.max(512, Number(request.height) || 1024));
+  // Ask for the shape the slot needs. Cloudflare's flux schema takes no size
+  // at all and always answers square, so the browser fits the result — that is
+  // why `store:false` exists: it returns the raw bytes for the UI to compose.
+  const shape = imageShapeFor(kind, request);
   const token = String(settings.imageApiToken || '').trim();
   if (!token) throw new Error('Configure an image generation API token first.');
   let image;
   if (provider === 'cloudflare') {
     image = await generateCloudflareImage(settings, normalized);
   } else {
-    image = await generateOpenAiCompatibleImage(settings, normalized, width, height);
+    image = await generateOpenAiCompatibleImage(settings, normalized, shape.width, shape.height);
   }
   if (!['featured', 'pinterest', 'article'].includes(kind)) throw new Error('Unknown generated image type.');
+  const dimensions = require('./images').imageDimensions(image.bytes, image.mimeType);
+  if (request.store === false) {
+    return {
+      ok: true,
+      dataUrl: `data:${image.mimeType};base64,${image.bytes.toString('base64')}`,
+      mimeType: image.mimeType,
+      provider,
+      width: dimensions ? dimensions.width : 0,
+      height: dimensions ? dimensions.height : 0,
+    };
+  }
   const validated = require('./images').validateImage(image.bytes, image.mimeType, kind === 'pinterest');
   const fs = require('fs');
   const path = require('path');
   const reference = `local://${require('crypto').randomUUID()}.${validated.extension}`;
   fs.writeFileSync(path.join(require('./images').imageDirectory(request.siteId || 'site-default'), reference.slice('local://'.length)), validated.bytes, { mode: 0o600 });
   return { ok: true, reference, mimeType: validated.mimeType, provider };
+}
+
+/**
+ * The size each slot asks the provider for. Most text-to-image models only
+ * accept a fixed set of sizes, so this stays on the values that are widely
+ * supported and the caller still fits the result afterwards.
+ */
+function imageShapeFor(kind, request) {
+  const clampSize = (value, fallback) => Math.min(2048, Math.max(512, Number(value) || fallback));
+  if (kind === 'pinterest') return { width: clampSize(request.width, 1024), height: clampSize(request.height, 1536) };
+  if (kind === 'featured') return { width: clampSize(request.width, 1536), height: clampSize(request.height, 1024) };
+  return { width: clampSize(request.width, 1024), height: clampSize(request.height, 1024) };
 }
 
 /**
@@ -465,9 +490,20 @@ async function generateCloudflareImage(settings, prompt) {
 async function generateOpenAiCompatibleImage(settings, prompt, width, height) {
   const endpoint = PublishingContracts.requireHttpsUrl(settings.imageBaseUrl, 'Image API URL');
   const url = endpoint.endsWith('/images/generations') ? endpoint : `${endpoint}/images/generations`;
-  const response = await requestJson(url, 'POST', {
+  const call = (size) => requestJson(url, 'POST', {
     Authorization: `Bearer ${settings.imageApiToken}`,
-  }, { model: settings.imageModel || 'gpt-image-1', prompt, size: `${width}x${height}`, response_format: 'b64_json' });
+  }, { model: settings.imageModel || 'gpt-image-1', prompt, size, response_format: 'b64_json' });
+  const size = `${width}x${height}`;
+  let response;
+  try {
+    response = await call(size);
+  } catch (error) {
+    // Plenty of image models only take a handful of sizes (DALL·E 3 offers
+    // 1024×1024, 1024×1792, 1792×1024). Fall back to the one size everyone
+    // accepts instead of failing the whole generation.
+    if (size === '1024x1024') throw error;
+    response = await call('1024x1024');
+  }
   const item = response.data && response.data[0];
   const encoded = item && (item.b64_json || '');
   if (!encoded) throw new Error('Image provider returned no base64 image.');
@@ -490,6 +526,7 @@ module.exports = {
   publish,
   publishPinterest,
   generateImage,
+  imageShapeFor,
   testImageApi,
   inspectPublishedPost,
   findTrackedPost,
