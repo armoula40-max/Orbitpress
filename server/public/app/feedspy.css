@@ -110,3 +110,10 @@ html[data-theme="night"] .spy-verify-hint { color: #ffd98a; }
   min-width: 56px;
   padding: 4px 6px;
 }
+
+.spy-source {
+  text-decoration: none;
+}
+.spy-source:hover {
+  text-decoration: underline;
+}

@@ -212,7 +212,10 @@
     };
     var rows = filtered.map(function (post, index) {
       var isSeen = seen.has(postKey(post));
+      var sourceHost = '';
+      try { sourceHost = post.outboundUrl ? new URL(post.outboundUrl).hostname.replace(/^www\./, '') : ''; } catch (e) { sourceHost = ''; }
       var chips =
+        (sourceHost ? '<a class="spy-chip spy-source" href="' + esc(post.outboundUrl) + '" target="_blank" rel="noopener">🔗 ' + esc(sourceHost.slice(0, 26)) + '</a>' : '') +
         (reported.reactions && post.reactions != null ? '<span class="spy-chip">👍 ' + fmtNum(post.reactions) + '</span>' : '') +
         (reported.saves && post.saves != null ? '<span class="spy-chip">📌 ' + fmtNum(post.saves) + '</span>' : '') +
         (reported.comments && post.comments != null ? '<span class="spy-chip">💬 ' + fmtNum(post.comments) + '</span>' : '') +
@@ -400,7 +403,24 @@
     var top = applyFilters(spy[platform].posts, platform).slice().sort(function (a, b) {
       return (Number(b.viralScore) || 0) - (Number(a.viralScore) || 0);
     }).slice(0, count);
-    var keywords = top.map(pinKeyword).filter(Boolean);
+    // Carry the pin along: the generator can then use the original headline,
+    // description and source link instead of writing blind from a keyword.
+    var keywords = top.map(function (post) {
+      var keyword = pinKeyword(post);
+      if (!keyword) return null;
+      return {
+        keyword: keyword,
+        pinTitle: String(post.title || '').slice(0, 200),
+        pinText: String(post.text || '').slice(0, 600),
+        pinUrl: post.url || '',
+        sourceUrl: post.outboundUrl || '',
+        imageUrl: post.imageUrl || '',
+        saves: post.saves == null ? null : Number(post.saves),
+        reactions: post.reactions == null ? null : Number(post.reactions),
+        viralScore: post.viralScore == null ? null : Number(post.viralScore),
+        platform: platform,
+      };
+    }).filter(Boolean);
     if (!keywords.length) return spyNotice('لا توجد نتائج صالحة للتحويل ضمن الفلاتر الحالية.', 'bad');
     if (typeof window.__orbitpressEnqueueKeywords !== 'function') {
       return spyNotice('واجهة الكلمات غير متاحة — أعد تحميل الصفحة.', 'bad');

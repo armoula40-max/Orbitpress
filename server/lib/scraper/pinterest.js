@@ -161,7 +161,7 @@ function normalizePin(pin) {
     platform: 'pinterest',
     kind: 'pinterest_pin',
     title: String(pin.title || pin.grid_title || (pin.rich_summary && pin.rich_summary.display_name) || '').slice(0, 300),
-    text: String(pin.description || pin.closeup_description || (pin.rich_summary && pin.rich_summary.display_description) || '').slice(0, 2000),
+    text: String(pin.description || pin.closeup_description || pin.alt_text || (pin.rich_summary && pin.rich_summary.display_description) || '').slice(0, 2000),
     publishedAt: normalizeDate(pin.created_at || pin.createdAt),
     url: `https://www.pinterest.com/pin/${id}/`,
     outboundUrl: pin.link || pin.domain || null,

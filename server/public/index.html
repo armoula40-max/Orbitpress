@@ -194,11 +194,15 @@
       if(!chosen){notice('اختر تصنيف ووردبريس من شاشة الاستوديو أولاً.','bad');return {added:0,message:'اختر تصنيفاً من شاشة الاستوديو أولاً.'}}
       var existing=new Set(activeKeywords().map(x=>String(x.keyword).toLocaleLowerCase()));
       var added=0,duplicates=0;
-      (list||[]).forEach(function(keyword){
-        keyword=String(keyword||'').trim();
+      (list||[]).forEach(function(entry){
+        var keyword=String(typeof entry==='string'?entry:(entry&&entry.keyword)||'').trim();
         var normalized=keyword.toLocaleLowerCase();
         if(keyword.length<3||keyword.length>120||existing.has(normalized)){duplicates++;return}
-        state.workspace.keywords.unshift({id:makeId('keyword'),siteId:activeSiteId(),keyword:keyword,niche:$('contentNiche').value,priority:$('priority').value,contentType:$('contentType').value,categoryId:chosen.id,categoryName:chosen.name,status:'queued',source:'viral-scan',createdAt:Date.now()});
+        var row={id:makeId('keyword'),siteId:activeSiteId(),keyword:keyword,niche:$('contentNiche').value,priority:$('priority').value,contentType:$('contentType').value,categoryId:chosen.id,categoryName:chosen.name,status:'queued',source:'viral-scan',createdAt:Date.now()};
+        if(entry&&typeof entry==='object'){
+          row.viral={title:entry.pinTitle||'',text:entry.pinText||'',url:entry.pinUrl||'',sourceUrl:entry.sourceUrl||'',imageUrl:entry.imageUrl||'',saves:entry.saves,reactions:entry.reactions,viralScore:entry.viralScore,platform:entry.platform||''};
+        }
+        state.workspace.keywords.unshift(row);
         existing.add(normalized);added++;
       });
       persist();
