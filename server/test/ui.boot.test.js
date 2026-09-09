@@ -10,22 +10,44 @@ const { JSDOM } = require('jsdom');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 
+const EMPTY_SETTINGS = {
+  'site-default': {
+    articleBaseUrl: '', articleModel: '', wordpressBaseUrl: '', wordpressUsername: '', categoryId: '',
+    articleApiConfigured: false, wordpressConfigured: false, imageConfigured: false, pinterestConfigured: false,
+    facebookConfigured: false, imageProvider: 'cloudflare', imageBaseUrl: '', imageAccountId: '', imageModel: '',
+    pinterestBoardId: '', facebookGraphVersion: 'v23.0', textPrompt: '', imagePrompt: '', pinterestPrompt: '',
+    articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
+  },
+};
+
 /**
  * Boots the real shipped UI (index.html + bridge.js + feedspy.js) inside jsdom
- * with the same injection the Express server performs, then asserts the app
- * initializes and the FeedSpy layer wires itself in without throwing.
+ * with the same injection the Express server performs.
  */
-test('the web UI boots with the server bridge and FeedSpy layer', async () => {
+/**
+ * @param overrides partial boot payload
+ * @param bridgeAnswer when set, POST /api/bridge/call is answered from it
+ *        instead of hanging; without it the UI behaves as if offline.
+ */
+async function startUi(overrides, bridgeAnswer) {
   const raw = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
   const boot = {
-    workspace: { keywords: [], drafts: [], logs: [{ id: 'l1', siteId: 'site-default', type: 'boot', message: 'ok', createdAt: Date.now() }], categories: [], theme: 'day', activeSiteId: 'site-default', siteProfiles: [{ id: 'site-default', name: 'Askinz' }], plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false } },
+    workspace: {
+      keywords: [], drafts: [], draftVersions: [],
+      logs: [{ id: 'l1', siteId: 'site-default', type: 'boot', message: 'ok', createdAt: Date.now() }],
+      categories: [], theme: 'day', activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
     settingsLock: { enabled: false },
-    settings: { 'site-default': { articleBaseUrl: '', articleModel: '', wordpressBaseUrl: '', wordpressUsername: '', categoryId: '', articleApiConfigured: false, wordpressConfigured: false, imageConfigured: false, pinterestConfigured: false, facebookConfigured: false, imageProvider: 'cloudflare', imageBaseUrl: '', imageAccountId: '', imageModel: '', pinterestBoardId: '', facebookGraphVersion: 'v23.0', textPrompt: '', imagePrompt: '', pinterestPrompt: '', articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false } },
+    settings: EMPTY_SETTINGS,
     sessions: { facebook: { connected: false }, pinterest: { connected: false } },
     scheduler: { enabled: false, plan: null, recentRuns: [] },
+    ...overrides,
   };
   const bridgeJs = fs.readFileSync(path.join(PUBLIC, 'app', 'bridge.js'), 'utf8');
   const feedspyJs = fs.readFileSync(path.join(PUBLIC, 'app', 'feedspy.js'), 'utf8');
+  const pinStudioJs = fs.readFileSync(path.join(PUBLIC, 'app', 'pinStudio.js'), 'utf8');
   const injection = `<script>window.__BOOT__=${JSON.stringify(boot).replace(/</g, '\\u003c')};</script>\n<script>${bridgeJs}</script>`;
   const html = raw.replace('<body>', `<body>\n${injection}`);
 
@@ -33,29 +55,45 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   const dom = new JSDOM(html, {
     url: 'http://localhost:8080/',
     runScripts: 'dangerously',
-    resources: undefined, // external feedspy.js won't load via file — inject manually below
     pretendToBeVisual: true,
     beforeParse(window) {
-      // offline-safe stubs
-      window.fetch = () => new Promise(() => {}); // pending forever: no network in boot test
+      // jsdom never decodes images: hand the studio an already-loaded one
+      window.Image = class FakeImage {
+        constructor() { this.onload = null; this.onerror = null; this.width = 1000; this.height = 1500; this.naturalWidth = 1000; this.naturalHeight = 1500; }
+        set src(value) { this._src = value; setTimeout(() => { if (this.onload) this.onload(); }, 0); }
+        get src() { return this._src; }
+      };
+      window.fetch = (url, options) => {
+        if (!bridgeAnswer) return new Promise(() => {}); // pending forever: no network in these tests
+        const request = JSON.parse((options && options.body) || '{}');
+        const payload = bridgeAnswer(request) || { ok: true };
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      };
       window.localStorage.clear();
     },
   });
   const { window } = dom;
   window.addEventListener('error', (event) => errors.push(event.error ? event.error.message : event.message));
-  dom.errors && errors.push(...dom.errors.map((e) => e.message || String(e)));
-  // run the deferred feedspy script manually (jsdom won't download it here)
+  // run the deferred scripts manually (jsdom does not download them here)
+  window.eval(pinStudioJs);
   window.eval(feedspyJs);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 100));
+  return { window, errors, close: () => dom.window.close() };
+}
 
-  // the core app initialized
+function fatalErrors(errors) {
+  return errors.filter((m) => /is not defined|SyntaxError|TypeError/.test(m) && !/fetch/i.test(m));
+}
+
+test('the web UI boots with the server bridge and FeedSpy layer', async () => {
+  const { window, errors, close } = await startUi();
+
   assert.equal(window.document.querySelector('#screen-studio').classList.contains('active'), true, 'studio screen active');
   assert.equal(typeof window.Native === 'object', true, 'web bridge installed');
   assert.equal(typeof window.Native.openPinterestScanner === 'function', true);
   assert.equal(typeof window.Native.call === 'function', true);
 
-  // lock read path from boot data
   assert.equal(JSON.parse(window.Native.loadSettingsLock()).enabled, false);
   const settings = JSON.parse(window.Native.loadSettings('site-default'));
   assert.equal(settings.articleApiConfigured, false);
@@ -64,11 +102,55 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   window.Native.saveWorkspace(JSON.stringify({ theme: 'night', keywords: [], drafts: [], logs: [], categories: [], siteProfiles: [{ id: 'site-default', name: 'Askinz' }], activeSiteId: 'site-default', plan: {} }));
   assert.equal(JSON.parse(window.Native.loadWorkspace()).theme, 'night');
 
-  // FeedSpy toolbar + sessions card injected
   assert.ok(window.document.querySelector('#spyFToolbar'), 'facebook toolbar present');
   assert.ok(window.document.querySelector('#spyPToolbar'), 'pinterest toolbar present');
+  assert.deepEqual(fatalErrors(errors), []);
+  close(); // release jsdom timers so the test run does not wait for them
+});
 
-  // error budget: ignore environment noise (fetch stubs) but no reference/syntax errors
-  const fatal = errors.filter((m) => /is not defined|SyntaxError|TypeError/.test(m) && !/fetch/i.test(m));
-  assert.deepEqual(fatal, []);
+test('the pin studio offers a composed pin for a draft that has a Pinterest image', async () => {
+  const draft = {
+    id: 'd1', siteId: 'site-default', keywordId: 'k1', title: 'Easy Sourdough Bread | Askinz',
+    metaDescription: 'A crisp crust with four ingredients.', contentType: 'recipe',
+    recipe: { prepTime: '20 min', cookTime: '40 min', recipeYield: '8 slices' },
+    slug: 'easy-sourdough-bread', htmlContent: '<p>Hello</p>', outline: [], internalLinks: [],
+    images: { featured: 'local://featured.png', pinterest: 'local://pinterest.png' },
+    generationStatus: 'generated', publishedUrl: 'https://www.askinz.com/easy-sourdough-bread/',
+    createdAt: Date.now(),
+  };
+  const { window, errors, close } = await startUi({
+    workspace: {
+      keywords: [{ id: 'k1', siteId: 'site-default', keyword: 'sourdough bread', status: 'drafted', draftId: 'd1', categoryId: '3', categoryName: 'Bread', priority: 'high', contentType: 'recipe', createdAt: Date.now() }],
+      drafts: [draft], draftVersions: [],
+      logs: [{ id: 'l1', siteId: 'site-default', type: 'boot', message: 'ok', createdAt: Date.now() }],
+      categories: [{ id: '3', siteId: 'site-default', name: 'Bread' }], theme: 'day', activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
+    settings: { 'site-default': { ...EMPTY_SETTINGS['site-default'], wordpressBaseUrl: 'https://www.askinz.com', pinterestBoardId: 'https://www.pinterest.com/askinz/bread/' } },
+  }, (request) => {
+    if (request.type === 'loadImage') return { ok: true, dataUrl: 'data:image/png;base64,' + require('./mockServers').tinyPng(1000, 1500).toString('base64') };
+    return { ok: true };
+  });
+  const { document } = window;
+
+  window.openDraft('d1');
+  await new Promise((resolve) => setTimeout(resolve, 150)); // the studio loads the background asynchronously
+  const card = document.getElementById('pinStudioCard');
+  assert.ok(card, 'the pin studio card is rendered on the review screen');
+  assert.equal(document.getElementById('pinHeadline').value, 'Easy Sourdough Bread');
+  assert.equal(document.getElementById('pinBrand').value, 'askinz.com');
+  assert.equal(document.getElementById('pinChips').value, '20 min prep, 40 min cook, Serves 8 slices');
+  assert.equal(document.getElementById('pinCta').value, 'Full recipe');
+  assert.equal(document.getElementById('pinPublish').disabled, false, 'a published URL unlocks publishing');
+  assert.ok(card.textContent.includes('https://www.pinterest.com/askinz/bread/'), 'the board is shown so the destination is never a guess');
+  assert.equal(document.querySelectorAll('[data-pin-template]').length, 3, 'three templates are offered');
+
+  // switching template keeps the design on the draft, not only in the DOM
+  document.querySelector('[data-pin-template="card"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 800)); // design autosave is debounced
+  const saved = JSON.parse(window.Native.loadWorkspace()).drafts.find((item) => item.id === 'd1');
+  assert.equal(saved.pinDesign.template, 'card', 'the design travels with the draft');
+  assert.deepEqual(fatalErrors(errors), []);
+  close();
 });

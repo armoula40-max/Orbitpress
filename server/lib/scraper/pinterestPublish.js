@@ -17,10 +17,17 @@ const crypto = require('crypto');
 const { requestText } = require('../http');
 const { DATA_DIR } = require('../store');
 
-const HOSTS = String(process.env.ORBITPRESS_PINTEREST_HOSTS || 'https://www.pinterest.com,https://in.pinterest.com')
-  .split(',')
-  .map((host) => host.trim())
-  .filter(Boolean);
+/**
+ * Hosts are read per call, not at module load: ORBITPRESS_PINTEREST_HOSTS is
+ * how the tests point this at a mock, and a long-lived server may have its
+ * environment reloaded.
+ */
+function hosts() {
+  return String(process.env.ORBITPRESS_PINTEREST_HOSTS || 'https://www.pinterest.com,https://in.pinterest.com')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+}
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 function csrfFrom(cookieHeader) {
@@ -59,7 +66,7 @@ async function uploadImage({ cookieHeader, bytes, mimeType }) {
   const extension = String(mimeType || 'image/png').includes('jpeg') ? 'jpg' : 'png';
   const file = { field: 'img', filename: `orbitpress-${Date.now()}.${extension}`, mimeType, bytes };
   let lastError = 'no host tried';
-  for (const host of HOSTS) {
+  for (const host of hosts()) {
     const { body, contentType } = multipart({ source_url: '/' }, file);
     try {
       const text = await requestText(`${host}/upload-image/`, 'POST', {
@@ -96,7 +103,7 @@ async function createPin({ cookieHeader, boardId, title, description, link, imag
     method: 'uploaded',
   };
   let lastError = 'no host tried';
-  for (const host of HOSTS) {
+  for (const host of hosts()) {
     for (const mode of ['body', 'query']) {
       const url = mode === 'query'
         ? `${host}/resource/PinResource/create/?source_url=/&data=${encodeURIComponent(JSON.stringify({ options, context: {} }))}`
@@ -139,7 +146,7 @@ async function resolveBoardId(cookieHeader, value) {
   const match = raw.match(/pinterest\.com\/([^/]+)\/([^/?#]+)/);
   if (!match) return null;
   const boardUrl = `/${match[1]}/${match[2]}/`;
-  for (const host of HOSTS) {
+  for (const host of hosts()) {
     try {
       const text = await requestText(`${host}/resource/BoardResource/get/?source_url=${encodeURIComponent(boardUrl)}&data=${encodeURIComponent(JSON.stringify({ options: { board_url: boardUrl }, context: {} }))}`, 'GET', {
         'User-Agent': UA,

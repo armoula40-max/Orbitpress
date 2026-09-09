@@ -133,11 +133,16 @@ function parseImageReference(reference, pinterest, siteId) {
 
 // --- operations exposed through the bridge --------------------------------
 
+/** Pinterest accepts pins and plain Pinterest uploads: both must be 2:3. */
+function pinterestKind(kind) {
+  return kind === 'pinterest' || kind === 'pin';
+}
+
 function storeImage(request) {
   const kind = String(request.kind || '');
-  if (!['featured', 'pinterest', 'article'].includes(kind)) throw new Error('Unknown image type.');
+  if (!['featured', 'pinterest', 'pin', 'article'].includes(kind)) throw new Error('Unknown image type.');
   const siteId = String(request.siteId || 'site-default');
-  const image = parseImage(String(request.dataUrl || ''), kind === 'pinterest', siteId);
+  const image = parseImage(String(request.dataUrl || ''), pinterestKind(kind), siteId);
   const reference = `local://${crypto.randomUUID()}.${image.extension}`;
   fs.writeFileSync(path.join(imageDirectory(siteId), reference.slice('local://'.length)), image.bytes, { mode: 0o600 });
   return { ok: true, reference, mimeType: image.mimeType };
@@ -163,6 +168,7 @@ module.exports = {
   parseImage,
   parseImageReference,
   validateImage,
+  pinterestKind,
   storeImage,
   loadImage,
   removeImage,

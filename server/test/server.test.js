@@ -166,6 +166,131 @@ test('publishing a Pin uses the signed-in session, not an API token', async (t) 
   assert.ok(mock.calls.includes('/resource/PinResource/create/'));
 });
 
+// --- pin studio: the pin is drawn in the browser, its maths is tested here --
+
+/** Minimal stand-in for a canvas 2D context: ~0.55 em per character. */
+function fakePinContext(perChar = 0.55) {
+  return {
+    font: '',
+    measureText(text) {
+      const size = Number(String(this.font).match(/(\d+)px/)?.[1] || 16);
+      return { width: String(text).length * size * perChar };
+    },
+  };
+}
+
+test('pin layout keeps every text box inside the 1000 × 1500 canvas', () => {
+  const pin = require('../public/app/pinStudio.js');
+  for (const template of ['scrim', 'card', 'top']) {
+    const box = pin.layout({ template, chips: ['25 min prep', 'Serves 4'] }, pin.PIN_SIZE);
+    assert.deepEqual(box.size, { width: 1000, height: 1500 });
+    for (const part of ['chips', 'headline', 'subline', 'footer']) {
+      const rect = box[part];
+      assert.ok(rect.y >= 0, `${template}/${part} starts inside the canvas`);
+      assert.ok(rect.y + rect.height <= box.size.height, `${template}/${part} ends inside the canvas`);
+      assert.ok(rect.x >= 0 && rect.x + rect.width <= box.size.width, `${template}/${part} stays inside the width`);
+    }
+    assert.ok(box.headline.y + box.headline.height <= box.footer.y + 1, `${template} headline sits above the footer`);
+  }
+});
+
+test('pin cover crop fills the canvas and stays centred', () => {
+  const pin = require('../public/app/pinStudio.js');
+  const rect = pin.coverRect(1200, 800, 1000, 1500, 0.5);
+  assert.ok(rect.width >= 1000 && rect.height >= 1500, 'a landscape photo is scaled to cover, never letterboxed');
+  assert.equal(rect.x, (1000 - rect.width) / 2);
+  assert.equal(rect.y, 0);
+  assert.deepEqual(pin.coverRect(0, 0, 1000, 1500, 0.5), { x: 0, y: 0, width: 1000, height: 1500 });
+});
+
+test('pin headline wraps and shrinks instead of overflowing', () => {
+  const pin = require('../public/app/pinStudio.js');
+  const ctx = fakePinContext();
+  const lines = pin.wrapLines('Easy Sourdough Bread For Beginners', (text) => text.length * 10, 100);
+  assert.deepEqual(lines.join(' '), 'Easy Sourdough Bread For Beginners');
+  assert.ok(lines.every((line) => line.length * 10 <= 100));
+
+  const long = 'Crispy Air Fryer Chicken Wings With Honey Garlic Sauce';
+  const fitted = pin.fitText(ctx, long, {
+    maxWidth: 840, maxHeight: 205, max: 105, min: 50, weight: 800, family: 'sans', lineHeightRatio: 1.06, maxLines: 4,
+  });
+  assert.ok(fitted.size < 105, 'a long headline gives up size rather than clipping');
+  assert.ok(fitted.lines.length * fitted.lineHeight <= 205);
+  assert.ok(fitted.lines.every((line) => line.length * fitted.size * 0.55 <= 841));
+  const short = pin.fitText(ctx, 'Bread', {
+    maxWidth: 840, maxHeight: 205, max: 105, min: 50, weight: 800, family: 'sans', lineHeightRatio: 1.06, maxLines: 4,
+  });
+  assert.equal(short.size, 105, 'a short headline keeps the full size');
+});
+
+test('pin defaults carry the recipe facts and the site domain', () => {
+  const pin = require('../public/app/pinStudio.js');
+  const design = pin.defaultDesign({
+    title: 'Sourdough Bread | Askinz',
+    metaDescription: 'A simple loaf with four ingredients.',
+    contentType: 'recipe',
+    recipe: { prepTime: '20 min', cookTime: '40 min', recipeYield: '8 slices' },
+    publishedUrl: 'https://www.askinz.com/sourdough-bread/',
+  });
+  assert.deepEqual(design.chips, ['20 min prep', '40 min cook', 'Serves 8 slices']);
+  assert.equal(design.brand, 'askinz.com');
+  assert.equal(design.headline, 'Sourdough Bread');
+  assert.equal(design.cta, 'Full recipe');
+  const text = pin.pinText(design, { title: 'Sourdough Bread | Askinz' });
+  assert.equal(text.title, 'Sourdough Bread');
+  assert.ok(text.description.includes('20 min prep'));
+  assert.ok(text.description.includes('askinz.com'));
+  assert.ok(text.description.length <= 800);
+});
+
+test('the composed pin is stored as a 2:3 image and published instead of the raw upload', async (t) => {
+  const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  // the pin canvas always exports 1000 × 1500, and the server holds it to that
+  const composed = imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-pin' });
+  assert.ok(composed.reference.startsWith('local://'));
+  assert.throws(() => imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1024, 1024)), siteId: 'site-pin' }), /2:3/);
+
+  const raw = imagesLib.storeImage({ kind: 'pinterest', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-pin' });
+  store.saveSiteSettings({ pinterestBoardId: 'https://www.pinterest.com/mockuser/recipes/' }, 'site-pin');
+  const draft = {
+    title: 'Sourdough Bread',
+    metaDescription: 'A simple loaf with four ingredients.',
+    images: { pinterest: raw.reference, pin: composed.reference },
+    pinTitle: 'Easy Sourdough Bread',
+    pinDescription: 'A simple loaf with four ingredients. · 20 min prep — Full recipe on askinz.com',
+    pinAltText: 'Easy Sourdough Bread',
+  };
+  const result = await wordpress.publishPinterest({ siteId: 'site-pin', draft, link: 'https://askinz.test/sourdough-bread/' });
+  assert.equal(result.ok, true, result.message);
+  const created = mock.bodies.find((body) => body.options && body.options.title);
+  assert.ok(created, 'PinResource/create carried the pin options');
+  assert.equal(created.options.title, 'Easy Sourdough Bread');
+  assert.equal(created.options.alt_text, 'Easy Sourdough Bread');
+  assert.equal(created.options.link, 'https://askinz.test/sourdough-bread/');
+  assert.ok(created.options.description.includes('Full recipe on askinz.com'));
+});
+
+test('publishing without a board names the missing setting instead of guessing', async () => {
+  store.saveSiteSettings({ pinterestBoardId: '' }, 'site-noboard');
+  const image = imagesLib.storeImage({ kind: 'pinterest', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-noboard' });
+  await assert.rejects(
+    () => wordpress.publishPinterest({ siteId: 'site-noboard', draft: { title: 'x', images: { pinterest: image.reference } }, link: 'https://askinz.test/x/' }),
+    /لوحة/,
+  );
+});
+
 // ---------------------------------------------------------------------------
 
 test('image API probe works from the image settings alone', async (t) => {

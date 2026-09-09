@@ -343,12 +343,18 @@ async function publishPinterest(request) {
   // WordPress to resolve where the article lives.
   if (!String(request.link || '').trim()) requireWordPressSettings(request);
   const settings = storedSettings(request.siteId || 'site-default');
-  const boardId = String(settings.pinterestBoardId || '').trim();
+  const boardId = String(request.boardId || settings.pinterestBoardId || '').trim();
   const draft = request.draft || {};
-  const image = parseImage(String(request.image || ''), true, request.siteId || 'site-default');
-  const title = String(draft.pinterestTitle || draft.title || '').slice(0, 100);
-  const description = String(draft.metaDescription || '').slice(0, 800);
-  const altText = String(draft.pinterestAltText || draft.title || '').slice(0, 500);
+  const draftImages = draft.images && typeof draft.images === 'object' ? draft.images : {};
+  // The composed pin wins: it carries the headline the reader sees. An
+  // untouched upload is the fallback when the pin was never saved.
+  const reference = String(request.image || draftImages.pin || draftImages.pinterest || '');
+  if (!reference) throw new Error('احفظ صورة بينترست أولاً (صورة 2:3 أو دبوساً مركّباً من استوديو الدبوس).');
+  if (!boardId) throw new Error('حدّد لوحة النشر في الإعدادات: معرّف اللوحة أو رابطها (Settings → Pinterest board ID).');
+  const image = parseImage(reference, true, request.siteId || 'site-default');
+  const title = String(draft.pinTitle || draft.pinterestTitle || draft.title || '').slice(0, 100);
+  const description = String(draft.pinDescription || draft.metaDescription || '').slice(0, 800);
+  const altText = String(draft.pinAltText || draft.pinterestAltText || draft.title || '').slice(0, 500);
 
   // Preferred path: the session the user signed in with inside OrbitPress.
   try {
@@ -367,12 +373,12 @@ async function publishPinterest(request) {
   }
 
   const token = String(settings.pinterestAccessToken || '').trim();
-  if (!token || !boardId) throw new Error('اربط حساب Pinterest من الإعدادات (جلسة) أو أضف رمز الوصول واللوحة.');
+  if (!token) throw new Error('اربط حساب Pinterest من الإعدادات (جلسة) أو أضف رمز الوصول واللوحة.');
   const payload = {
     board_id: boardId,
-    title: String(draft.pinterestTitle || draft.title || '').slice(0, 100),
-    description: String(draft.metaDescription || '').slice(0, 800),
-    alt_text: String(draft.pinterestAltText || draft.title || '').slice(0, 500),
+    title,
+    description,
+    alt_text: altText,
     link: String(request.link || ''),
     ai_disclosures: { values: ['AI_MODIFIED'] },
     media_source: { source_type: 'image_base64', content_type: image.mimeType, data: image.bytes.toString('base64') },
