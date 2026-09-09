@@ -15,6 +15,9 @@
  * public pages and uses your own server-side session only when you signed in
  * through Settings.
  */
+const fs = require('fs');
+const path = require('path');
+const { DATA_DIR } = require('../store');
 const { requestText } = require('../http');
 const analyzer = require('./analyzer');
 
@@ -69,6 +72,54 @@ function extractEmbeddedJson(html) {
 }
 
 const BOT_TOPIC_TITLE_RE = /discover pinterest'?s best ideas/i;
+// Pinterest SEO boilerplate served for pins with no authored title/description.
+// Never show it to the user as if it were their content.
+const BOILERPLATE_RE = /discover \(and save!\) your own pins on pinterest|^this pin was discovered by|^pin on\s|^(pinterest|page not found|show[_ ]error)$/i;
+
+function isBoilerplate(value) {
+  return !value || BOILERPLATE_RE.test(String(value).trim());
+}
+
+function firstMatch(text, re) {
+  const m = String(text || '').match(re);
+  return m ? m[1] : null;
+}
+
+function extractBoardName(html) {
+  return firstMatch(html, /"board"\s*:\s*\{[^}]{0,400}?"name"\s*:\s*"([^"]{1,120})"/)
+    || firstMatch(html, /"board_name"\s*:\s*"([^"]{1,120})"/)
+    || null;
+}
+
+// Ground truth: when a pin page looks empty we keep a small, readable dump so
+// the next iteration can see exactly what Pinterest served (data/debug/).
+const pinDebugWritten = new Set();
+function writePinDebug(pinId, url, html, overlay) {
+  if (pinDebugWritten.size >= 3) return;
+  pinDebugWritten.add(pinId);
+  try {
+    const dir = path.join(DATA_DIR, 'debug');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = path.join(dir, `pinterest-pin-${pinId}-${stamp}`);
+    fs.writeFileSync(`${base}.url.txt`, `${url}\n`);
+    fs.writeFileSync(`${base}.html`, String(html || '').slice(0, 400000));
+    fs.writeFileSync(`${base}.summary.txt`, [
+      `url: ${url}`,
+      `bytes: ${String(html || '').length}`,
+      `og:title: ${firstMatch(html, /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i) || '-'}`,
+      `og:description: ${firstMatch(html, /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)/i) || '-'}`,
+      `has created_at: ${/"created_at"\s*:/.test(html || '') ? 'yes' : 'no'}`,
+      `has discovered-by boilerplate: ${/This Pin was discovered by/i.test(html || '') ? 'yes' : 'no'}`,
+      `has bot-wall topic tiles: ${BOT_TOPIC_TITLE_RE.test(html || '') ? 'yes' : 'no'}`,
+      `board name: ${extractBoardName(html) || '-'}`,
+      `alt_text: ${firstMatch(html, /"alt_text"\s*:\s*"([^"]{3,200})"/) || '-'}`,
+      `repin_count: ${firstMatch(html, /"repin_count"\s*:\s*(\d+)/) || '-'}`,
+      `comment_count: ${firstMatch(html, /"comment_count"\s*:\s*(\d+)/) || '-'}`,
+      `overlay applied: ${JSON.stringify(overlay)}`,
+    ].join('\n'));
+  } catch { /* debug dumps must never break a scan */ }
+}
 
 function looksLikePin(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -340,14 +391,29 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
           if (merged2.size >= 60) break;
         }
         mine = merged2.get(pin.id) || null;
-        const titleRaw = (mine && mine.title) || og('title');
-        const text = (mine && mine.text) || og('description');
-        let titleClean = titleRaw ? String(titleRaw).replace(/\s*\|\s*Pinterest\s*$/, '').trim() : '';
-        // Pinterest falls back to "Pin on <board name>" for untitled pins —
-        // the pin's real description is the honest headline instead
-        if (/^pin on\s/i.test(titleClean) && text) titleClean = String(text).split('\n')[0].trim().slice(0, 160);
-        if (titleClean && !/^(pinterest|page not found|show[_ ]error)$/i.test(titleClean)) overlay.title = titleClean;
-        if (text) overlay.text = text;
+        const ogTitle = og('title');
+        const ogText = og('description');
+        const boardName = (mine && mine.boardName) || extractBoardName(html);
+        const altText = firstMatch(html, /"alt_text"\s*:\s*"([^"]{3,200})"/);
+        // Title priority: authored grid title -> og:title -> board name.
+        // Pinterest's "Pin on <board>" is an SEO fallback, not a headline.
+        let titleClean = String((mine && mine.title) || ogTitle || '').replace(/\s*\|\s*Pinterest\s*$/, '').trim();
+        if (isBoilerplate(titleClean)) {
+          titleClean = boardName || (/^pin on\s+(.+)$/i.exec(String(ogTitle || '').trim()) || [])[1] || '';
+        }
+        if (titleClean && !isBoilerplate(titleClean)) overlay.title = String(titleClean).slice(0, 300);
+        const textClean = !isBoilerplate(ogText) ? ogText : (altText || '');
+        if (textClean) overlay.text = String(textClean).slice(0, 2000);
+        else if (isBoilerplate(ogText)) overlay.text = '';
+        if (boardName) overlay.boardName = boardName;
+        if (mine && mine.saves == null) {
+          const repins = firstMatch(html, /"repin_count"\s*:\s*(\d+)/);
+          if (repins != null) overlay.saves = Number(repins);
+        }
+        if (mine && mine.comments == null) {
+          const comments = firstMatch(html, /"comment_count"\s*:\s*(\d+)/);
+          if (comments != null) overlay.comments = Number(comments);
+        }
         const imageUrl = (mine && mine.imageUrl) || og('image');
         if (imageUrl) overlay.imageUrl = imageUrl;
         const publishedAt = (mine && mine.publishedAt)
@@ -359,6 +425,7 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
         if (mine && mine.comments != null) overlay.comments = mine.comments;
         if (mine && mine.reactions != null) overlay.reactions = mine.reactions;
         if (mine && mine.outboundUrl) overlay.outboundUrl = mine.outboundUrl;
+        if (!publishedAt && process.env.ORBITPRESS_TEST_MODE !== '1') writePinDebug(pin.id, `${DEFAULT_BASE}/pin/${pin.id}/`, html, overlay);
         if (Object.keys(overlay).length) { Object.assign(pin, overlay); enriched += 1; }
       } catch { /* one pin page failed — leave it */ }
     }));
