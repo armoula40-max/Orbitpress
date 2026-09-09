@@ -339,12 +339,35 @@ async function publish(request) {
 }
 
 async function publishPinterest(request) {
-  const settings = requireWordPressSettings(request);
-  const token = String(settings.pinterestAccessToken || '').trim();
+  // A published article URL is the pin destination; without one we still need
+  // WordPress to resolve where the article lives.
+  if (!String(request.link || '').trim()) requireWordPressSettings(request);
+  const settings = storedSettings(request.siteId || 'site-default');
   const boardId = String(settings.pinterestBoardId || '').trim();
-  if (!token || !boardId) throw new Error('Configure Pinterest access token and board ID first.');
   const draft = request.draft || {};
   const image = parseImage(String(request.image || ''), true, request.siteId || 'site-default');
+  const title = String(draft.pinterestTitle || draft.title || '').slice(0, 100);
+  const description = String(draft.metaDescription || '').slice(0, 800);
+  const altText = String(draft.pinterestAltText || draft.title || '').slice(0, 500);
+
+  // Preferred path: the session the user signed in with inside OrbitPress.
+  try {
+    const publisher = require('./scraper/pinterestPublish');
+    const viaSession = await publisher.publishPinWithSession({
+      boardId, title, description, link: String(request.link || ''), image, altText,
+    });
+    if (viaSession.ok) return { ok: true, method: 'session', id: viaSession.pinId, pinUrl: viaSession.pinUrl };
+    // Fall through to the API token only when the session path cannot work.
+    if (viaSession.stage !== 'session' && viaSession.stage !== 'board') {
+      const token = String(settings.pinterestAccessToken || '').trim();
+      if (!token) throw new Error(`تعذّر النشر بالجلسة (${viaSession.stage}): ${viaSession.message}`);
+    }
+  } catch (error) {
+    if (!String(settings.pinterestAccessToken || '').trim()) throw error;
+  }
+
+  const token = String(settings.pinterestAccessToken || '').trim();
+  if (!token || !boardId) throw new Error('اربط حساب Pinterest من الإعدادات (جلسة) أو أضف رمز الوصول واللوحة.');
   const payload = {
     board_id: boardId,
     title: String(draft.pinterestTitle || draft.title || '').slice(0, 100),

@@ -232,6 +232,30 @@ function startArticleApiMock(options = {}) {
   });
 }
 
+/** Minimal mock of the endpoints the Pinterest web app uses to create a Pin. */
+function startPinterestPublishMock() {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    calls.push(url.pathname);
+    const json = (payload) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    };
+    if (url.pathname === '/upload-image/') return json({ success: true, image_url: 'https://i.pinimg.com/uploaded/test.jpg' });
+    if (url.pathname === '/resource/PinResource/create/') {
+      return json({ resource_response: { data: { id: '987654321098765432' } } });
+    }
+    if (url.pathname === '/resource/BoardResource/get/') {
+      return json({ resource_response: { data: { id: '112233445566778899' } } });
+    }
+    return json({ error: `unmocked ${url.pathname}` });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, calls }));
+  });
+}
+
 /** Minimal OpenAI-compatible images endpoint. */
 function startImageApiMock() {
   const calls = [];
@@ -293,4 +317,4 @@ function startPinterestResourceMock() {
   });
 }
 
-module.exports = { tinyPng, startImageApiMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };
+module.exports = { tinyPng, startImageApiMock, startPinterestPublishMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };

@@ -131,6 +131,43 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('publishing a Pin uses the signed-in session, not an API token', async (t) => {
+  const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  // a board URL is resolved to its numeric id first
+  const boardId = await publisher.resolveBoardId('csrftoken=abc123', 'https://www.pinterest.com/mockuser/recipes/');
+  assert.equal(boardId, '112233445566778899');
+
+  const result = await publisher.publishPinWithSession({
+    boardId: 'https://www.pinterest.com/mockuser/recipes/',
+    title: 'Test Pin',
+    description: 'A test description',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'test alt',
+  });
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.pinId, '987654321098765432');
+  assert.equal(result.pinUrl, 'https://www.pinterest.com/pin/987654321098765432/');
+  assert.ok(mock.calls.includes('/upload-image/'));
+  assert.ok(mock.calls.includes('/resource/PinResource/create/'));
+});
+
+// ---------------------------------------------------------------------------
+
 test('image API probe works from the image settings alone', async (t) => {
   const api = await mocks.startImageApiMock();
   t.after(() => api.server.close());
