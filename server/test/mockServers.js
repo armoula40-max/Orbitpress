@@ -36,15 +36,28 @@ function startWordPressMock(state = {}) {
     nextMediaId: 900,
     ...(state || {}),
   };
+  data.baseUrl = `http://127.0.0.1:${0}`;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const json = (payload, status = 200) => {
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     };
+    // the REST API root advertises what the site can authenticate with
+    if (req.method === 'GET' && url.pathname === '/wp-json/') {
+      const authentication = data.noApplicationPasswords ? {} : { 'application-passwords': { endpoints: { authorization: `${data.baseUrl}/wp-admin/authorize-application.php` } } };
+      return json({ name: 'Mock Site', description: 'Just another WordPress site', url: data.baseUrl, namespaces: ['wp/v2'], authentication });
+    }
     if (!req.headers.authorization) return json({ code: 'rest_not_logged_in' }, 401);
-    if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/users/me') return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
+    // credentials are only enforced when a test asks for it
+    if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/users/me') {
+      if (data.expectedAuth && req.headers.authorization !== data.expectedAuth) return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
+      if (data.requireEditContext && !String(url.searchParams.get('context') || '').includes('edit')) return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
+      if (data.requireEditContext) return json({ code: 'rest_forbidden_context', message: 'Sorry, you are not allowed to edit posts.', data: { status: 401 } }, 401);
+      return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
+    }
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/categories') {
+      if (data.expectedAuth && req.headers.authorization !== data.expectedAuth) return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
       const page = Number(url.searchParams.get('page') || 1);
       if (page > 1) return json({ code: 'rest_post_invalid_page_number' }, 400);
       return json(data.categories);
@@ -123,7 +136,10 @@ function startWordPressMock(state = {}) {
     json({ code: 'rest_no_route' }, 404);
   });
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, data }));
+    server.listen(0, '127.0.0.1', () => {
+      data.baseUrl = `http://127.0.0.1:${server.address().port}`;
+      resolve({ server, url: data.baseUrl, data });
+    });
   });
 }
 

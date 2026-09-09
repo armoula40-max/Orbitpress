@@ -92,6 +92,7 @@ const BRIDGE_OPERATIONS = {
   categories: (req) => wordpress.categories(req),
   syncPublishedPosts: (req) => wordpress.syncPublishedPosts(req),
   testConnection: (req) => wordpress.testConnection(req),
+  diagnoseWordPress: (req) => wordpress.diagnoseWordPress(req),
   storeImage: (req) => images.storeImage(req),
   loadImage: (req) => images.loadImage(req),
   removeImage: (req) => images.removeImage(req),

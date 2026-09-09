@@ -87,7 +87,11 @@ function fatalErrors(errors) {
 }
 
 test('the web UI boots with the server bridge and FeedSpy layer', async () => {
-  const { window, errors, close } = await startUi();
+  const { window, errors, close } = await startUi({}, (request) => (
+    request.type === 'diagnoseWordPress'
+      ? { ok: true, steps: [{ label: 'users/me', url: 'https://wp.test/wp-json/wp/v2/users/me', status: 401, code: 'rest_not_logged_in', note: 'refused' }], advice: ['Check the Application Password.'] }
+      : { ok: true }
+  ));
 
   assert.equal(window.document.querySelector('#screen-studio').classList.contains('active'), true, 'studio screen active');
   assert.equal(typeof window.Native === 'object', true, 'web bridge installed');
@@ -107,6 +111,14 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
 
   assert.ok(window.document.querySelector('#spyFToolbar'), 'facebook toolbar present');
   assert.ok(window.document.querySelector('#spyPToolbar'), 'pinterest toolbar present');
+
+  // the WordPress card can diagnose a refused connection, not just report 401
+  assert.ok(window.document.getElementById('diagnoseWordPress'), 'diagnose button present');
+  window.document.getElementById('diagnoseWordPress').click();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const box = window.document.getElementById('wpDiagnostics');
+  assert.equal(box.hidden, false, 'the report box appears');
+  assert.match(box.textContent, /What to do/, 'an unanswered connection still gets actionable advice');
   assert.deepEqual(fatalErrors(errors), []);
   close(); // release jsdom timers so the test run does not wait for them
 });

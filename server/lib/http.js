@@ -28,6 +28,10 @@ async function request(url, method, headers = {}, bodyBytes = null, options = {}
       signal: AbortSignal.timeout(timeoutMs),
     });
     const status = response.status;
+    // Callers that diagnose a connection need to see where they ended up:
+    // a site that answers on a different host or scheme than the one saved is
+    // a common reason credentials stop working.
+    if (Array.isArray(options.trail)) options.trail.push({ url: currentUrl, method: currentMethod, status });
     if (status >= 300 && status < 400) {
       const location = (response.headers.get('location') || '').trim();
       if (!location) throw new Error(`Request failed (${status}): redirect without Location`);

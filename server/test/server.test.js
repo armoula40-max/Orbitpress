@@ -14,6 +14,57 @@ const { scanPinterest } = require('../lib/scraper/pinterest');
 const analyzer = require('../lib/scraper/analyzer');
 const contracts = require('../lib/contracts');
 
+test('WordPress connection diagnostic names the cause instead of a bare 401', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  const good = 'Basic ' + Buffer.from('admin:app-pass', 'utf8').toString('base64');
+
+  // a healthy site
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'app-pass' }, 'site-diag');
+  const healthy = await wordpress.diagnoseWordPress({ siteId: 'site-diag' });
+  assert.equal(healthy.ok, true);
+  assert.equal(healthy.accountName, 'Askinz Admin');
+  assert.equal(healthy.advertisesAppPasswords, true, 'the REST root advertises application passwords');
+  assert.ok(healthy.steps.length >= 3, 'every probe is reported, not just the failure');
+  assert.deepEqual(healthy.advice, [], 'a working connection needs no advice');
+
+  // wrong password: WordPress answers exactly like the user saw
+  wp.data.expectedAuth = good;
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'wrong-pass' }, 'site-diag');
+  const refused = await wordpress.diagnoseWordPress({ siteId: 'site-diag' });
+  assert.equal(refused.ok, false);
+  const refusedStep = refused.steps.find((step) => step.url.includes('users/me'));
+  assert.equal(refusedStep.status, 401);
+  assert.equal(refusedStep.code, 'rest_not_logged_in');
+  assert.ok(refused.advice.some((line) => /Application Password/.test(line)), 'the advice names the credential list');
+  assert.ok(refused.advice.some((line) => /Authorization/.test(line)), 'and the stripped-header case');
+
+  // right credentials, not enough capability: a different diagnosis
+  delete wp.data.expectedAuth;
+  wp.data.requireEditContext = true;
+  const limited = await wordpress.diagnoseWordPress({ siteId: 'site-diag' });
+  assert.equal(limited.ok, false);
+  assert.equal(limited.capabilities, true, 'the password is fine, the capability is not');
+  assert.ok(limited.advice.some((line) => /صلاحية التحرير/.test(line)));
+
+  // a site that never advertises application passwords (usually: not HTTPS)
+  delete wp.data.requireEditContext;
+  wp.data.noApplicationPasswords = true;
+  const legacy = await wordpress.diagnoseWordPress({ siteId: 'site-diag' });
+  assert.equal(legacy.advertisesAppPasswords, false);
+  assert.ok(legacy.advice.some((line) => /Application Passwords/.test(line)));
+});
+
+test('a refused connection explains itself instead of repeating the raw 401', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  wp.data.expectedAuth = 'Basic ' + Buffer.from('admin:app-pass', 'utf8').toString('base64');
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'nope' }, 'site-401');
+  await assert.rejects(() => wordpress.testConnection({ siteId: 'site-401' }), /Diagnose WordPress connection/);
+});
+
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 
 test('image validation enforces the exact Pinterest 2:3 ratio', () => {

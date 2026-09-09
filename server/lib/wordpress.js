@@ -4,7 +4,7 @@
  * MainActivity.kt (categories, testConnection, syncPublishedPosts, publish,
  * repairPreview/repairApply, publishPinterest).
  */
-const { request, requestJson } = require('./http');
+const { request, requestJson, requestText } = require('./http');
 const {
   PublishingContracts,
   CategorySyncContracts,
@@ -82,7 +82,7 @@ async function categories(request) {
   for (let page = 1; page <= 100; page += 1) {
     let data;
     try {
-      data = await requestJson(`${root}/wp-json/wp/v2/categories?context=edit&per_page=100&hide_empty=false&page=${page}&orderby=name&order=asc`, 'GET', wordpressHeaders(settings));
+      data = await withWordPressHelp(requestJson(`${root}/wp-json/wp/v2/categories?context=edit&per_page=100&hide_empty=false&page=${page}&orderby=name&order=asc`, 'GET', wordpressHeaders(settings)));
     } catch (error) {
       if (error.status === 400) break;
       throw error;
@@ -94,11 +94,139 @@ async function categories(request) {
   return { ok: true, categories: rows };
 }
 
+/**
+ * A 401 has at least five different causes and WordPress answers all of them
+ * with the same two lines, so the raw message is useless on its own: point at
+ * the diagnostic instead of letting people guess.
+ */
+function explainWordPressFailure(error) {
+  const body = String((error && error.body) || (error && error.message) || '');
+  if (error && error.status === 401 && /rest_not_logged_in/.test(body)) {
+    return 'WordPress refused these credentials (401 rest_not_logged_in). Press “Diagnose WordPress connection” — it asks the site itself and names the cause: a username that is not the WordPress login name, an Application Password WordPress disabled because the site is not HTTPS, a host that strips the Authorization header, or a REST API blocked by a security plugin.';
+  }
+  return null;
+}
+
+function withWordPressHelp(operation) {
+  return operation.catch((error) => {
+    const explained = explainWordPressFailure(error);
+    if (explained) error.message = explained;
+    throw error;
+  });
+}
+
 async function testConnection(request) {
   const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
-  const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
-  return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
+  return withWordPressHelp(Promise.resolve().then(async () => {
+    const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
+    return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
+  }));
+}
+
+/**
+ * Step-by-step report of why a WordPress connection does or does not work.
+ *
+ * A bare "401 rest_not_logged_in" hides at least five different problems
+ * (wrong login name, no Application Password, plain HTTP, a host that strips
+ * the Authorization header, a blocked REST API), so instead of guessing this
+ * asks the site itself, one probe at a time, and names what it finds.
+ */
+async function diagnoseWordPress(request) {
+  const settings = storedSettings(request.siteId || 'site-default');
+  const raw = String(settings.wordpressBaseUrl || '').trim();
+  const username = String(settings.wordpressUsername || '').trim();
+  const password = String(settings.wordpressAppPassword || '').trim();
+  const steps = [];
+  const advice = [];
+  const push = (step) => { steps.push(step); return step; };
+
+  if (!raw) {
+    return { ok: false, steps, advice: ['أضف رابط الموقع في حقل Website URL ثم أعد الفحص.'], message: 'رابط وردبريس غير مُعيَّن.' };
+  }
+  let root;
+  try {
+    root = wpRoot(raw);
+  } catch (error) {
+    return { ok: false, steps, advice: ['رابط الموقع يجب أن يبدأ بـ https:// — وردبريس يعطّل Application Passwords على HTTP العادي.'], message: error.message };
+  }
+  if (!username || !password) {
+    advice.push('أكمل اسم المستخدم وكلمة التطبيق (Application Password) من Users → Profile في لوحة وردبريس.');
+  }
+
+  const trail = [];
+  const probe = async (label, path, useAuth) => {
+    const url = `${root}${path}`;
+    const headers = useAuth && username && password ? wordpressHeaders(settings) : {};
+    try {
+      const text = await requestText(url, 'GET', headers, null, { timeoutMs: 20000, trail });
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* html or plain text */ }
+      return push({ label, url, status: 200, ok: true, json, note: json ? '' : `الرد ليس JSON (${text.slice(0, 80).replace(/\s+/g, ' ')})` });
+    } catch (error) {
+      let json = null;
+      try { json = JSON.parse(String(error.body || '')); } catch { /* keep null */ }
+      return push({ label, url, status: error.status || 0, ok: false, code: json && json.code ? json.code : '', note: String(error.message || '').slice(0, 200) });
+    }
+  };
+
+  // 1. is the REST API there at all, and does it advertise application passwords?
+  const apiRoot = await probe('فحص REST API (بدون بيانات)', '/wp-json/', false);
+  const auth = apiRoot.json && apiRoot.json.authentication ? Object.keys(apiRoot.json.authentication) : [];
+  const advertisesAppPasswords = auth.includes('application-passwords');
+  if (!apiRoot.ok) {
+    advice.push('واجهة REST لا تجيب. تأكد من أن الرابط هو عنوان الموقع نفسه، وأن /wp-json/ مفتوح وليس محجوباً بإضافة حماية أو بقاعدة في الخادم.');
+  } else if (apiRoot.json && !advertisesAppPasswords) {
+    advice.push('الموقع لا يُعلن دعم Application Passwords. السبب الأشيع: الموقع غير HTTPS، أو أن الإضافة معطّلة، أو إصدار وردبريس أقدم من 5.6.');
+  }
+
+  // 2. credentials against users/me, then again without ?context=edit to tell
+  //    "wrong password" apart from "right password, not enough capability"
+  const me = await probe('فحص البيانات على users/me (context=edit)', '/wp-json/wp/v2/users/me?context=edit', true);
+  let capabilities = null;
+  if (!me.ok && me.status === 401) {
+    const plain = await probe('فحص البيانات على users/me (بدون context=edit)', '/wp-json/wp/v2/users/me', true);
+    if (plain.ok) {
+      capabilities = true;
+      advice.push('البيانات صحيحة لكن المستخدم لا يملك صلاحية التحرير (context=edit). استخدم مستخدماً بصلاحية Administrator أو Editor.');
+    }
+  }
+  if (me.ok) {
+    advice.push('');
+  } else if (me.status === 401) {
+    advice.push('رفض وردبريس البيانات (401). تحقّق بالترتيب: 1) اسم المستخدم هو user_login لا البريد ولا الاسم الظاهر. 2) كلمة التطبيق من Users → Profile → Application Passwords. 3) الموقع HTTPS فعلاً. 4) الخادم لا يحذف ترويسة Authorization — إن كان Apache أضف في .htaccess: SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1');
+  } else if (me.status === 403) {
+    advice.push('وردبريس قبل البيانات لكنه منع هذا الطلب (403) — غالباً إضافة حماية تحجب مسارات REST.');
+  }
+
+  // 3. can we list categories? that is what publishing relies on
+  const categories = await probe('فحص التصنيفات (categories)', '/wp-json/wp/v2/categories?per_page=1&hide_empty=false', true);
+  if (!categories.ok) {
+    advice.push('تعذّر جلب التصنيفات، وهذا يعني أن النشر سيفشل أيضاً. أصلح الخطوة السابقة أولاً.');
+  }
+
+  const ok = me.ok && categories.ok;
+  // Where the site actually answers vs. where we asked: a redirect to another
+  // host or scheme is its own reason credentials can fail.
+  const hops = trail.map((entry) => entry.url);
+  const originOf = (value) => { try { return new URL(value).origin; } catch { return ''; } };
+  const canonical = originOf(hops[hops.length - 1] || '');
+  if (canonical && canonical !== originOf(root)) {
+    advice.push(`الموقع يجيب فعلياً على ${canonical} بينما الرابط المحفوظ ${originOf(root)} — احفظ الرابط الذي يجيب فعلاً في حقل Website URL.`);
+  }
+  return {
+    ok,
+    root,
+    canonical,
+    trail,
+    usernameConfigured: !!username,
+    passwordConfigured: !!password,
+    advertisesAppPasswords,
+    capabilities,
+    accountName: me.ok && me.json ? (me.json.name || me.json.slug || '') : '',
+    steps: steps.map(({ json, ...rest }) => rest),
+    advice: advice.filter(Boolean),
+  };
 }
 
 async function findTrackedPost(root, settings, draft) {
@@ -579,6 +707,7 @@ module.exports = {
   requireImageSettings,
   categories,
   testConnection,
+  diagnoseWordPress,
   syncPublishedPosts,
   repairPreview,
   repairApply,
