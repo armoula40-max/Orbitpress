@@ -457,7 +457,8 @@ async function enrichPinsViaHttp(pins, { max = 12, useSession = true } = {}) {
         if (mine && mine.comments != null) overlay.comments = mine.comments;
         if (mine && mine.reactions != null) overlay.reactions = mine.reactions;
         if (mine && mine.outboundUrl) overlay.outboundUrl = mine.outboundUrl;
-        if (!publishedAt && process.env.ORBITPRESS_TEST_MODE !== '1') writePinDebug(pin.id, `${DEFAULT_BASE}/pin/${pin.id}/`, html, overlay);
+        // Debug dumps are opt-in: each pin page is ~1 MB of HTML.
+        if (!publishedAt && process.env.ORBITPRESS_DEBUG_PINS === '1') writePinDebug(pin.id, `${DEFAULT_BASE}/pin/${pin.id}/`, html, overlay);
         if (Object.keys(overlay).length) { Object.assign(pin, overlay); enriched += 1; }
       } catch { /* one pin page failed — leave it */ }
     }));
