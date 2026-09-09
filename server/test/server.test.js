@@ -131,6 +131,28 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('AI settings and WordPress settings gate independently', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  // only the Article API is configured
+  store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k' }, 'site-ai-only');
+
+  const result = await article.viralKeywords({
+    siteId: 'site-ai-only',
+    posts: [{ id: '111111111111111111', title: 'Sourdough: 7 Steps', text: 'starter discard ideas' }],
+  });
+  assert.equal(result.ok, true, 'AI work must run without WordPress configured');
+  assert.ok(result.items.length >= 1);
+
+  await assert.rejects(
+    () => wordpress.categories({ siteId: 'site-ai-only' }),
+    /WordPress settings/,
+    'WordPress work must still require WordPress settings',
+  );
+});
+
+// ---------------------------------------------------------------------------
+
 test('viral handoff asks the AI analyzer for one keyword per pin', async (t) => {
   const api = await mocks.startArticleApiMock();
   t.after(() => api.server.close());

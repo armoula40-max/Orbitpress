@@ -13,7 +13,7 @@ const {
   RecipeRequestContract,
   LongFormCompletenessContract,
 } = require('./contracts');
-const { requireStoredSettings } = require('./wordpress');
+const { requireAiSettings } = require('./wordpress');
 
 function chatEndpoint(base) {
   const url = PublishingContracts.requireHttpsUrl(base, 'Article API URL');
@@ -47,7 +47,7 @@ function stripCodeFence(content) {
 }
 
 async function generate(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireAiSettings(request);
   const keyword = String(request.keyword || '').trim();
   if (keyword.length < 2 || keyword.length > 160) throw new Error('Keyword must contain 2 to 160 characters.');
   const niche = String(request.niche || 'food');
@@ -136,7 +136,7 @@ function buildPrompt({ keyword, niche, requestedType, category, keywords, titleL
 }
 
 async function analyzeKeywords(request, platformHint) {
-  const settings = requireStoredSettings(request);
+  const settings = requireAiSettings(request);
   const posts = Array.isArray(request.posts) ? request.posts : [];
   if (posts.length < 1 || posts.length > 20) throw new Error('Select between 1 and 20 social posts.');
   const compact = posts.map((post) => ({
@@ -189,7 +189,7 @@ async function analyzeKeywords(request, platformHint) {
  * fallback when the AI is unreachable.
  */
 async function viralKeywords(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireAiSettings(request);
   const language = String(request.language || 'en').startsWith('ar') ? 'ar' : 'en';
   const posts = (Array.isArray(request.posts) ? request.posts : []).slice(0, 12).map((post) => ({
     id: String(post.id || ''),
@@ -257,7 +257,7 @@ async function analyzePinterestKeywords(request) {
  * and the computed analytics block from the scraper analyzer.
  */
 async function feedspyReport(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireAiSettings(request);
   const language = String(request.language || 'ar').startsWith('ar') ? 'ar' : 'en';
   const platform = String(request.platform || 'pinterest').toLowerCase();
   const posts = (Array.isArray(request.posts) ? request.posts : []).slice(0, 20).map((post) => ({

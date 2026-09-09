@@ -28,20 +28,39 @@ function storedSettings(siteId) {
   return getSiteSettings(siteId || 'site-default');
 }
 
-function requireStoredSettings(request) {
+/**
+ * Settings gates. AI work (analysis, generation) and WordPress work
+ * (publishing, sync) are independent: requiring both at once meant a site
+ * that was not connected yet could not use the AI side at all.
+ */
+function requireAiSettings(request) {
   const settings = storedSettings(request.siteId || 'site-default');
-  const required = ['articleBaseUrl', 'articleModel', 'articleApiKey', 'wordpressBaseUrl', 'wordpressUsername', 'wordpressAppPassword'];
+  const required = ['articleBaseUrl', 'articleModel', 'articleApiKey'];
   const missing = required.filter((key) => !String(settings[key] || '').trim());
-  if (missing.length) throw new Error('Complete and save the Article API and WordPress settings first.');
+  if (missing.length) throw new Error(`Complete and save the Article API settings first: ${missing.join(', ')}.`);
   PublishingContracts.requireHttpsUrl(settings.articleBaseUrl, 'Article API URL');
+  return settings;
+}
+
+function requireWordPressSettings(request) {
+  const settings = storedSettings(request.siteId || 'site-default');
+  const required = ['wordpressBaseUrl', 'wordpressUsername', 'wordpressAppPassword'];
+  const missing = required.filter((key) => !String(settings[key] || '').trim());
+  if (missing.length) throw new Error(`Complete and save the WordPress settings first: ${missing.join(', ')}.`);
   PublishingContracts.requireHttpsUrl(settings.wordpressBaseUrl, 'WordPress URL');
+  return settings;
+}
+
+function requireStoredSettings(request) {
+  const settings = requireAiSettings(request);
+  requireWordPressSettings(request);
   return settings;
 }
 
 // ---------------------------------------------------------------------------
 
 async function categories(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   const fetched = [];
   for (let page = 1; page <= 100; page += 1) {
@@ -60,7 +79,7 @@ async function categories(request) {
 }
 
 async function testConnection(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
   return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
@@ -80,7 +99,7 @@ async function findTrackedPost(root, settings, draft) {
 }
 
 async function syncPublishedPosts(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   const drafts = Array.isArray(request.drafts) ? request.drafts : [];
   const posts = [];
@@ -115,7 +134,7 @@ function inspectPublishedPost(post) {
 }
 
 async function repairPreview(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   const drafts = Array.isArray(request.drafts) ? request.drafts : [];
   const posts = [];
@@ -164,7 +183,7 @@ function repairBackupStore() {
 }
 
 async function repairApply(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   const drafts = Array.isArray(request.drafts) ? request.drafts : [];
   const results = [];
@@ -250,7 +269,7 @@ async function requireExistingCategory(root, settings, categoryId) {
 }
 
 async function publish(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const draft = request.draft || {};
   const images = request.images || {};
   const root = wpRoot(settings.wordpressBaseUrl);
@@ -304,7 +323,7 @@ async function publish(request) {
 }
 
 async function publishPinterest(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const token = String(settings.pinterestAccessToken || '').trim();
   const boardId = String(settings.pinterestBoardId || '').trim();
   if (!token || !boardId) throw new Error('Configure Pinterest access token and board ID first.');
@@ -328,7 +347,7 @@ async function publishPinterest(request) {
 // --- image generation (Cloudflare Workers AI / OpenAI-compatible) ----------
 
 async function generateImage(request) {
-  const settings = requireStoredSettings(request);
+  const settings = requireWordPressSettings(request);
   const provider = String(settings.imageProvider || 'cloudflare').toLowerCase();
   const kind = String(request.kind || 'featured');
   const configuredPrompt = String(kind === 'pinterest' ? (settings.pinterestPrompt || '') : (settings.imagePrompt || '')).trim();
@@ -385,6 +404,8 @@ module.exports = {
   wordpressHeaders,
   storedSettings,
   requireStoredSettings,
+  requireAiSettings,
+  requireWordPressSettings,
   categories,
   testConnection,
   syncPublishedPosts,
