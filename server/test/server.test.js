@@ -1020,18 +1020,85 @@ test('prompt defaults are exported and token-expanded', () => {
 });
 
 test('settings merge keeps the customizable prompt overrides and role shots', () => {
+  // legacy plain-array shot libraries migrate to the generic '*' niche
   const merged = contracts.SettingsPersistenceContract.merge({}, {
     analyzerPrompt: '  custom analyst  ',
     articleImageRolePrompts: [{ name: 'shot 1', prompt: 'hero' }, { name: '', prompt: '   ' }],
   });
   assert.equal(merged.analyzerPrompt, 'custom analyst');
-  assert.deepEqual(merged.articleImageRolePrompts, [{ name: 'shot 1', prompt: 'hero' }]);
+  assert.deepEqual(merged.articleImageRolePrompts, { '*': [{ name: 'shot 1', prompt: 'hero' }] });
+  // per-niche object form is sanitized; unknown niches are dropped
+  const byNiche = contracts.SettingsPersistenceContract.merge({}, {
+    articleImageRolePrompts: {
+      food: [{ name: 'f1', prompt: 'dish hero' }, { name: 'blank', prompt: '' }],
+      crochet: [{ name: 'c1', prompt: 'yarn flat lay' }],
+      unknownNiche: [{ name: 'x', prompt: 'y' }],
+    },
+  });
+  assert.deepEqual(byNiche.articleImageRolePrompts, {
+    food: [{ name: 'f1', prompt: 'dish hero' }],
+    crochet: [{ name: 'c1', prompt: 'yarn flat lay' }],
+  });
+  // a null payload never wipes a stored library
   const kept = contracts.SettingsPersistenceContract.merge(
-    { analyzerPrompt: 'x', articleImageRolePrompts: [{ name: 'a', prompt: 'b' }] },
+    { analyzerPrompt: 'x', articleImageRolePrompts: { food: [{ name: 'a', prompt: 'b' }] } },
     { articleImageRolePrompts: null, analyzerPrompt: '' },
   );
   assert.equal(kept.analyzerPrompt, '');
-  assert.deepEqual(kept.articleImageRolePrompts, [{ name: 'a', prompt: 'b' }]);
+  assert.deepEqual(kept.articleImageRolePrompts, { food: [{ name: 'a', prompt: 'b' }] });
+});
+
+test('additional images are placed beside their recipe sections, not appended at the end', () => {
+  const { WordPressMarkup } = contracts;
+  const html = '<p>Intro paragraph explaining the bake.</p>'
+    + '<h2>Why this recipe works</h2><p>Science notes.</p>'
+    + '<h2>Pro tips</h2><p>Handy advice.</p>'
+    + '<section class="askinz-recipe-card" data-recipe-card="true"><h2>Easy Bread</h2><p>Description.</p>'
+    + '<h3>Ingredients</h3><ul><li>500g flour</li></ul>'
+    + '<h3>Instructions</h3><ol><li>Mix the dough.</li></ol></section>';
+  const figures = WordPressMarkup.inlineRoleOrder().slice(0, 6).map((role) => ({ role, html: `<figure data-role="${role}"></figure>` }));
+  const out = WordPressMarkup.placeInlineImages(html, figures);
+  const pos = (s) => out.indexOf(s);
+  // hero follows the introduction, before the first section
+  assert.ok(pos('data-role="hero"') < pos('<h2>Why this recipe works</h2>'), 'hero sits after the intro');
+  // ingredients shot directly under the recipe card's Ingredients heading
+  assert.ok(pos('<h3>Ingredients</h3>') < pos('data-role="ingredients"'));
+  assert.ok(pos('data-role="ingredients"') < pos('<ul><li>500g flour</li></ul>'), 'ingredients shot precedes the list');
+  // preparation/cooking shot anchors to the Instructions heading
+  assert.ok(pos('<h3>Instructions</h3>') < pos('data-role="preparation"') || pos('<h3>Instructions</h3>') < pos('data-role="cooking"'));
+  // detail shot finds the tips section
+  assert.ok(pos('<h2>Pro tips</h2>') < pos('data-role="detail"'));
+  // nothing is dumped wholesale after the recipe card
+  const cardEnd = pos('</section>');
+  assert.ok(['hero', 'ingredients', 'preparation', 'cooking', 'detail'].every((role) => pos(`data-role="${role}"`) < cardEnd));
+  assert.equal((out.match(/data-role=/g) || []).length, 6, 'every image is placed exactly once');
+});
+
+test('additional images anchor to niche article headings and spread the rest', () => {
+  const { WordPressMarkup } = contracts;
+  const html = '<p>Intro.</p>'
+    + '<h2>Materials and tools you need</h2><p>Yarn and hooks.</p>'
+    + '<h2>Step by step preparation</h2><p>Get ready.</p>'
+    + '<h2>How to crochet the square</h2><p>Keep stitching.</p>'
+    + '<h2>Storage and care</h2><p>Look after it.</p>';
+  const figures = WordPressMarkup.inlineRoleOrder().slice(0, 6).map((role) => ({ role, html: `<figure data-role="${role}"></figure>` }));
+  const out = WordPressMarkup.placeInlineImages(html, figures);
+  const pos = (s) => out.indexOf(s);
+  assert.ok(pos('<h2>Materials and tools') < pos('data-role="ingredients"'));
+  assert.ok(pos('<h2>Step by step preparation') < pos('data-role="preparation"'));
+  assert.ok(pos('<h2>How to crochet') < pos('data-role="cooking"'));
+  assert.ok(pos('<h2>Storage and care') < pos('data-role="lifestyle"'));
+  // ordered: hero must still be the first figure in the document
+  assert.ok(pos('data-role="hero"') < pos('data-role="ingredients"'));
+  assert.match(WordPressMarkup.inlineRoleAltTitle('Cozy Throw', 'ingredients'), /materials laid out/);
+});
+
+test('articles without headings still receive every additional image', () => {
+  const { WordPressMarkup } = contracts;
+  const html = '<p>Just one paragraph, no headings at all.</p>';
+  const figures = WordPressMarkup.inlineRoleOrder().slice(0, 3).map((role) => ({ role, html: `<figure data-role="${role}"></figure>` }));
+  const out = WordPressMarkup.placeInlineImages(html, figures);
+  assert.equal((out.match(/data-role=/g) || []).length, 3);
 });
 
 test('pin fitting crops to cover and letterboxes to contain', () => {

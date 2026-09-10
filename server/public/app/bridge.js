@@ -51,7 +51,7 @@
       articleApiConfigured: false, wordpressConfigured: false, imageConfigured: false,
       pinterestConfigured: false, facebookConfigured: false, imageProvider: 'cloudflare',
       imageBaseUrl: '', imageAccountId: '', imageModel: '', pinterestBoardId: '', facebookGraphVersion: 'v23.0',
-      textPrompt: '', imagePrompt: '', pinterestPrompt: '', pinterestPrompts: [], articleImageRolePrompts: [],
+      textPrompt: '', imagePrompt: '', pinterestPrompt: '', pinterestPrompts: [], articleImageRolePrompts: {},
       articleSystemPrompt: '', analyzerPrompt: '', viralPrompt: '', feedspyPrompt: '',
       recipeRepairSystemPrompt: '', recipeRepairPrompt: '',
       articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
@@ -202,7 +202,9 @@
         if (incoming[key] !== undefined) summary[key] = incoming[key];
       });
       if (Array.isArray(incoming.pinterestPrompts)) summary.pinterestPrompts = incoming.pinterestPrompts;
-      if (Array.isArray(incoming.articleImageRolePrompts)) summary.articleImageRolePrompts = incoming.articleImageRolePrompts;
+      if (Array.isArray(incoming.articleImageRolePrompts) || (incoming.articleImageRolePrompts && typeof incoming.articleImageRolePrompts === 'object')) {
+        summary.articleImageRolePrompts = incoming.articleImageRolePrompts;
+      }
       if (incoming.pinterestAccessToken) summary.pinterestConfigured = !!(incoming.pinterestBoardId || summary.pinterestBoardId);
       settingsCache[id] = summary;
     },

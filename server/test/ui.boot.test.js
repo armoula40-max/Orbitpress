@@ -135,14 +135,26 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   assert.equal(window.document.getElementById('recipeRepairPrompt').value, 'repair {count} recipes, issue {issue}');
   const roleList = window.document.getElementById('articleRoleList');
   assert.ok(roleList, 'the ordered in-article shot editor exists');
-  const roleRows = roleList.querySelectorAll('.prompt-template-row');
-  assert.equal(roleRows.length, 6, 'six default shot roles: hero, ingredients, preparation, cooking, detail, lifestyle');
-  const roleNames = [...roleRows].map((row) => row.querySelector('.pt-name').value);
-  assert.ok(roleNames.some((n) => n.includes('المقادير')), 'the ingredients shot is one of the editable roles');
+  const nicheSelect = window.document.getElementById('roleNicheSelect');
+  assert.ok(nicheSelect, 'a niche selector edits shots per niche');
+  const roleRows = () => roleList.querySelectorAll('.prompt-template-row');
+  assert.equal(roleRows().length, 6, 'six default shot roles: hero, ingredients, preparation, cooking, detail, lifestyle');
+  const roleNames = () => [...roleRows()].map((row) => row.querySelector('.pt-name').value);
+  assert.ok(roleNames().some((n) => n.includes('المقادير')), 'the ingredients shot is one of the editable roles');
   assert.ok(roleList.querySelector('.pt-prompt').value.includes('{{title}}') === false, 'built-in shots describe the moment directly');
+  // other niches expose their own six shot tables
+  const rolePromptValues = () => [...roleList.querySelectorAll('.pt-prompt')].map((t) => t.value);
+  nicheSelect.value = 'crochet';
+  nicheSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.ok(rolePromptValues().some((p) => /yarn/i.test(p)), 'crochet shots talk about yarn and hooks, not food');
+  nicheSelect.value = 'gardening';
+  nicheSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.ok(rolePromptValues().some((p) => /garden/i.test(p)), 'gardening shots describe gardening moments');
+  nicheSelect.value = 'food';
+  nicheSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
   // editing one shot and reading the form surfaces the override payload
-  roleRows[2].querySelector('.pt-prompt').value = 'HANDS KNEADING DOUGH for {{title}}, no text';
-  roleRows[2].querySelector('.pt-prompt').dispatchEvent(new window.Event('input', { bubbles: true }));
+  roleRows()[2].querySelector('.pt-prompt').value = 'HANDS KNEADING DOUGH for {{title}}, no text';
+  roleRows()[2].querySelector('.pt-prompt').dispatchEvent(new window.Event('input', { bubbles: true }));
   assert.ok(window.document.querySelector('[data-reset-prompt]'), 'each prompt offers a reset-to-default button');
 
   // additional in-article images describe DIFFERENT moments (hero / ingredients / preparation)

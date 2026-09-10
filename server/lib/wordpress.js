@@ -586,10 +586,19 @@ function assemblePublishedHtml({ draft, root, slug, featuredUrl, pinterestUrl, a
   if (featuredUrl) {
     blocks.push(WordPressMarkup.featuredImage(featuredUrl, PublishingContracts.featuredImageAltText(draft.title, draft.contentType)));
   }
-  blocks.push(String(draft.htmlContent || ''));
-  (additionalUrls || []).forEach((url, index) => {
-    if (url) blocks.push(WordPressMarkup.featuredImage(url, `${draft.title || ''} image ${index + 1}`));
-  });
+  const roleOrder = WordPressMarkup.inlineRoleOrder();
+  const inlineFigures = (additionalUrls || []).map((url, index) => {
+    if (!url) return null;
+    const role = roleOrder[index % roleOrder.length];
+    return {
+      role,
+      html: WordPressMarkup.featuredImage(url, WordPressMarkup.inlineRoleAltTitle(draft.title, role)),
+    };
+  }).filter(Boolean);
+  // Each additional image is placed beside the section it illustrates
+  // (ingredients shot under the ingredients heading, etc.), not dumped at
+  // the end of the post.
+  blocks.push(WordPressMarkup.placeInlineImages(String(draft.htmlContent || ''), inlineFigures));
   const canonical = `${root}/${slug}/`;
   const share = 'https://www.pinterest.com/pin/create/button/?url=' + encodeURIComponent(canonical)
     + '&media=' + encodeURIComponent(pinterestUrl || '')

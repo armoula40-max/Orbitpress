@@ -412,10 +412,112 @@ const ScheduleContract = {
 // ---------------------------------------------------------------------------
 // WordPressMarkup
 // ---------------------------------------------------------------------------
+const INLINE_ROLE_ORDER = ['hero', 'ingredients', 'preparation', 'cooking', 'detail', 'lifestyle'];
+const INLINE_ROLE_LABELS = {
+  hero: 'finished result',
+  ingredients: 'ingredients and materials laid out',
+  preparation: 'preparation in progress',
+  cooking: 'making and cooking process',
+  detail: 'close-up detail',
+  lifestyle: 'serving and lifestyle view',
+};
+// Heading keywords (English, Arabic, French) that identify where each shot
+// belongs inside the article body. h3 anchors match the generated recipe
+// card (Ingredients / Instructions headings).
+const INLINE_ANCHORS = [
+  { role: 'ingredients', h3: true, patterns: ['ingredient', 'what you need', 'what you’ll need', 'materials', 'supplies', 'tools', 'equipment', 'gather your', 'shopping list', 'مكونات', 'مقادير', 'المواد', 'الأدوات', 'fourniture', 'matériel', 'ingrédient'] },
+  { role: 'preparation', h3: false, patterns: ['preparation', 'before you begin', 'getting ready', 'mise en place', 'get started', 'set up', 'setup', 'prep ', 'التحضير', 'préparation'] },
+  { role: 'cooking', h3: true, patterns: ['instructions', 'directions', 'method', 'steps', 'how to', 'cook', 'bake', 'assembly', 'assemble', 'making', 'make it', 'الخطوات', 'الطريقة', 'الطبخ', 'cuisson', 'étapes', 'réalisation'] },
+  { role: 'detail', h3: false, patterns: ['pro tip', 'expert tip', 'tips', 'technique', 'texture', 'troubleshoot', 'faq', 'frequently asked', 'notes', 'نصائح', 'ملاحظات', 'conseils', 'astuces'] },
+  { role: 'lifestyle', h3: false, patterns: ['serve', 'serving', 'storage', 'store', 'freeze', 'make ahead', 'final', 'conclusion', 'enjoy', 'presentation', 'plating', 'التقديم', 'الحفظ', 'التخزين', 'service', 'conservation', 'dégustation'] },
+];
+
+function headingStripText(html) {
+  return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 const WordPressMarkup = {
   featuredImage(url, altText) {
     return `<figure class="wp-block-image size-large"><img src="${esc(url)}" alt="${esc(altText)}" /></figure>`;
   },
+  /**
+   * Places each additional image next to the section it illustrates instead
+   * of appending every image at the end. Images arrive in role order
+   * (hero, ingredients, preparation, cooking, detail, lifestyle, ...): the
+   * hero follows the intro; role shots anchor to matching headings (incl. the
+   * recipe card's h3 Ingredients / Instructions); anything unmatched is
+   * spread evenly so pictures never cluster in one spot.
+   */
+  placeInlineImages(html, figures) {
+    const content = String(html || '');
+    const items = (Array.isArray(figures) ? figures : []).filter((f) => f && f.html);
+    if (!items.length) return content;
+    const headings = [];
+    const headingRe = /<h([23])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
+    let match;
+    while ((match = headingRe.exec(content)) !== null) {
+      headings.push({ index: match.index, end: match.index + match[0].length, level: Number(match[1]), text: headingStripText(match[2]) });
+    }
+    const cardMatch = content.match(/<section\b[^>]*data-recipe-card\s*=\s*["']true["']/i);
+    const cardStart = cardMatch ? cardMatch.index : content.length;
+    const claimed = new Set();
+    const insertions = [];
+    const insertAt = (pos, figure) => {
+      const key = Math.max(0, Math.min(content.length, Math.round(pos)));
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      insertions.push({ pos: key, html: figure.html });
+      return true;
+    };
+    const matchesAnchor = (heading, patterns) => patterns.some((p) => heading.text.includes(p)) ||
+      patterns.some((p) => /^[a-z ]{2,}$/.test(p) && new RegExp(`\\b${p.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(heading.text));
+
+    items.forEach((figure, figureIndex) => {
+      const role = figure.role || INLINE_ROLE_ORDER[figureIndex % INLINE_ROLE_ORDER.length];
+      if (role === 'hero' && headings.length) {
+        // Right after the benefit-led introduction, before the first H2.
+        if (insertAt(headings[0].index, figure)) return;
+      }
+      const anchor = INLINE_ANCHORS.find((a) => a.role === role);
+      if (anchor) {
+        const found = headings.find((h) => !claimed.has(h.end)
+          && (anchor.h3 || h.level === 2) && h.text && matchesAnchor(h, anchor.patterns));
+        if (found && insertAt(found.end, figure)) return;
+      }
+      figure.unplaced = true;
+    });
+
+    // Generic slots: end of intro, after each H2 heading outside the recipe
+    // card, and the end of the content.
+    const slots = [
+      headings[0] ? headings[0].index : content.length,
+      ...headings.filter((h) => h.level === 2 && h.index < cardStart).map((h) => h.end),
+      content.length,
+    ].map((pos) => Math.round(pos)).sort((a, b) => a - b).filter((pos, i, arr) => i === 0 || pos !== arr[i - 1]);
+    const freeSlots = slots.filter((pos) => !claimed.has(pos));
+    const forceInsert = (pos, figure) => {
+      const key = Math.max(0, Math.round(pos));
+      claimed.add(key);
+      insertions.push({ pos: key, html: figure.html });
+    };
+    const unplaced = items.filter((f) => f.unplaced);
+    let tailOffset = 0;
+    unplaced.forEach((figure, k) => {
+      if (!freeSlots.length) { forceInsert(content.length + tailOffset, figure); tailOffset += figure.html.length; return; }
+      const slotIndex = Math.min(freeSlots.length - 1, Math.floor((k + 0.5) * freeSlots.length / unplaced.length));
+      if (insertAt(freeSlots[slotIndex], figure)) return;
+      forceInsert(content.length + tailOffset, figure);
+      tailOffset += figure.html.length;
+    });
+
+    return insertions.sort((a, b) => b.pos - a.pos)
+      .reduce((html, ins) => html.slice(0, ins.pos) + ins.html + html.slice(ins.pos), content);
+  },
+  inlineRoleAltTitle(title, role) {
+    const label = INLINE_ROLE_LABELS[role] ? `, ${INLINE_ROLE_LABELS[role]}` : '';
+    return `${title || 'Article'}${label}`;
+  },
+  inlineRoleOrder() { return INLINE_ROLE_ORDER.slice(); },
   pinterestSaveButton(shareUrl) {
     return `<p data-askinz-pinterest-direct="true"><a href="${esc(shareUrl)}" target="_blank" rel="noopener">Save on Pinterest</a></p>`;
   },
@@ -585,16 +687,30 @@ const SettingsPersistenceContract = {
         .filter((item) => item.prompt)
         .slice(0, 20);
     }
-    // Ordered shot prompts for the additional in-article images (one row per
-    // generated image). Empty resets to the built-in niche role tables.
-    if (Array.isArray(incoming.articleImageRolePrompts)) {
-      merged.articleImageRolePrompts = incoming.articleImageRolePrompts
-        .map((item) => ({
-          name: optStr(item && item.name).trim().slice(0, 80),
-          prompt: optStr(item && item.prompt).trim().slice(0, 4000),
-        }))
-        .filter((item) => item.prompt)
-        .slice(0, 8);
+    // Ordered shot prompts for the additional in-article images, one set per
+    // niche: { food: [...rows], crochet: [...rows], '*': [...] }. The '*' key
+    // is a generic fallback; an empty object resets every niche to the
+    // built-in role tables. Legacy arrays migrate as the generic fallback.
+    const sanitizeShotRows = (rows) => (Array.isArray(rows) ? rows : [])
+      .map((item) => ({
+        name: optStr(item && item.name).trim().slice(0, 80),
+        prompt: optStr(item && item.prompt).trim().slice(0, 4000),
+      }))
+      .filter((item) => item.prompt)
+      .slice(0, 8);
+    const rolePrompts = incoming.articleImageRolePrompts;
+    if (Array.isArray(rolePrompts)) {
+      const rows = sanitizeShotRows(rolePrompts);
+      merged.articleImageRolePrompts = rows.length ? { '*': rows } : {};
+    } else if (rolePrompts && typeof rolePrompts === 'object') {
+      const allowed = new Set(['*', 'food', 'crochet', 'pets', 'nails', 'pets-nails', 'furniture', 'home-decor', 'diy', 'beauty', 'gardening']);
+      const byNiche = {};
+      Object.entries(rolePrompts).forEach(([key, rows]) => {
+        if (!allowed.has(key)) return;
+        const clean = sanitizeShotRows(rows);
+        if (clean.length) byNiche[key] = clean;
+      });
+      merged.articleImageRolePrompts = byNiche;
     }
     return merged;
   },

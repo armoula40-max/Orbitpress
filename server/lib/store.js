@@ -134,12 +134,9 @@ function getSettingsSummary(siteId) {
     feedspyPrompt: saved.feedspyPrompt || '',
     recipeRepairSystemPrompt: saved.recipeRepairSystemPrompt || '',
     recipeRepairPrompt: saved.recipeRepairPrompt || '',
-    articleImageRolePrompts: Array.isArray(saved.articleImageRolePrompts)
-      ? saved.articleImageRolePrompts
-        .map((t) => ({ name: String(t && t.name || '').slice(0, 80), prompt: String(t && t.prompt || '').slice(0, 4000) }))
-        .filter((t) => t.prompt.trim())
-        .slice(0, 8)
-      : [],
+    articleImageRolePrompts: SettingsPersistenceContract.merge(
+      {}, { articleImageRolePrompts: saved.articleImageRolePrompts },
+    ).articleImageRolePrompts || {},
     pinterestPrompts: Array.isArray(saved.pinterestPrompts)
       ? saved.pinterestPrompts
         .map((t) => ({ name: String(t && t.name || '').slice(0, 80), prompt: String(t && t.prompt || '').slice(0, 4000) }))
