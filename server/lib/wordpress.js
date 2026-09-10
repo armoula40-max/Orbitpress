@@ -717,13 +717,24 @@ async function publishPinterest(request) {
     });
     if (viaSession.ok) return { ok: true, method: 'session', id: viaSession.pinId, pinUrl: viaSession.pinUrl };
     sessionFailure = { stage: viaSession.stage, message: viaSession.message };
+    // A live session that cannot find the board has a settings problem the
+    // token path cannot fix either (v5 needs the very same numeric board id);
+    // surface the board guidance (including the owned-boards list) directly.
+    if (viaSession.stage === 'board') {
+      throw new Error(viaSession.message);
+    }
     // A connected session that fails at upload/create has no usable token
     // fallback unless the user actually saved one.
-    if (viaSession.stage !== 'session' && viaSession.stage !== 'board') {
+    if (viaSession.stage !== 'session') {
       const token = String(settings.pinterestAccessToken || '').trim();
       if (!token) throw new Error(`تعذّر النشر بالجلسة (${viaSession.stage}): ${viaSession.message}`);
     }
   } catch (error) {
+    // Board problems are configuration errors the token path cannot solve
+    // (v5 needs the same numeric board), so they must surface directly.
+    if ((sessionFailure && sessionFailure.stage === 'board') || /^تعذّر العثور على اللوحة/.test(String(error.message || ''))) {
+      throw error;
+    }
     if (!String(settings.pinterestAccessToken || '').trim()) throw error;
     sessionFailure = sessionFailure || { stage: 'session', message: error.message };
   }

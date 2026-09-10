@@ -497,6 +497,94 @@ test('when the S3 upload stage is unavailable, the legacy /upload-image/ flow st
   assert.equal(legacyCreate.options.image_url, 'https://i.pinimg.com/uploaded/legacy.jpg');
 });
 
+test('a board URL carrying the wrong username resolves through the connected account board list', async (t) => {
+  const mock = await mocks.startPinterestPublishMock({ failStage: 'board-missing' });
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  // username "otherperson" is wrong, but the slug matches an owned board
+  const result = await publisher.publishPinWithSession({
+    boardId: 'https://www.pinterest.com/otherperson/sourdough-easy-recipes/',
+    title: 'Bread Pin',
+    description: 'x',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, true, result.message);
+  const create = mock.bodies.find((b) => b.options && b.options.upload_id);
+  assert.equal(create.options.board_id, '777888999000111222', 'the owned board id was used');
+});
+
+test('a pasted board name (including Arabic) matches an owned board and publishes', async (t) => {
+  const mock = await mocks.startPinterestPublishMock({ failStage: 'board-missing' });
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const direct = await publisher.resolveBoardId('csrftoken=abc123', 'Sourdough easy recipes');
+  assert.equal(direct, '777888999000111222');
+  const arabic = await publisher.resolveBoardId('csrftoken=abc123', 'لوحات أفكار');
+  assert.equal(arabic, '333444555666777888');
+});
+
+test('an unknown board lists the owned boards in the Arabic error and never falls through to the token API', async (t) => {
+  const publishMock = await mocks.startPinterestPublishMock({ failStage: 'board-missing' });
+  t.after(() => publishMock.server.close());
+  const api = await mocks.startPinterestApiMock();
+  t.after(() => api.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  const savedBase = process.env.ORBITPRESS_PINTEREST_API_BASE;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = publishMock.url;
+  process.env.ORBITPRESS_PINTEREST_API_BASE = api.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+    if (savedBase == null) delete process.env.ORBITPRESS_PINTEREST_API_BASE;
+    else process.env.ORBITPRESS_PINTEREST_API_BASE = savedBase;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  store.saveSiteSettings({ pinterestAccessToken: 'trial-app-token', pinterestBoardId: 'https://www.pinterest.com/armoula40/does-not-exist/' }, 'site-board-miss');
+  let message = '';
+  try {
+    await wordpress.publishPinterest({
+      siteId: 'site-board-miss',
+      link: 'https://example.test/post',
+      image: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+      draft: { title: 'Test Pin' },
+    });
+  } catch (error) {
+    message = String(error.message || '');
+  }
+  assert.match(message, /تعذّر العثور على اللوحة/);
+  assert.match(message, /sourdough-easy-recipes/, 'owned boards are listed to pick from');
+  assert.match(message, /armoula40/, 'the connected username is shown');
+  assert.equal(api.calls.length, 0, 'a board-stage session failure never calls the v5 token API');
+});
+
 test('an unapproved Pinterest app (API code 3) points at the server session path', async (t) => {
   const api = await mocks.startPinterestApiMock();
   t.after(() => api.server.close());

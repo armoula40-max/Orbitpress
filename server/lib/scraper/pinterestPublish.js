@@ -370,24 +370,161 @@ async function createPin({ cookieHeader, boardId, title, description, link, imag
   return { ok: false, message: lastError };
 }
 
-/** Accepts a numeric board id or a board URL and resolves it to an id. */
-async function resolveBoardId(cookieHeader, value) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  if (/^\d+$/.test(raw)) return raw;
-  const match = raw.match(/pinterest\.com\/([^/]+)\/([^/?#]+)/);
-  if (!match) return null;
-  const boardUrl = `/${match[1]}/${match[2]}/`;
-  const mirrors = hosts();
-  try {
-    const parsed = await getResource(mirrors, cookieHeader, 'BoardResource/get/',
-      { board_url: boardUrl }, boardUrl, { stage: 'board', timeoutMs: 30000 });
-    const id = parsed && parsed.resource_response && parsed.resource_response.data && parsed.resource_response.data.id;
-    if (id) return String(id);
-  } catch (error) {
-    if (error.auth) throw error;
+/** Normalize a board name/slug for comparison (case/diacritic/dash tolerant). */
+function boardKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .trim().replace(/^@/, '')
+    .replace(/https?:\/\/(?:www\.)?pinterest\.com\//, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9؀-ۿ\-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * List the connected account's own boards (what the "Save to" picker shows),
+ * following Pinterest's bookmark pagination for up to three pages.
+ * Returns { ok, boards, username } where each board has { id, name, url, slug }.
+ */
+async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
+  const collected = [];
+  const seen = new Set();
+  let username = knownUsername || '';
+  const absorb = (items) => {
+    for (const b of items || []) {
+      if (!b || (!b.id && !b.name)) continue;
+      const owner = b.owner && b.owner.username;
+      if (owner && !username) username = owner;
+      const url = String(b.url || '');
+      const id = b.id ? String(b.id) : '';
+      const dedupeKey = id || url || b.name;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      collected.push({
+        id,
+        name: String(b.name || ''),
+        url,
+        slug: url ? url.replace(/^\/|\/$/g, '').split('/').pop() : '',
+      });
+    }
+  };
+
+  // Resource A: the pin builder's "save to" picker — session-scoped, no
+  // username required. Resource B: the profile boards listing (proven shape
+  // from the unofficial libraries), used with the canary's username.
+  const plans = [
+    {
+      resource: 'BoardPickerBoardsResource/get/',
+      sourceUrl: '/pin-builder/',
+      options: (bookmark) => ({
+        page_size: 50, sort: 'custom', privacy_filter: 'all',
+        redux_normalize_feed: true, bookmarks: [bookmark],
+      }),
+    },
+    {
+      resource: 'BoardsResource/get/',
+      sourceUrl: username ? `/${username}/boards/` : '/',
+      options: (bookmark) => ({
+        page_size: 50,
+        privacy_filter: 'all',
+        sort: 'custom',
+        isPrefetch: false,
+        include_archived: true,
+        field_set_key: 'profile_grid_item',
+        group_by: 'visibility',
+        redux_normalize_feed: true,
+        ...(username ? { username } : {}),
+        bookmarks: [bookmark],
+      }),
+    },
+  ];
+
+  for (const plan of plans) {
+    let bookmark = null;
+    for (let pageNo = 0; pageNo < 2; pageNo += 1) {
+      let parsed;
+      try {
+        parsed = await getResource(hostsList, cookieHeader, plan.resource,
+          plan.options(bookmark), plan.sourceUrl, { stage: 'board', timeoutMs: 30000 });
+      } catch (error) {
+        if (error.auth) throw error;
+        break;
+      }
+      const data = parsed && parsed.resource_response && parsed.resource_response.data;
+      const items = Array.isArray(data) ? data
+        : (data && Array.isArray(data.data) ? data.data : []);
+      absorb(items);
+      const next = parsed && parsed.resource && parsed.resource.options
+        && parsed.resource.options.bookmarks && parsed.resource.options.bookmarks[0];
+      if (!items.length || !next || next === '-end-') break;
+      bookmark = next;
+    }
+    if (collected.length) break;
   }
-  return null;
+  return { ok: collected.length > 0, boards: collected, username };
+}
+
+/**
+ * Resolve whatever the user pasted (numeric id, board URL, "user/slug", slug
+ * or board name) against Pinterest, falling back to the connected account's
+ * board list so a typo or a different username is matched instead of failing.
+ * Returns { id, matchedName? } or { boards, username, wanted }.
+ */
+async function resolveBoard(cookieHeader, value, knownUsername = '') {
+  const raw = String(value || '').trim();
+  const mirrors = hosts();
+  if (/^\d+$/.test(raw)) return { id: raw };
+
+  const urlMatch = raw.match(/pinterest\.com\/([^/]+)\/([^/?#]+)/);
+  const slashMatch = !urlMatch && /^[\w.-]+\/[\w.-]+$/.test(raw) ? raw.match(/^([^/]+)\/([^/]+)$/) : null;
+  const wantedUser = urlMatch ? urlMatch[1] : (slashMatch ? slashMatch[1] : '');
+  const slugInUrl = urlMatch ? urlMatch[2] : (slashMatch ? slashMatch[2] : '');
+
+  if (slugInUrl) {
+    const boardUrl = `/${wantedUser}/${slugInUrl}/`;
+    try {
+      const parsed = await getResource(mirrors, cookieHeader, 'BoardResource/get/',
+        { board_url: boardUrl }, boardUrl, { stage: 'board', timeoutMs: 30000 });
+      const id = parsed && parsed.resource_response && parsed.resource_response.data
+        && parsed.resource_response.data.id;
+      if (id) return { id: String(id) };
+    } catch (error) {
+      if (error.auth) throw error;
+    }
+  }
+
+  const listed = await listMyBoards(mirrors, cookieHeader, knownUsername)
+    .catch(() => ({ ok: false, boards: [], username: '' }));
+  const boards = listed.boards || [];
+  const wantedKey = boardKey(slugInUrl || raw);
+
+  const matches = (board) => {
+    if (!wantedKey) return false;
+    if (board.id && board.id === raw) return true;
+    const keys = [board.slug, board.url, board.name].map(boardKey);
+    if (slugInUrl) return keys.includes(boardKey(slugInUrl));
+    return keys.includes(wantedKey);
+  };
+  let hit = boards.find(matches);
+  if (!hit && wantedKey.length > 3) {
+    hit = boards.find((b) => {
+      const nameKey = boardKey(b.name);
+      return nameKey && (nameKey.includes(wantedKey) || wantedKey.includes(nameKey));
+    });
+  }
+  if (hit && hit.id) return { id: hit.id, matchedName: hit.name };
+  return { boards, username: listed.username, wanted: raw };
+}
+
+function formatBoardsList(boards) {
+  return (boards || []).slice(0, 10).map((b) => {
+    const link = b.url
+      ? `https://www.pinterest.com${b.url.startsWith('/') ? '' : '/'}${b.url}`
+      : `(معرّف ${b.id})`;
+    return `• ${b.name || b.slug || b.id} — ${link}`;
+  }).join('\n');
 }
 
 /**
@@ -400,6 +537,7 @@ async function resolveBoardId(cookieHeader, value) {
  * logged-in accounts never receive `_auth=1` — whereas the authenticated user
  * resource either returns the account or auth code 2.
  */
+/** Returns the signed-in username ('' if unknown) or throws an auth stage error. */
 async function sessionAlive(hostsList, cookieHeader) {
   try {
     const parsed = await getResource(
@@ -407,12 +545,13 @@ async function sessionAlive(hostsList, cookieHeader) {
       { isPrefetch: false, field_set_key: 'auth' }, '/', { stage: 'session', timeoutMs: 30000 },
     );
     const data = parsed && parsed.resource_response && parsed.resource_response.data;
-    return !!(data && (data.username || data.id));
+    if (!(data && (data.username || data.id))) return null;
+    return String(data.username || '');
   } catch (error) {
     if (error.auth) throw error;
     // A non-auth failure (network quirk on a mirror) must not block publishing:
     // the board resolution / upload right after will surface real problems.
-    return true;
+    return '';
   }
 }
 
@@ -431,23 +570,38 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   const mirrors = hosts();
 
   // Canary: prove the plain-HTTP session is actually logged in before we
-  // register an upload (works for numeric board IDs too, which skip resolve).
+  // register an upload (works for numeric board IDs too, which skip resolve),
+  // and learn the connected username for the boards listing.
+  let me = '';
   try {
-    if (!(await sessionAlive(mirrors, cookieHeader))) {
-      return { ok: false, stage: 'session', message: SESSION_RELOGIN_MESSAGE };
-    }
+    me = await sessionAlive(mirrors, cookieHeader);
+    if (me === null) return { ok: false, stage: 'session', message: SESSION_RELOGIN_MESSAGE };
   } catch (error) {
     if (error.auth) return { ok: false, stage: 'session', message: error.message };
+    me = '';
   }
 
-  let resolved;
+  let resolution;
   try {
-    resolved = await resolveBoardId(cookieHeader, boardId);
+    resolution = await resolveBoard(cookieHeader, boardId, me);
   } catch (error) {
     if (error.auth) return { ok: false, stage: 'session', message: error.message };
-    resolved = null;
+    resolution = { boards: [], wanted: boardId };
   }
-  if (!resolved) return { ok: false, stage: 'board', message: `تعذّر العثور على اللوحة: ${boardId} (تأكد أن الحساب المتصل يملك هذه اللوحة).` };
+  if (!resolution.id) {
+    let message = `تعذّر العثور على اللوحة: ${boardId}.`;
+    if (resolution.matchedName) {
+      // Should not happen (matched boards carry an id) — kept for safety.
+      return { ok: false, stage: 'board', message };
+    }
+    if (resolution.boards && resolution.boards.length) {
+      message += ` اللوحات التالية هي المملوكة للحساب المتصل — الصق رابط/اسم اللوحة الصحيح من بينها:\n${formatBoardsList(resolution.boards)}`;
+    }  else {
+      message += ' تأكد أن الحساب المتصل يملك هذه اللوحة وأنها لُوحظت أثناء الفتح (قد تحتاج لفتح pinterest.com في متصفح السيرفر مرة أو إنشائها). إن كان رابط اللوحة يحتوي اسم مستخدم مختلف عن الحساب المتصل، تكفي كتابة جزء اسم اللوحة أو معرّفها الرقمي.';
+    }
+    const ownerLine = resolution.username ? ` (الحساب المتصل: ${resolution.username})` : '';
+    return { ok: false, stage: 'board', message: message + ownerLine };
+  }
 
   const extension = String(image.mimeType || 'image/png').includes('jpeg') ? 'jpg' : 'png';
   const filename = `orbitpress-${Date.now()}.${extension}`;
@@ -460,7 +614,7 @@ async function publishPinWithSession({ boardId, title, description, link, image,
     await uploadToS3(registration, { bytes: image.bytes, mimeType: image.mimeType, filename });
     const { signature } = await pollUploadSignature(mirrors, cookieHeader, registration.uploadId);
     const created = await createPinFromUpload(mirrors, cookieHeader, {
-      boardId: resolved, uploadId: registration.uploadId, signature, title, description, link, altText,
+      boardId: resolution.id, uploadId: registration.uploadId, signature, title, description, link, altText,
     });
     return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl };
   } catch (modernError) {
@@ -473,7 +627,7 @@ async function publishPinWithSession({ boardId, title, description, link, image,
       if (!uploaded.ok) throw stageError('upload', uploaded.message);
       const created = await createPin({
         cookieHeader,
-        boardId: resolved,
+        boardId: resolution.id,
         title,
         description,
         link,
@@ -494,15 +648,24 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   }
 }
 
+/** Backward-compatible wrapper: id string or null. */
+async function resolveBoardId(cookieHeader, value) {
+  const result = await resolveBoard(cookieHeader, value);
+  return result.id || null;
+}
+
 module.exports = {
   publishPinWithSession,
+  resolveBoard,
   resolveBoardId,
+  listMyBoards,
   uploadImage,
   createPin,
   registerImageUpload,
   uploadToS3,
   pollUploadSignature,
   createPinFromUpload,
+  boardKey,
   csrfFrom,
   SESSION_RELOGIN_MESSAGE,
 };

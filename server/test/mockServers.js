@@ -358,9 +358,25 @@ function startPinterestPublishMock(options = {}) {
       if (url.pathname === '/resource/UserResource/get/') {
         // Functional session canary: guests/auth-expired jars get code 2.
         if (options.failStage === 'user-auth') return authFailure();
-        return json({ resource_response: { data: { id: '555000111', username: 'mockuser' } } });
+        return json({ resource_response: { data: { id: '555000111', username: 'armoula40' } } });
+      }
+      if (url.pathname === '/resource/BoardsResource/get/') {
+        // The connected account's boards, as the Save-to picker lists them.
+        return json({
+          resource_response: {
+            data: [
+              { id: '777888999000111222', name: 'Sourdough easy recipes', url: '/armoula40/sourdough-easy-recipes/', owner: { username: 'armoula40' } },
+              { id: '112233445566778899', name: 'Recipes', url: '/mockuser/recipes/', owner: { username: 'armoula40' } },
+              { id: '333444555666777888', name: 'لوحات أفكار', url: '/armoula40/afkar/', owner: { username: 'armoula40' } },
+            ],
+          },
+          resource: { options: { bookmarks: ['-end-'] } },
+        });
       }
       if (url.pathname === '/resource/BoardResource/get/') {
+        if (options.failStage === 'board-missing') {
+          return json({ resource_response: { data: null }, message: 'Board not found.' });
+        }
         return json({ resource_response: { data: { id: '112233445566778899' } } });
       }
       if (url.pathname === '/resource/ApiResource/create/') {
