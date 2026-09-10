@@ -13,6 +13,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to publish the rolling pre-release on push
 
     steps:
       - name: Download source
@@ -43,16 +45,41 @@ jobs:
       - name: Build user and admin APKs
         run: ./gradlew :app:assembleUserDebug :app:assembleAdminDebug --no-daemon --stacktrace
 
-      - name: Upload user APK
+      - name: Rename APKs with friendly file names
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/user/debug/app-user-debug.apk "release/OrbitPress-user-${GITHUB_REF_NAME//\//-}.apk"
+          cp app/build/outputs/apk/admin/debug/app-admin-debug.apk "release/OrbitPress-admin-${GITHUB_REF_NAME//\//-}.apk"
+          ls -la release
+
+      - name: Upload user APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: OrbitPress-User-APK
           path: app/build/outputs/apk/user/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload admin APK
+      - name: Upload admin APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: OrbitPress-Admin-APK
           path: app/build/outputs/apk/admin/debug/*.apk
           if-no-files-found: error
+
+      # Rolling pre-release on push so the two APKs are always one click away at
+      # https://github.com/armoula40-max/Orbitpress/releases (no GitHub login
+      # needed to download; skipped for pull requests).
+      - name: Publish rolling APK pre-release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-latest
+          name: OrbitPress APK — أحدث نسخة (مستخدم + مدير)
+          prerelease: true
+          body: |
+            أحدث بناء تلقائي لتطبيقَي أندرويد المتصلين بالخادم:
+            - **OrbitPress-user**: تطبيق المستخدمين — الدخول بكود يولّده المدير.
+            - **OrbitPress-admin**: تطبيق المدير — الدخول بالرمز الرئيسي فقط.
+
+            بعد التثبيت: أدخل عنوان الخادم ثم الكود/الرمز. يتطلب أندرويد 8.0 فأحدث.
+          files: release/*.apk
