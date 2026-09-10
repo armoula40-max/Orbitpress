@@ -44,9 +44,12 @@ docker compose version >/dev/null 2>&1 || die "إضافة docker compose غير 
 # --- 2) source code ----------------------------------------------------------
 if [ -d "$APP_DIR/.git" ]; then
   log "تحديث الشيفرة في $APP_DIR …"
-  git -C "$APP_DIR" fetch --all --prune
-  git -C "$APP_DIR" checkout "$BRANCH"
-  git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+  # A single-branch --depth 1 clone does not know other branches; fetch the
+  # target explicitly and align the local branch to it (pure deploy copy).
+  git -C "$APP_DIR" fetch origin --prune
+  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
+  git -C "$APP_DIR" checkout -B "$BRANCH" FETCH_HEAD
+  git -C "$APP_DIR" reset --hard FETCH_HEAD
 else
   log "استنساخ المستودع إلى $APP_DIR …"
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"

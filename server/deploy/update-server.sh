@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# OrbitPress Server Edition — safe update: pull latest code, rebuild, restart.
+# OrbitPress Server Edition — safe update: fetch the target branch (creating
+# it locally even when this deploy clone was made single-branch), rebuild.
 set -euo pipefail
 APP_DIR="${ORBITPRESS_DIR:-/opt/orbitpress}"
 BRANCH="${ORBITPRESS_BRANCH:-arena/01a08173-orbitpress}"
 
 cd "$APP_DIR"
+
+# The installer clones with --depth 1 --single-branch, so a target branch the
+# clone has never seen is unknown to git and "git checkout $BRANCH" fails with
+# "pathspec did not match". Fetch the exact branch into FETCH_HEAD, then create
+# (or reset) the local branch to it. This is a pure deploy copy: .env and any
+# untracked files are preserved by checkout -B / reset --hard.
 git fetch origin --prune
-git checkout "$BRANCH"
-if git merge-base --is-ancestor HEAD "origin/$BRANCH"; then
-  git pull --ff-only origin "$BRANCH"
-else
-  # The session branch was force-pushed during development — this clone is a
-  # pure deploy copy (no local commits), so aligning is safe. .env and other
-  # untracked files (data volume lives in Docker) are untouched by reset --hard.
-  echo "[orbitpress] local copy diverged; hard-aligning with origin/$BRANCH"
-  git reset --hard "origin/$BRANCH"
-fi
+git fetch --depth 1 origin "$BRANCH"
+git checkout -B "$BRANCH" FETCH_HEAD
+git reset --hard FETCH_HEAD
+
 docker compose up -d --build
 docker image prune -f >/dev/null 2>&1 || true
-echo "[orbitpress] تم التحديث وإعادة التشغيل ✅"
+echo "[orbitpress] تم التحديث إلى فرع $BRANCH وإعادة التشغيل ✅"
