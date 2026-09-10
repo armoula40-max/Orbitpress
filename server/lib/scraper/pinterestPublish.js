@@ -490,13 +490,20 @@ async function resolveBoard(cookieHeader, value, knownUsername = '') {
       const id = parsed && parsed.resource_response && parsed.resource_response.data
         && parsed.resource_response.data.id;
       if (id) return { id: String(id) };
-    } catch (error) {
-      if (error.auth) throw error;
+    } catch {
+      // Auth or lookup failure — the owned-boards listing below is the
+      // decisive check (it either lists boards with the same session or
+      // throws an auth stage error itself).
     }
   }
 
-  const listed = await listMyBoards(mirrors, cookieHeader, knownUsername)
-    .catch(() => ({ ok: false, boards: [], username: '' }));
+  let listed;
+  try {
+    listed = await listMyBoards(mirrors, cookieHeader, knownUsername);
+  } catch (error) {
+    if (error.auth) throw error;
+    listed = { ok: false, boards: [], username: '' };
+  }
   const boards = listed.boards || [];
   const wantedKey = boardKey(slugInUrl || raw);
 
@@ -568,17 +575,22 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   if (!boardId) return { ok: false, stage: 'board', message: 'حدّد لوحة النشر (Board ID أو رابط اللوحة) في الإعدادات.' };
 
   const mirrors = hosts();
+  const numericBoard = /^\d+$/.test(String(boardId).trim());
 
-  // Canary: prove the plain-HTTP session is actually logged in before we
-  // register an upload (works for numeric board IDs too, which skip resolve),
-  // and learn the connected username for the boards listing.
+  // Learn the connected username for the boards listing. The user-resource
+  // call can be sensitive, so a non-fatal or non-auth answer never blocks a
+  // URL/name board (the board endpoints below prove the session); only an
+  // explicit auth code 2 combined with a numeric id aborts before an upload.
   let me = '';
+  let canaryAuth = null;
   try {
     me = await sessionAlive(mirrors, cookieHeader);
-    if (me === null) return { ok: false, stage: 'session', message: SESSION_RELOGIN_MESSAGE };
   } catch (error) {
-    if (error.auth) return { ok: false, stage: 'session', message: error.message };
+    if (error.auth) canaryAuth = error;
     me = '';
+  }
+  if (canaryAuth && numericBoard) {
+    return { ok: false, stage: 'session', message: canaryAuth.message };
   }
 
   let resolution;
@@ -656,6 +668,8 @@ async function resolveBoardId(cookieHeader, value) {
 
 module.exports = {
   publishPinWithSession,
+  hosts,
+  sessionAlive,
   resolveBoard,
   resolveBoardId,
   listMyBoards,

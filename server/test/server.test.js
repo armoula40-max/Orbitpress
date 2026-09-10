@@ -497,6 +497,31 @@ test('when the S3 upload stage is unavailable, the legacy /upload-image/ flow st
   assert.equal(legacyCreate.options.image_url, 'https://i.pinimg.com/uploaded/legacy.jpg');
 });
 
+test('the board picker endpoint path lists the connected account boards with ids and URLs', async (t) => {
+  const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const me = await publisher.sessionAlive(publisher.hosts(), 'csrftoken=abc123; _pinterest_sess=fake');
+  assert.equal(me, 'armoula40');
+  const listed = await publisher.listMyBoards(publisher.hosts(), 'csrftoken=abc123; _pinterest_sess=fake', me);
+  assert.equal(listed.ok, true);
+  assert.equal(listed.boards.length, 3);
+  const bread = listed.boards.find((b) => b.name === 'Sourdough easy recipes');
+  assert.equal(bread.id, '777888999000111222');
+  assert.equal(bread.slug, 'sourdough-easy-recipes');
+});
+
 test('a board URL carrying the wrong username resolves through the connected account board list', async (t) => {
   const mock = await mocks.startPinterestPublishMock({ failStage: 'board-missing' });
   t.after(() => mock.server.close());

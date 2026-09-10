@@ -210,6 +210,37 @@ router.post('/sessions/:platform/cookies', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...status });
 }));
 
+// List the connected account's Pinterest boards for the Settings picker.
+router.get('/sessions/:platform/boards', asyncRoute(async (req, res) => {
+  const platform = String(req.params.platform || '').toLowerCase();
+  if (platform !== 'pinterest') {
+    return res.status(400).json({ ok: false, message: 'قائمة اللوحات متاحة لـ Pinterest فقط.' });
+  }
+  const cookieHeader = await scraper.sessions.cookieHeader('pinterest').catch(() => '');
+  if (!cookieHeader || !/_pinterest_sess=/.test(cookieHeader)) {
+    return res.json({ ok: false, stage: 'session', message: 'لا توجد جلسة Pinterest متصلة — اربط الحساب من البطاقة أولاً.' });
+  }
+  const publisher = require('./scraper/pinterestPublish');
+  const mirrorHosts = publisher.hosts();
+  // The username is only cosmetic; never let its probe block the listing,
+  // since the boards resources themselves require a signed-in session and
+  // are therefore the real functional proof.
+  let me = '';
+  try {
+    me = await publisher.sessionAlive(mirrorHosts, cookieHeader);
+  } catch { /* the listing below proves the session either way */ }
+  let listed;
+  try {
+    listed = await publisher.listMyBoards(mirrorHosts, cookieHeader, me || '');
+  } catch (error) {
+    return res.json({ ok: false, stage: 'session', message: error.message || 'رفض Pinterest جلسة المتصفح (كود 2). اقطع الاتصال وأعد الدخول أو استورد الكوكيز.' });
+  }
+  if (!listed.boards.length) {
+    return res.json({ ok: false, stage: 'session', message: 'تعذّرت قراءة لوحات الحساب بالجلسة المحفوظة — اقطع الاتصال وأعد الدخول أو استورد الكوكيز، ثم أعد المحاولة.' });
+  }
+  res.json({ ok: true, username: listed.username || me || '', boards: listed.boards });
+}));
+
 router.get('/sessions/:platform/verification', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform) });
 }));

@@ -591,6 +591,13 @@
             '<button type="button" class="small-button" id="' + platform + 'ImportBtn">استيراد الكوكيز والاتصال</button>' +
           '</details>' +
         '</div>' +
+        (platform === 'pinterest'
+          ? '<div id="pinterestBoardPicker" class="spy-boards" style="display:' + (connected ? 'grid' : 'none') + ';gap:8px;margin:8px 0">' +
+              '<button type="button" class="small-button" id="pinterestBoardsLoad">📋 تحميل لوحات الحساب واختيار لوحة النشر</button>' +
+              '<select id="pinterestBoardSelect" style="display:none;max-width:100%"></select>' +
+              '<p class="helper" id="pinterestBoardsHint"></p>' +
+            '</div>'
+          : '') +
         '<div id="' + platform + 'VerifyStep" class="spy-verify" style="display:none"></div>' +
         '<div class="spy-session-actions" style="display:' + (connected ? 'block' : 'none') + '">' +
           '<button type="button" class="small-button" id="' + platform + 'RecheckBtn">إعادة فحص الاتصال</button> ' +
@@ -650,6 +657,76 @@
     var form = document.getElementById(platform + 'SessionForm');
     if (form) form.style.display = 'none';
     renderVerifyStep(platform, info);
+  }
+
+  function installPinterestBoardPicker(statuses) {
+    var loadBtn = document.getElementById('pinterestBoardsLoad');
+    var select = document.getElementById('pinterestBoardSelect');
+    var hint = document.getElementById('pinterestBoardsHint');
+    if (!loadBtn || !select) return;
+
+    function currentBoard() {
+      var input = document.getElementById('pinterestBoardId');
+      return input ? String(input.value || '').trim() : '';
+    }
+    function saveBoard(id, name) {
+      var input = document.getElementById('pinterestBoardId');
+      if (!input) { spyNotice('حقل اللوحة غير موجود في هذه الشاشة.', 'bad'); return; }
+      input.value = id;
+      // The Settings form autosaves on input (per active website profile).
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      if (hint) hint.textContent = 'لوحة النشر المختارة: ' + name + ' — حُفظت في الإعدادات.';
+      spyNotice('تم اختيار لوحة النشر: ' + name, 'good');
+    }
+    function fill(boards) {
+      var saved = currentBoard();
+      select.innerHTML = '<option value="">— اختر لوحة النشر —</option>' +
+        boards.map(function (b) {
+          var val = String(b.id || '');
+          var label = b.name || b.slug || val;
+          var urlTail = b.url ? ' (' + b.url.replace(/^\/|\/$/g, '') + ')' : '';
+          var selected = saved && (saved === val || saved.indexOf(val) !== -1 || (b.url && saved.indexOf(b.url.replace(/^\/|\/$/g, '').split('/').pop()) !== -1)) ? ' selected' : '';
+          return '<option value="' + esc(val) + '"' + selected + '>' + esc(label + urlTail) + '</option>';
+        }).join('');
+      select.style.display = 'block';
+      var chosen = select.value;
+      if (hint) {
+        hint.textContent = (statuses && statuses.pinterest && statuses.pinterest.connected ? '' : '') +
+          boards.length + ' لوحة في الحساب' + (chosen ? ' — المختارة حالياً محفوظة.' : ' — اختر واحدة للنشر.');
+      }
+    }
+    loadBtn.onclick = function () {
+      loadBtn.disabled = true;
+      loadBtn.textContent = '…جارٍ قراءة اللوحات من الحساب';
+      if (hint) hint.textContent = '';
+      fetch('/api/sessions/pinterest/boards')
+        .then(function (r) { return r.json(); })
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.message || 'تعذّرت قراءة اللوحات.');
+          window.__orbitPinterestBoards = result.boards || [];
+          fill(result.boards || []);
+        })
+        .catch(function (error) {
+          select.style.display = 'none';
+          if (hint) hint.textContent = error.message;
+          spyNotice(error.message, 'bad');
+        })
+        .finally(function () {
+          loadBtn.disabled = false;
+          loadBtn.textContent = '📋 تحميل لوحات الحساب واختيار لوحة النشر';
+        });
+    };
+    select.onchange = function () {
+      var id = select.value;
+      if (!id || !window.__orbitPinterestBoards) return;
+      var board = window.__orbitPinterestBoards.filter(function (b) { return String(b.id) === id; })[0];
+      saveBoard(id, board ? (board.name || board.slug || id) : id);
+    };
+    // Convenience: load once automatically when the session is connected.
+    if (statuses && statuses.pinterest && statuses.pinterest.connected) {
+      loadBtn.click();
+    }
   }
 
   function installSessionCard() {
@@ -719,6 +796,7 @@
               importBtn.textContent = 'استيراد الكوكيز والاتصال';
             });
         };
+        if (platform === 'pinterest') installPinterestBoardPicker(statuses);
         var recheckBtn = document.getElementById(platform + 'RecheckBtn');
         if (recheckBtn) recheckBtn.onclick = function () {
           recheckBtn.disabled = true;
