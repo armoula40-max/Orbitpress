@@ -472,10 +472,10 @@ async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
  * board list so a typo or a different username is matched instead of failing.
  * Returns { id, matchedName? } or { boards, username, wanted }.
  */
-async function resolveBoard(cookieHeader, value, knownUsername = '') {
+async function resolveBoard(cookieHeader, value, knownUsername = '', preloaded = null) {
   const raw = String(value || '').trim();
   const mirrors = hosts();
-  if (/^\d+$/.test(raw)) return { id: raw };
+  if (/^\d+$/.test(raw)) return { id: raw, boards: preloaded || [] };
 
   const urlMatch = raw.match(/pinterest\.com\/([^/]+)\/([^/?#]+)/);
   const slashMatch = !urlMatch && /^[\w.-]+\/[\w.-]+$/.test(raw) ? raw.match(/^([^/]+)\/([^/]+)$/) : null;
@@ -498,11 +498,15 @@ async function resolveBoard(cookieHeader, value, knownUsername = '') {
   }
 
   let listed;
-  try {
-    listed = await listMyBoards(mirrors, cookieHeader, knownUsername);
-  } catch (error) {
-    if (error.auth) throw error;
-    listed = { ok: false, boards: [], username: '' };
+  if (preloaded && preloaded.length) {
+    listed = { boards: preloaded, username: knownUsername };
+  } else {
+    try {
+      listed = await listMyBoards(mirrors, cookieHeader, knownUsername);
+    } catch (error) {
+      if (error.auth) throw error;
+      listed = { ok: false, boards: [], username: '' };
+    }
   }
   const boards = listed.boards || [];
   const wantedKey = boardKey(slugInUrl || raw);
@@ -575,30 +579,24 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   if (!boardId) return { ok: false, stage: 'board', message: 'حدّد لوحة النشر (Board ID أو رابط اللوحة) في الإعدادات.' };
 
   const mirrors = hosts();
-  const numericBoard = /^\d+$/.test(String(boardId).trim());
 
-  // Learn the connected username for the boards listing. The user-resource
-  // call can be sensitive, so a non-fatal or non-auth answer never blocks a
-  // URL/name board (the board endpoints below prove the session); only an
-  // explicit auth code 2 combined with a numeric id aborts before an upload.
-  let me = '';
-  let canaryAuth = null;
+  // Functional session proof = the account's board list (exactly what the
+  // Settings picker loads). It also feeds resolution so no duplicate call is
+  // made. Explicit auth code 2 there means the jar is a guest/expired.
+  let owned;
   try {
-    me = await sessionAlive(mirrors, cookieHeader);
+    owned = await listMyBoards(mirrors, cookieHeader, '');
   } catch (error) {
-    if (error.auth) canaryAuth = error;
-    me = '';
-  }
-  if (canaryAuth && numericBoard) {
-    return { ok: false, stage: 'session', message: canaryAuth.message };
+    if (error.auth) return { ok: false, stage: 'session', message: error.message };
+    owned = { boards: [], username: '' };
   }
 
   let resolution;
   try {
-    resolution = await resolveBoard(cookieHeader, boardId, me);
+    resolution = await resolveBoard(cookieHeader, boardId, owned.username || '', owned.boards);
   } catch (error) {
     if (error.auth) return { ok: false, stage: 'session', message: error.message };
-    resolution = { boards: [], wanted: boardId };
+    resolution = { boards: owned.boards, wanted: boardId };
   }
   if (!resolution.id) {
     let message = `تعذّر العثور على اللوحة: ${boardId}.`;

@@ -360,8 +360,14 @@ function startPinterestPublishMock(options = {}) {
         if (options.failStage === 'user-auth') return authFailure();
         return json({ resource_response: { data: { id: '555000111', username: 'armoula40' } } });
       }
+      if (url.pathname === '/resource/BoardPickerBoardsResource/get/') {
+        if (options.failStage === 'boards-auth') return authFailure();
+        // Default: let the listing fall through to BoardsResource.
+        return json({ error: 'unmocked picker' }, 404);
+      }
       if (url.pathname === '/resource/BoardsResource/get/') {
         // The connected account's boards, as the Save-to picker lists them.
+        if (options.failStage === 'boards-auth') return authFailure();
         return json({
           resource_response: {
             data: [

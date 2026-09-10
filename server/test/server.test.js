@@ -400,14 +400,14 @@ test('a real Pinterest session that never received the _auth cookie still publis
     altText: 'x',
   });
   assert.equal(result.ok, true, result.message);
-  assert.ok(mock.paths().includes('/resource/UserResource/get/'), 'the functional canary ran');
+  assert.ok(mock.paths().includes('/resource/BoardsResource/get/'), 'the session is proven by the account boards listing');
   assert.ok(mock.paths().includes('/resource/PinResource/create/'));
 });
 
-test('a guest/expired Pinterest jar is caught by the UserResource canary answering code 2', async (t) => {
-  // Pinterest keeps _pinterest_sess present even when logged out; the
-  // functional canary (not a cookie name) identifies those jars.
-  const mock = await mocks.startPinterestPublishMock({ failStage: 'user-auth' });
+test('a guest/expired Pinterest jar is caught when the account boards answer auth code 2', async (t) => {
+  // Pinterest keeps _pinterest_sess present even when logged out; the real
+  // proof is the account's board listing (the same call the picker uses).
+  const mock = await mocks.startPinterestPublishMock({ failStage: 'boards-auth' });
   t.after(() => mock.server.close());
   const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
   process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
