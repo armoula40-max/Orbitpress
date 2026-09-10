@@ -66,8 +66,8 @@ async function startUi(overrides, bridgeAnswer) {
       window.fetch = (url, options) => {
         if (!bridgeAnswer) return new Promise(() => {}); // pending forever: no network in these tests
         const request = JSON.parse((options && options.body) || '{}');
-        const payload = bridgeAnswer(request) || { ok: true };
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+        const payload = bridgeAnswer(request, options, String(url)) || { ok: true };
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
       };
       window.localStorage.clear();
     },
@@ -213,5 +213,27 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
   assert.equal(document.getElementById('lightbox').hidden, true, 'Escape closes it again');
   assert.deepEqual(fatalErrors(errors), []);
+  close();
+});
+
+test('large workspace saves avoid the 64 KB keepalive request cap', async () => {
+  const workspaceSaves = [];
+  const { window, close } = await startUi({}, (request, options, url) => {
+    if (String(url).includes('/api/workspace')) workspaceSaves.push({ options, body: options && options.body });
+    return { ok: true };
+  });
+  // A single generated article (HTML + recipe cards + outline) easily makes
+  // the workspace larger than the browser's 64 KB keepalive quota.
+  const big = 'x'.repeat(90000);
+  window.Native.saveWorkspace(JSON.stringify({
+    theme: 'day', keywords: [], logs: [], categories: [],
+    siteProfiles: [{ id: 'site-default', name: 'Askinz' }], activeSiteId: 'site-default', plan: {},
+    drafts: [{ id: 'd1', title: 'Big article', htmlContent: big }],
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 700)); // debounce is 350 ms
+  assert.ok(workspaceSaves.length >= 1, 'the workspace was flushed to the server');
+  const save = workspaceSaves.at(-1);
+  assert.equal(save.options.keepalive, undefined, 'normal saves must not use keepalive (64 KB browser cap)');
+  assert.ok(save.body.length > 64 * 1024, 'the saved payload itself exceeds the keepalive quota');
   close();
 });

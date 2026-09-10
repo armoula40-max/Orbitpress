@@ -59,18 +59,43 @@
   var workspaceTimer = null;
   var pendingWorkspace = null;
 
+  var workspaceRetries = 0;
   function flushWorkspace() {
     if (pendingWorkspace == null) return;
     var payload = pendingWorkspace;
-    pendingWorkspace = null;
+    // No keepalive here on purpose: browsers reject keepalive bodies over
+    // 64 KB, and a workspace with one or two generated articles (HTML + recipe
+    // cards) easily crosses that — every save then aborts as a network error
+    // ("Workspace save failed"). Page-unload saves still use sendBeacon below.
     fetch('/api/workspace', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace: payload }),
-      keepalive: true,
-    }).catch(function () {
-      noticeBridge('Workspace save failed — your latest change may not survive a reload.');
-    });
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error(j.message || ('HTTP ' + r.status));
+          });
+        }
+        if (pendingWorkspace === payload) {
+          pendingWorkspace = null;
+          workspaceRetries = 0;
+        }
+      })
+      .catch(function (err) {
+        // Keep the latest snapshot queued and retry a couple of times so a
+        // transient container restart does not silently drop the change.
+        if (pendingWorkspace !== payload) return; // a newer snapshot is already queued
+        if (workspaceRetries < 2) {
+          workspaceRetries++;
+          clearTimeout(workspaceTimer);
+          workspaceTimer = setTimeout(flushWorkspace, 1500);
+        } else {
+          workspaceRetries = 0;
+          noticeBridge('Workspace save failed — your latest change may not survive a reload.' + (err && err.message ? ' (' + err.message + ')' : ''));
+        }
+      });
   }
 
   function noticeBridge(message) {
@@ -159,7 +184,6 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ siteId: id, settings: incoming }),
-          keepalive: true,
         })
           .then(function (r) { return r.json(); })
           .then(function (saved) { if (saved && saved.summary) settingsCache[id] = saved.summary; })
