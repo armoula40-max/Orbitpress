@@ -236,7 +236,10 @@ router.get('/sessions/:platform/boards', asyncRoute(async (req, res) => {
     return res.json({ ok: false, stage: 'session', message: error.message || 'رفض Pinterest جلسة المتصفح (كود 2). اقطع الاتصال وأعد الدخول أو استورد الكوكيز.' });
   }
   if (!listed.boards.length) {
-    return res.json({ ok: false, stage: 'session', message: 'تعذّرت قراءة لوحات الحساب بالجلسة المحفوظة — اقطع الاتصال وأعد الدخول أو استورد الكوكيز، ثم أعد المحاولة.' });
+    if (!listed.username) {
+      return res.json({ ok: false, stage: 'session', message: 'الجلسة المحفوظة ليست مسجّلة الدخول فعلاً: صفحة /me/ لم تتعرّف على حساب (Pinterest يُبقي كوكي الجلسة في وضع الزائر). إن كان خادمك يظهر CAPTCHA عند الدخول، استورد الكوكيز من متصفحك العادي عبر حقل «استيراد الكوكيز» في البطاقة، ثم أعد تحميل اللوحات.' });
+    }
+    return res.json({ ok: true, username: listed.username, boards: [], message: `الحساب ${listed.username} لا يملك أي لوحات بعد — أنشئ لوحة على Pinterest ثم أعد التحميل.` });
   }
   res.json({ ok: true, username: listed.username || me || '', boards: listed.boards });
 }));

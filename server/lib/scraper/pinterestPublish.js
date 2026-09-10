@@ -383,10 +383,73 @@ function boardKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+const RESERVED_PATHS = new Set([
+  'me', 'login', 'pin', 'pins', 'ideas', 'today', 'search', 'settings',
+  '_ngjs', 'resource', 'categories', 'topics', 'news', 'signup', 'logout',
+]);
+
 /**
- * List the connected account's own boards (what the "Save to" picker shows),
- * following Pinterest's bookmark pagination for up to three pages.
- * Returns { ok, boards, username } where each board has { id, name, url, slug }.
+ * Discover the signed-in username the way the classic web clients do:
+ * GET /me/ redirects (302) to /<username>/ for an authenticated session and
+ * to /login for a guest. The manual HTTPS layer records every hop in `trail`.
+ * The final profile HTML also carries the username in its JSON island.
+ */
+async function discoverUsername(hostsList, cookieHeader) {
+  for (const host of hostsList) {
+    try {
+      const trail = [];
+      const html = await requestText(`${host}/me/`, 'GET', {
+        'User-Agent': UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Referer: `${host}/`,
+        Cookie: cookieHeader,
+      }, null, { trail, timeoutMs: 30000 });
+
+      // (1) final redirect hop: …/username/
+      for (let i = trail.length - 1; i >= 0; i -= 1) {
+        const match = String(trail[i].url || '').match(/pinterest\.[a-z.]+\/([A-Za-z0-9_]{2,40})\/?(?:[?#].*)?$/);
+        if (match && !RESERVED_PATHS.has(match[1].toLowerCase())) return match[1];
+      }
+      // (2) JSON island: current user profile payload
+      const island = extractIslandUsername(String(html));
+      if (island) return island;
+    } catch (error) {
+      probe('me', { host, status: error.status || 0, error: String(error.message).slice(0, 200) });
+    }
+  }
+  return '';
+}
+
+function extractIslandUsername(html) {
+  const marker = '<script id="__PWS_DATA__" type="application/json">';
+  const start = html.indexOf(marker);
+  if (start < 0) return '';
+  const raw = html.slice(start + marker.length);
+  const end = raw.indexOf('</script>');
+  if (end < 0) return '';
+  try {
+    const parsed = JSON.parse(raw.slice(0, end));
+    // The authenticated user appears under initialReduxState/users keyed by id;
+    // their record carries username + image (guests have no such record).
+    const users = parsed && parsed.props
+      && parsed.props.initialReduxState && parsed.props.initialReduxState.users;
+    if (users && typeof users === 'object') {
+      const candidate = Object.values(users)
+        .find((u) => u && u.username && (u.is_connected_user || u.connected_user || u.domain_verified === true || u.images));
+      if (candidate && candidate.username) return String(candidate.username);
+    }
+  } catch { /* island truncated */ }
+  return '';
+}
+
+/**
+ * List the connected account's own boards, exactly the way the pin builder's
+ * "Save to" dialog does:
+ *   1. BoardPickerBoardsResource/get (field_set_key=board_picker) -> all_boards
+ *   2. BoardsResource/get with the /me/-discovered username (paginated)
+ *   3. ProfileBoardsResource/get (the scanner's proven public shape)
+ * Returns { ok, boards, username }.
  */
 async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
   const collected = [];
@@ -410,44 +473,43 @@ async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
       });
     }
   };
+  if (!username) username = await discoverUsername(hostsList, cookieHeader);
 
-  // Resource A: the pin builder's "save to" picker — session-scoped, no
-  // username required. Resource B: the profile boards listing (proven shape
-  // from the unofficial libraries), used with the canary's username.
-  const plans = [
-    {
-      resource: 'BoardPickerBoardsResource/get/',
-      sourceUrl: '/pin-builder/',
-      options: (bookmark) => ({
-        page_size: 50, sort: 'custom', privacy_filter: 'all',
-        redux_normalize_feed: true, bookmarks: [bookmark],
-      }),
-    },
-    {
-      resource: 'BoardsResource/get/',
-      sourceUrl: username ? `/${username}/boards/` : '/',
-      options: (bookmark) => ({
-        page_size: 50,
-        privacy_filter: 'all',
-        sort: 'custom',
-        isPrefetch: false,
-        include_archived: true,
-        field_set_key: 'profile_grid_item',
-        group_by: 'visibility',
-        redux_normalize_feed: true,
-        ...(username ? { username } : {}),
-        bookmarks: [bookmark],
-      }),
-    },
-  ];
+  // Plan A: the builder picker (field set board_picker, data.all_boards).
+  try {
+    const parsed = await getResource(hostsList, cookieHeader, 'BoardPickerBoardsResource/get/', {
+      allow_stale: true,
+      field_set_key: 'board_picker',
+      filter: 'all',
+      shortlist_length: 1,
+    }, username ? `/${username}/` : '/', { stage: 'board', timeoutMs: 30000 });
+    const data = parsed && parsed.resource_response && parsed.resource_response.data;
+    const buckets = data && [data.all_boards, data.boards, data.shortlist_boards];
+    for (const bucket of buckets) if (Array.isArray(bucket)) absorb(bucket);
+    if (Array.isArray(data)) absorb(data);
+  } catch (error) {
+    if (error.auth) throw error;
+    probe('boards-picker', { error: String(error.message).slice(0, 200) });
+  }
 
-  for (const plan of plans) {
+  // Plan B: profile boards listing with the discovered username.
+  if (!collected.length && username) {
     let bookmark = null;
-    for (let pageNo = 0; pageNo < 2; pageNo += 1) {
+    for (let pageNo = 0; pageNo < 3; pageNo += 1) {
       let parsed;
       try {
-        parsed = await getResource(hostsList, cookieHeader, plan.resource,
-          plan.options(bookmark), plan.sourceUrl, { stage: 'board', timeoutMs: 30000 });
+        parsed = await getResource(hostsList, cookieHeader, 'BoardsResource/get/', {
+          page_size: 50,
+          privacy_filter: 'all',
+          sort: 'custom',
+          isPrefetch: false,
+          include_archived: true,
+          field_set_key: 'profile_grid_item',
+          group_by: 'visibility',
+          redux_normalize_feed: true,
+          username,
+          bookmarks: [bookmark],
+        }, `/${username}/boards/`, { stage: 'board', timeoutMs: 30000 });
       } catch (error) {
         if (error.auth) throw error;
         break;
@@ -461,8 +523,21 @@ async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
       if (!items.length || !next || next === '-end-') break;
       bookmark = next;
     }
-    if (collected.length) break;
   }
+
+  // Plan C: the scanner's public profile boards resource.
+  if (!collected.length && username) {
+    try {
+      const parsed = await getResource(hostsList, cookieHeader, 'ProfileBoardsResource/get/', {
+        username, field_set_key: 'profile_grid', page_size: 50,
+      }, `/${username}/`, { stage: 'board', timeoutMs: 30000 });
+      const data = parsed && parsed.resource_response && parsed.resource_response.data;
+      absorb(Array.isArray(data) ? data : []);
+    } catch (error) {
+      if (error.auth) throw error;
+    }
+  }
+
   return { ok: collected.length > 0, boards: collected, username };
 }
 

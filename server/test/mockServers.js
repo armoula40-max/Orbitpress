@@ -355,6 +355,16 @@ function startPinterestPublishMock(options = {}) {
         bodies.push({ s3Upload: { length: Buffer.byteLength(raw), hasFile: raw.includes('name="file"') } });
       }
 
+      // /me/ redirects an authenticated browser to /<username>/.
+      if (url.pathname === '/me/' || url.pathname === '/me') {
+        res.writeHead(302, { Location: '/armoula40/' });
+        return res.end();
+      }
+      if (url.pathname === '/armoula40/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        return res.end('<html><body><script id="__PWS_DATA__" type="application/json">{"props":{"initialReduxState":{"users":{"555000111":{"username":"armoula40","is_connected_user":true}}}}}</script></body></html>');
+      }
+
       if (url.pathname === '/resource/UserResource/get/') {
         // Functional session canary: guests/auth-expired jars get code 2.
         if (options.failStage === 'user-auth') return authFailure();
@@ -362,8 +372,17 @@ function startPinterestPublishMock(options = {}) {
       }
       if (url.pathname === '/resource/BoardPickerBoardsResource/get/') {
         if (options.failStage === 'boards-auth') return authFailure();
-        // Default: let the listing fall through to BoardsResource.
-        return json({ error: 'unmocked picker' }, 404);
+        return json({
+          resource_response: {
+            data: {
+              all_boards: [
+                { id: '777888999000111222', name: 'Sourdough easy recipes', url: '/armoula40/sourdough-easy-recipes/' },
+                { id: '112233445566778899', name: 'Recipes', url: '/armoula40/recipes/' },
+                { id: '333444555666777888', name: 'لوحات أفكار', url: '/armoula40/afkar/' },
+              ],
+            },
+          },
+        });
       }
       if (url.pathname === '/resource/BoardsResource/get/') {
         // The connected account's boards, as the Save-to picker lists them.

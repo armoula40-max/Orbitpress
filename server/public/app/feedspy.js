@@ -706,6 +706,7 @@
           if (!result.ok) throw new Error(result.message || 'تعذّرت قراءة اللوحات.');
           window.__orbitPinterestBoards = result.boards || [];
           fill(result.boards || []);
+          if (!(result.boards || []).length && result.message && hint) hint.textContent = result.message;
         })
         .catch(function (error) {
           select.style.display = 'none';

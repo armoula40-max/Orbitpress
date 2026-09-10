@@ -400,7 +400,7 @@ test('a real Pinterest session that never received the _auth cookie still publis
     altText: 'x',
   });
   assert.equal(result.ok, true, result.message);
-  assert.ok(mock.paths().includes('/resource/BoardsResource/get/'), 'the session is proven by the account boards listing');
+  assert.ok(mock.paths().includes('/resource/BoardPickerBoardsResource/get/'), 'the session is proven by the account boards picker');
   assert.ok(mock.paths().includes('/resource/PinResource/create/'));
 });
 
