@@ -87,11 +87,20 @@ function fatalErrors(errors) {
 }
 
 test('the web UI boots with the server bridge and FeedSpy layer', async () => {
-  const { window, errors, close } = await startUi({}, (request) => (
-    request.type === 'diagnoseWordPress'
+  const promptDefaults = {
+    articleSystem: 'DEFAULT EDITOR PERSONA',
+    analyzer: 'DEFAULT {platform} ANALYZER',
+    viralAr: 'DEFAULT VIRAL EXTRACTOR',
+    feedspyAr: 'DEFAULT FEEDSPY REPORT',
+    recipeRepairSystem: 'DEFAULT REPAIR PERSONA',
+    recipeRepairInstruction: 'repair {count} recipes, issue {issue}',
+  };
+  const { window, errors, close } = await startUi({}, (request, options, url) => {
+    if (String(url).includes('/api/prompt-defaults')) return { ok: true, defaults: promptDefaults };
+    return request.type === 'diagnoseWordPress'
       ? { ok: true, steps: [{ label: 'users/me', url: 'https://wp.test/wp-json/wp/v2/users/me', status: 401, code: 'rest_not_logged_in', note: 'refused' }], advice: ['Check the Application Password.'] }
-      : { ok: true }
-  ));
+      : { ok: true };
+  });
 
   assert.equal(window.document.querySelector('#screen-studio').classList.contains('active'), true, 'studio screen active');
   assert.equal(typeof window.Native === 'object', true, 'web bridge installed');
@@ -117,6 +126,24 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   assert.ok(tplList, 'the Pinterest template manager is rendered');
   assert.equal(tplList.querySelectorAll('.prompt-template-row').length, 5, 'five default Pinterest prompt templates are offered');
   assert.ok(tplList.querySelector('.pt-prompt').value.includes('{{title}}'), 'templates use the {{title}} variable');
+
+  // every AI prompt is customizable from Settings, prefilled with its default
+  window.showScreen('settings');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(window.document.getElementById('articleSystemPrompt').value, 'DEFAULT EDITOR PERSONA', 'the editor persona field shows its built-in default');
+  assert.equal(window.document.getElementById('feedspyPrompt').value, 'DEFAULT FEEDSPY REPORT');
+  assert.equal(window.document.getElementById('recipeRepairPrompt').value, 'repair {count} recipes, issue {issue}');
+  const roleList = window.document.getElementById('articleRoleList');
+  assert.ok(roleList, 'the ordered in-article shot editor exists');
+  const roleRows = roleList.querySelectorAll('.prompt-template-row');
+  assert.equal(roleRows.length, 6, 'six default shot roles: hero, ingredients, preparation, cooking, detail, lifestyle');
+  const roleNames = [...roleRows].map((row) => row.querySelector('.pt-name').value);
+  assert.ok(roleNames.some((n) => n.includes('المقادير')), 'the ingredients shot is one of the editable roles');
+  assert.ok(roleList.querySelector('.pt-prompt').value.includes('{{title}}') === false, 'built-in shots describe the moment directly');
+  // editing one shot and reading the form surfaces the override payload
+  roleRows[2].querySelector('.pt-prompt').value = 'HANDS KNEADING DOUGH for {{title}}, no text';
+  roleRows[2].querySelector('.pt-prompt').dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.ok(window.document.querySelector('[data-reset-prompt]'), 'each prompt offers a reset-to-default button');
 
   // additional in-article images describe DIFFERENT moments (hero / ingredients / preparation)
   const recipeDraft = { title: 'Easy Sourdough Bread', niche: 'food', recipe: { ingredients: ['500g flour', '300ml water', '10g salt'] } };

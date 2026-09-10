@@ -15,6 +15,30 @@ const {
 } = require('./contracts');
 const { requireAiSettings } = require('./wordpress');
 
+// ---------------------------------------------------------------------------
+// Default prompts, single source of truth (also served at /api/prompt-defaults
+// so the Settings UI can show and reset them). Every prompt below can be
+// overridden per website from Settings; an empty override uses the default.
+// ---------------------------------------------------------------------------
+const PROMPT_DEFAULTS = {
+  articleSystem: "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the requested niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body.",
+  recipeRepairSystem: 'You are a strict recipe-roundup completion editor. Never summarize requested recipes; return every complete recipe.',
+  recipeRepairInstruction: 'CRITICAL COMPLETENESS REPAIR: return exactly {count} fully populated objects in recipes[]. Do not return a summary, names only, or a single recipe. Every object must include a title, description, at least 4 ingredients with quantities, prep time, cook time, yield, 4 to 9 numbered instructions, and at least one useful note. The collection body must be long and detailed. Previous output problem: {issue}',
+  analyzer: 'You are a {platform} content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim.',
+  viral: 'You are an SEO editor. For each supplied post propose exactly one precise search keyword, a writing angle and the content type (recipe or article). Return strict JSON: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. Never copy the post title verbatim.',
+  viralAr: 'أنت محرر SEO. لكل منشور مرقق، اقترح كلمة مفتاحية بحثية واحدة دقيقة وزاوية كتابة واضحة ونوع المحتوى (recipe أو article). أعد JSON صارماً: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. لا تنسخ عنوان المنشور حرفياً.',
+  feedspy: 'You are an expert FeedSpy-style social content analyst. Analyze only the supplied posts and the stats block. Return strict JSON with keys: headline, executiveSummary, viralPatterns, primaryKeywords, longTailKeywords, topics, winningPhrases, bestTimeAdvice, contentAngles, competitorWatch, planOfAction. Lists are plain string arrays. Never copy a post verbatim.',
+  feedspyAr: 'أنت محلل محتوى اجتماعي خبير بأسلوب FeedSpy. حلّل المنشورات المرفقة فقط مع كتلة الإحصاءات. أعد JSON صارماً بالمفاتيح: headline, executiveSummary, viralPatterns, primaryKeywords, longTailKeywords, topics, winningPhrases, bestTimeAdvice, contentAngles, competitorWatch, planOfAction. كل القيم نصوص عربية واضحة، والقوائم مصفوفات نصية. لا تنسخ المنشورات حرفياً. ركّز على ما قاده التفاعل العالي عملياً.',
+};
+
+// Resolve an optional per-site override; {token} placeholders in the default
+// text are expanded. A non-empty override is used verbatim and is itself
+// token-expanded.
+function resolvePrompt(override, defaultText, tokens) {
+  const base = String(override || '').trim() || defaultText;
+  return String(base).replace(/\{(\w+)\}/g, (match, key) => (tokens && tokens[key] != null ? String(tokens[key]) : match));
+}
+
 function chatEndpoint(base) {
   const url = PublishingContracts.requireHttpsUrl(base, 'Article API URL');
   return url.endsWith('/chat/completions') ? url : `${url}/chat/completions`;
@@ -99,7 +123,7 @@ async function generate(request) {
     model: provider.model,
     max_tokens: provider.maxOutputTokens,
     messages: [
-      { role: 'system', content: "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the requested niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body." },
+      { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
       { role: 'user', content: prompt },
     ],
     temperature: 0.7,
@@ -122,11 +146,12 @@ async function generate(request) {
   let draft = DraftContract.normalize(JSON.parse(json), category);
   if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
     const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
-    const repairPrompt = prompt + `\nCRITICAL COMPLETENESS REPAIR: return exactly ${requestedRecipeCount} fully populated objects in recipes[]. Do not return a summary, names only, or a single recipe. Every object must include a title, description, at least 4 ingredients with quantities, prep time, cook time, yield, 4 to 9 numbered instructions, and at least one useful note. The collection body must be long and detailed. Previous output problem: ${issue}`;
+    const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
+    const repairPrompt = prompt + `\n${repairInstruction}`;
     const repairBody = {
       ...body,
       messages: [
-        { role: 'system', content: 'You are a strict recipe-roundup completion editor. Never summarize requested recipes; return every complete recipe.' },
+        { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
         { role: 'user', content: repairPrompt },
       ],
     };
@@ -180,7 +205,7 @@ async function analyzeKeywords(request, platformHint) {
     comments: post.comments != null ? post.comments : null,
   }));
   const platform = (String(request.platform || platformHint || 'pinterest').toLowerCase()) || 'pinterest';
-  const system = `You are a ${platform} content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim.`;
+  const system = resolvePrompt(settings.analyzerPrompt, PROMPT_DEFAULTS.analyzer, { platform });
   const user = JSON.stringify({ platform, task: 'Extract keywords and explain winning content patterns from the ranked posts.', posts: compact });
   const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
   const body = {
@@ -235,9 +260,7 @@ async function viralKeywords(request) {
   }));
   if (!posts.length) throw new Error('There are no posts to extract keywords from.');
   const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
-  const system = language === 'ar'
-    ? 'أنت محرر SEO. لكل منشور مرقق، اقترح كلمة مفتاحية بحثية واحدة دقيقة وزاوية كتابة واضحة ونوع المحتوى (recipe أو article). أعد JSON صارماً: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. لا تنسخ عنوان المنشور حرفياً.'
-    : 'You are an SEO editor. For each supplied post propose exactly one precise search keyword, a writing angle and the content type (recipe or article). Return strict JSON: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. Never copy the post title verbatim.';
+  const system = resolvePrompt(settings.viralPrompt, language === 'ar' ? PROMPT_DEFAULTS.viralAr : PROMPT_DEFAULTS.viral);
   const user = JSON.stringify({ task: 'Turn each viral post into one keyword to publish against.', language, posts });
   const body = {
     model: provider.model,
@@ -345,9 +368,7 @@ async function feedspyReport(request) {
   if (!posts.length) throw new Error('There are no collected posts to analyze yet.');
   const stats = request.stats && typeof request.stats === 'object' ? request.stats : {};
   const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
-  const system = language === 'ar'
-    ? 'أنت محلل محتوى اجتماعي خبير بأسلوب FeedSpy. حلّل المنشورات المرفقة فقط مع كتلة الإحصاءات. أعد JSON صارماً بالمفاتيح: headline, executiveSummary, viralPatterns, primaryKeywords, longTailKeywords, topics, winningPhrases, bestTimeAdvice, contentAngles, competitorWatch, planOfAction. كل القيم نصوص عربية واضحة، والقوائم مصفوفات نصية. لا تنسخ المنشورات حرفياً. ركّز على ما قاده التفاعل العالي عملياً.'
-    : 'You are an expert FeedSpy-style social content analyst. Analyze only the supplied posts and the stats block. Return strict JSON with keys: headline, executiveSummary, viralPatterns, primaryKeywords, longTailKeywords, topics, winningPhrases, bestTimeAdvice, contentAngles, competitorWatch, planOfAction. Lists are plain string arrays. Never copy a post verbatim.';
+  const system = resolvePrompt(settings.feedspyPrompt, language === 'ar' ? PROMPT_DEFAULTS.feedspyAr : PROMPT_DEFAULTS.feedspy);
   const user = JSON.stringify({
     platform,
     source: String(request.source || ''),
@@ -395,4 +416,5 @@ module.exports = {
   analyzePinterestKeywords,
   feedspyReport,
   articleResponseFormat,
+  PROMPT_DEFAULTS,
 };

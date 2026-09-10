@@ -565,6 +565,8 @@ const SettingsPersistenceContract = {
       'imageProvider', 'imageBaseUrl', 'imageAccountId', 'imageModel', 'pinterestBoardId',
       'facebookAppId', 'facebookGraphVersion', 'pinterestClientId', 'pinterestRedirectUri',
       'textPrompt', 'imagePrompt', 'pinterestPrompt', 'articleImageCount', 'scraperApiBaseUrl',
+      'articleSystemPrompt', 'analyzerPrompt', 'viralPrompt', 'feedspyPrompt',
+      'recipeRepairSystemPrompt', 'recipeRepairPrompt',
     ].forEach((key) => {
       merged[key] = optStr(incoming[key]).trim();
     });
@@ -582,6 +584,17 @@ const SettingsPersistenceContract = {
         }))
         .filter((item) => item.prompt)
         .slice(0, 20);
+    }
+    // Ordered shot prompts for the additional in-article images (one row per
+    // generated image). Empty resets to the built-in niche role tables.
+    if (Array.isArray(incoming.articleImageRolePrompts)) {
+      merged.articleImageRolePrompts = incoming.articleImageRolePrompts
+        .map((item) => ({
+          name: optStr(item && item.name).trim().slice(0, 80),
+          prompt: optStr(item && item.prompt).trim().slice(0, 4000),
+        }))
+        .filter((item) => item.prompt)
+        .slice(0, 8);
     }
     return merged;
   },

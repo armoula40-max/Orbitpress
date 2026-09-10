@@ -53,6 +53,12 @@ router.get('/settings', (req, res) => {
   res.json(store.getSettingsSummary(req.query.siteId || 'site-default'));
 });
 
+// Built-in prompt library: lets the Settings UI prefill and reset the
+// customizable AI prompts without duplicating the defaults in the client.
+router.get('/prompt-defaults', (req, res) => {
+  res.json({ ok: true, defaults: article.PROMPT_DEFAULTS });
+});
+
 router.put('/settings', asyncRoute(async (req, res) => {
   const incoming = req.body && req.body.settings ? req.body.settings : req.body;
   const json = JSON.stringify(incoming || {});

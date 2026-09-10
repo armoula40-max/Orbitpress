@@ -984,6 +984,56 @@ test('settings merge keeps and sanitizes pinterest prompt templates', () => {
   assert.deepEqual(kept.pinterestPrompts, [{ name: 'x', prompt: 'y' }]);
 });
 
+test('custom analyzer prompt reaches the model and keeps the {platform} token', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings(
+    { articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k', analyzerPrompt: 'CUSTOM {platform} analyst house style, return the required JSON.' },
+    'site-custom-analyzer',
+  );
+  const result = await article.analyzePinterestKeywords({
+    siteId: 'site-custom-analyzer',
+    posts: [{ title: 'Cozy throw', text: 'chunky crochet blanket pattern', url: 'https://pin.test/1', viralScore: 9 }],
+  });
+  assert.equal(result.ok, true);
+  const sent = api.calls.at(-1);
+  assert.equal(sent.messages[0].content, 'CUSTOM pinterest analyst house style, return the required JSON.');
+});
+
+test('custom article system persona replaces the built-in editor persona', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings(
+    { articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k', wordpressBaseUrl: 'https://wp.example.com', wordpressUsername: 'a', wordpressAppPassword: 'p', articleSystemPrompt: 'You are the cheerful brand voice of Baking Club.' },
+    'site-custom-persona',
+  );
+  await article.generate({ keyword: 'crispy chicken wings', niche: 'food', contentType: 'auto', siteId: 'site-custom-persona' });
+  const sent = api.calls.at(-1);
+  assert.equal(sent.messages[0].content, 'You are the cheerful brand voice of Baking Club.');
+  assert.equal(sent.messages[0].content.includes('Askinz'), false);
+});
+
+test('prompt defaults are exported and token-expanded', () => {
+  assert.match(article.PROMPT_DEFAULTS.analyzer, /\{platform\}/);
+  assert.match(article.PROMPT_DEFAULTS.recipeRepairInstruction, /\{count\}/);
+  assert.ok(article.PROMPT_DEFAULTS.feedspyAr.includes('JSON'));
+});
+
+test('settings merge keeps the customizable prompt overrides and role shots', () => {
+  const merged = contracts.SettingsPersistenceContract.merge({}, {
+    analyzerPrompt: '  custom analyst  ',
+    articleImageRolePrompts: [{ name: 'shot 1', prompt: 'hero' }, { name: '', prompt: '   ' }],
+  });
+  assert.equal(merged.analyzerPrompt, 'custom analyst');
+  assert.deepEqual(merged.articleImageRolePrompts, [{ name: 'shot 1', prompt: 'hero' }]);
+  const kept = contracts.SettingsPersistenceContract.merge(
+    { analyzerPrompt: 'x', articleImageRolePrompts: [{ name: 'a', prompt: 'b' }] },
+    { articleImageRolePrompts: null, analyzerPrompt: '' },
+  );
+  assert.equal(kept.analyzerPrompt, '');
+  assert.deepEqual(kept.articleImageRolePrompts, [{ name: 'a', prompt: 'b' }]);
+});
+
 test('pin fitting crops to cover and letterboxes to contain', () => {
   const pin = require('../public/app/pinStudio.js');
   const cover = pin.fitRect(1200, 800, 1000, 1500, 'cover');

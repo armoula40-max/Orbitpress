@@ -51,7 +51,10 @@
       articleApiConfigured: false, wordpressConfigured: false, imageConfigured: false,
       pinterestConfigured: false, facebookConfigured: false, imageProvider: 'cloudflare',
       imageBaseUrl: '', imageAccountId: '', imageModel: '', pinterestBoardId: '', facebookGraphVersion: 'v23.0',
-      textPrompt: '', imagePrompt: '', pinterestPrompt: '', pinterestPrompts: [], articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
+      textPrompt: '', imagePrompt: '', pinterestPrompt: '', pinterestPrompts: [], articleImageRolePrompts: [],
+      articleSystemPrompt: '', analyzerPrompt: '', viralPrompt: '', feedspyPrompt: '',
+      recipeRepairSystemPrompt: '', recipeRepairPrompt: '',
+      articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
     };
   }
 
@@ -195,10 +198,11 @@
         var flag = pair.split(':')[0]; var secret = pair.split(':')[1];
         if (incoming[secret]) summary[flag] = true;
       });
-      ['articleBaseUrl', 'articleModel', 'wordpressBaseUrl', 'wordpressUsername', 'categoryId', 'imageProvider', 'imageBaseUrl', 'imageAccountId', 'imageModel', 'pinterestBoardId', 'facebookGraphVersion', 'textPrompt', 'imagePrompt', 'pinterestPrompt', 'articleImageCount', 'scraperApiBaseUrl'].forEach(function (key) {
+      ['articleBaseUrl', 'articleModel', 'wordpressBaseUrl', 'wordpressUsername', 'categoryId', 'imageProvider', 'imageBaseUrl', 'imageAccountId', 'imageModel', 'pinterestBoardId', 'facebookGraphVersion', 'textPrompt', 'imagePrompt', 'pinterestPrompt', 'articleImageCount', 'scraperApiBaseUrl', 'articleSystemPrompt', 'analyzerPrompt', 'viralPrompt', 'feedspyPrompt', 'recipeRepairSystemPrompt', 'recipeRepairPrompt'].forEach(function (key) {
         if (incoming[key] !== undefined) summary[key] = incoming[key];
       });
       if (Array.isArray(incoming.pinterestPrompts)) summary.pinterestPrompts = incoming.pinterestPrompts;
+      if (Array.isArray(incoming.articleImageRolePrompts)) summary.articleImageRolePrompts = incoming.articleImageRolePrompts;
       if (incoming.pinterestAccessToken) summary.pinterestConfigured = !!(incoming.pinterestBoardId || summary.pinterestBoardId);
       settingsCache[id] = summary;
     },
