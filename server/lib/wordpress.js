@@ -4,7 +4,7 @@
  * MainActivity.kt (categories, testConnection, syncPublishedPosts, publish,
  * repairPreview/repairApply, publishPinterest).
  */
-const { request, requestJson, requestText } = require('./http');
+const { request, requestJson, requestRawJson, requestText } = require('./http');
 const {
   PublishingContracts,
   CategorySyncContracts,
@@ -414,12 +414,55 @@ async function repairApply(request) {
   return { ok: true, updatedPosts: updated, results, failures };
 }
 
+/**
+ * WordPress names the uploaded file from Content-Disposition, and HTTP header
+ * values must be bytes, not arbitrary text: a slug in Arabic, Chinese or
+ * Russian makes Headers.set() throw "Cannot convert argument to a ByteString".
+ * Keep the name readable and guaranteed-ASCII, and keep the real extension.
+ */
+function safeUploadBasename(basename, extension) {
+  const ascii = String(basename || '')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7e]/g, '-')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80)
+    .replace(/-$/, '');
+  return `${ascii || 'orbitpress-image'}.${extension}`;
+}
+
+/** WordPress' own refusal, in words that say what to change. */
+function explainUploadFailure(error, image, filename) {
+  const body = String(error.body || error.message || '');
+  const codeMatch = /"code"\s*:\s*"([a-z_]+)"/i.exec(body);
+  const code = codeMatch ? codeMatch[1] : '';
+  const status = error.status ? ` (${error.status})` : '';
+  if (code === 'rest_upload_sideload_error') {
+    return `WordPress refused the image ${filename} as ${image.mimeType}${status}. WordPress decides the file type from the uploaded bytes and the Content-Type header — it is not a permissions problem, and the image was never accepted. Try a JPEG or PNG, or allow ${image.mimeType} on the site: a security plugin, a hosting policy, or the upload_mimes filter can remove a type WordPress would otherwise accept.`;
+  }
+  if (code === 'rest_upload_no_data') {
+    return `WordPress received an empty upload for ${filename}${status}. Choose the image again.`;
+  }
+  if (code === 'rest_cannot_create') {
+    return `WordPress accepted your credentials but your user is not allowed to upload files${status}. Use an Administrator or Editor account, or grant the account the upload_files capability.`;
+  }
+  return String(error.message || `Uploading ${filename} failed.`).slice(0, 400);
+}
+
 async function uploadMedia(root, settings, image, basename, altText) {
-  const media = await requestJson(`${root}/wp-json/wp/v2/media`, 'POST', {
-    ...wordpressHeaders(settings),
-    'Content-Type': image.mimeType,
-    'Content-Disposition': `attachment; filename="${basename}.${image.extension}"`,
-  }, image.bytes);
+  const filename = safeUploadBasename(basename, image.extension);
+  let media;
+  try {
+    media = await requestRawJson(`${root}/wp-json/wp/v2/media`, 'POST', {
+      ...wordpressHeaders(settings),
+      'Content-Type': image.mimeType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    }, image.bytes);
+  } catch (error) {
+    throw new Error(explainUploadFailure(error, image, filename));
+  }
   await requestJson(`${root}/wp-json/wp/v2/media/${media.id}`, 'POST', wordpressHeaders(settings), { alt_text: String(altText || '').slice(0, 320) });
   return media;
 }

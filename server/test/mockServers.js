@@ -30,6 +30,7 @@ function startWordPressMock(state = {}) {
   const data = {
     categories: [{ id: 7, name: 'Breakfast' }, { id: 3, name: 'Chicken' }],
     media: [],
+    uploads: [],
     posts: [],
     tags: [],
     nextPostId: 500,
@@ -94,9 +95,40 @@ function startWordPressMock(state = {}) {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/wp-json/wp/v2/media') {
-      const media = { id: data.nextMediaId++, source_url: `https://wp.test/uploads/${data.nextMediaId}.png` };
-      data.media.push(media);
-      return json(media, 201);
+      // WordPress reads the file from the raw body and its type from the
+      // Content-Type header + the Content-Disposition filename. A body that is
+      // not the matching image is refused with rest_upload_sideload_error, so
+      // the mock refuses it too — otherwise a broken upload looks fine here.
+      let body = Buffer.alloc(0);
+      req.on('data', (chunk) => { body = Buffer.concat([body, chunk]); });
+      req.on('end', () => {
+        const contentType = String(req.headers['content-type'] || '');
+        const disposition = String(req.headers['content-disposition'] || '');
+        const filename = (/filename="([^"]*)"/.exec(disposition) || [])[1] || '';
+        const record = { contentType, filename, bytes: body, length: body.length };
+        data.uploads.push(record);
+        const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+        const rejected = (data.rejectImageTypes || []).includes(contentType);
+        const signature = body.length >= 8
+          && ((body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) ? 'image/jpeg'
+            : (body[0] === 0x89 && body[1] === 0x50) ? 'image/png'
+              : (body.toString('ascii', 8, 12) === 'WEBP') ? 'image/webp'
+                : 'not-an-image');
+        const extension = (filename.split('.').pop() || '').toLowerCase();
+        if (rejected || !allowed.includes(contentType) || signature !== contentType
+            || !/^[\x20-\x7e]+$/.test(filename) || !['jpg', 'jpeg', 'png', 'webp'].includes(extension)) {
+          return json({
+            code: 'rest_upload_sideload_error',
+            message: 'Sorry, you are not allowed to upload this file type.',
+            data: { status: 500 },
+          }, 500);
+        }
+        const media = { id: data.nextMediaId, source_url: `https://wp.test/uploads/${data.nextMediaId}.${extension}` };
+        data.nextMediaId += 1;
+        data.media.push(media);
+        return json(media, 201);
+      });
+      return;
     }
     const mediaMatch = url.pathname.match(/^\/wp-json\/wp\/v2\/media\/(\d+)/);
     if (mediaMatch && req.method === 'POST') return json({ id: Number(mediaMatch[1]), source_url: 'https://wp.test/uploads/ok.png' });

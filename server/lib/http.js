@@ -63,6 +63,23 @@ async function requestText(url, method, headers, bodyBytes, options) {
   return (await request(url, method, headers, bodyBytes, options)).toString('utf8');
 }
 
+/**
+ * requestJson for a caller-supplied raw body — image bytes, for example.
+ * requestJson() JSON-encodes the body and forces application/json, which is
+ * exactly wrong for uploads: WordPress reads the file out of the raw body and
+ * reads its type from the Content-Type header, so a JSON body is answered with
+ * rest_upload_sideload_error / "Sorry, you are not allowed to upload this
+ * file type." even when the image itself is a perfectly valid JPEG.
+ */
+async function requestRawJson(url, method, headers, bytes, options) {
+  const text = await requestText(url, method, headers, bytes, options);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Request failed: expected JSON but received ${text.slice(0, 160)}`);
+  }
+}
+
 async function requestJson(url, method, headers, body, options) {
   const payload = body == null ? null : Buffer.from(JSON.stringify(body), 'utf8');
   const mergedHeaders = body == null ? headers : { ...(headers || {}), 'Content-Type': 'application/json' };
@@ -74,4 +91,4 @@ async function requestJson(url, method, headers, body, options) {
   }
 }
 
-module.exports = { request, requestText, requestJson };
+module.exports = { request, requestText, requestJson, requestRawJson };

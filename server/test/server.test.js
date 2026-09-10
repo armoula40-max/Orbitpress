@@ -205,6 +205,53 @@ test('article generation falls back when json_schema is unsupported', async (t) 
 
 // ---------------------------------------------------------------------------
 
+test('the image reaches WordPress as raw bytes with its own content type', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', articleBaseUrl: 'https://ai.example.com/v1', articleModel: 'm', articleApiKey: 'k', categoryId: '3' }, 'site-bytes');
+  const featured = mocks.tinyPng(1200, 800);
+  const pinterest = mocks.tinyPng(1000, 1500);
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  await wordpress.publish({
+    siteId: 'site-bytes',
+    draft,
+    images: { featured: mocks.makeDataUrl(featured), pinterest: mocks.makeDataUrl(pinterest) },
+    postStatus: 'draft',
+  });
+  assert.equal(wp.data.uploads.length, 2, 'featured and pinterest images uploaded');
+  const [first, second] = wp.data.uploads;
+  // requestJson() used to JSON-encode the bytes and force application/json,
+  // which WordPress answers with rest_upload_sideload_error.
+  assert.equal(first.contentType, 'image/png');
+  assert.ok(first.bytes.equals(featured), 'WordPress receives the exact image bytes');
+  assert.equal(first.filename, 'crispy-air-fryer-chicken-wings-featured.png');
+  assert.equal(second.contentType, 'image/png');
+  assert.ok(second.bytes.equals(pinterest), 'the Pinterest image arrives intact too');
+  assert.equal(second.filename, 'crispy-air-fryer-chicken-wings-pinterest.png');
+});
+
+test('a site that refuses the image type is explained, not echoed as a raw 500', async (t) => {
+  const wp = await mocks.startWordPressMock({ rejectImageTypes: ['image/png'] });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', articleBaseUrl: 'https://ai.example.com/v1', articleModel: 'm', articleApiKey: 'k', categoryId: '3' }, 'site-mime');
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  let message = '';
+  try {
+    await wordpress.publish({
+      siteId: 'site-mime',
+      draft,
+      images: { featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)) },
+      postStatus: 'draft',
+    });
+  } catch (error) {
+    message = String(error.message || '');
+  }
+  assert.ok(message, 'publishing failed instead of silently skipping the image');
+  assert.match(message, /WordPress refused the image .* as image\/png/);
+  assert.match(message, /upload_mimes|security plugin/, 'the message names what to change');
+  assert.doesNotMatch(message, /^Request failed \(500\)/, 'the raw WordPress 500 is not what the user reads');
+});
+
 test('publishing a Pin uses the signed-in session, not an API token', async (t) => {
   const mock = await mocks.startPinterestPublishMock();
   t.after(() => mock.server.close());
