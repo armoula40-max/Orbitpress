@@ -708,23 +708,31 @@ async function publishPinterest(request) {
   const altText = String(draft.pinAltText || draft.pinterestAltText || draft.title || '').slice(0, 500);
 
   // Preferred path: the session the user signed in with inside OrbitPress.
+  // Remember exactly why it could not run so the fallback error can name it.
+  let sessionFailure = null;
   try {
     const publisher = require('./scraper/pinterestPublish');
     const viaSession = await publisher.publishPinWithSession({
       boardId, title, description, link: String(request.link || ''), image, altText,
     });
     if (viaSession.ok) return { ok: true, method: 'session', id: viaSession.pinId, pinUrl: viaSession.pinUrl };
-    // Fall through to the API token only when the session path cannot work.
+    sessionFailure = { stage: viaSession.stage, message: viaSession.message };
+    // A connected session that fails at upload/create has no usable token
+    // fallback unless the user actually saved one.
     if (viaSession.stage !== 'session' && viaSession.stage !== 'board') {
       const token = String(settings.pinterestAccessToken || '').trim();
       if (!token) throw new Error(`تعذّر النشر بالجلسة (${viaSession.stage}): ${viaSession.message}`);
     }
   } catch (error) {
     if (!String(settings.pinterestAccessToken || '').trim()) throw error;
+    sessionFailure = sessionFailure || { stage: 'session', message: error.message };
   }
 
   const token = String(settings.pinterestAccessToken || '').trim();
-  if (!token) throw new Error('اربط حساب Pinterest من الإعدادات (جلسة) أو أضف رمز الوصول واللوحة.');
+  if (!token) {
+    const reason = sessionFailure ? ` (${sessionFailure.stage}: ${sessionFailure.message})` : '';
+    throw new Error(`اربط حساب Pinterest من بطاقة "الحسابات المرتبطة — تسجيل دخول السيرفر" في الإعدادات (تنشر الدبابيس بلا تطبيق مطوّر)، أو أضف رمز وصول API مُعتمَداً واللوحة${reason}.`);
+  }
   const payload = {
     board_id: boardId,
     title,
@@ -734,10 +742,48 @@ async function publishPinterest(request) {
     ai_disclosures: { values: ['AI_MODIFIED'] },
     media_source: { source_type: 'image_base64', content_type: image.mimeType, data: image.bytes.toString('base64') },
   };
-  const response = await requestJson('https://api.pinterest.com/v5/pins', 'POST', {
-    Authorization: `Bearer ${token}`,
-  }, payload);
-  return { ...response, ok: true };
+  let response;
+  try {
+    response = await requestJson(`${pinterestApiBase()}/v5/pins`, 'POST', {
+      Authorization: `Bearer ${token}`,
+    }, payload);
+  } catch (error) {
+    throw new Error(explainPinterestApiError(error, sessionFailure));
+  }
+  return { ...response, ok: true, method: 'api-token' };
+}
+
+/**
+ * Pinterest's v5 API answers with numeric codes whose meaning is invisible in
+ * the raw response. Code 3 ("application consumer type is not supported")
+ * means the developer app that minted the token is still on "Trial access
+ * pending" / not activated by Pinterest — no endpoint, even reads, works with
+ * it, and waiting on support is the only token-side fix. The built-in browser
+ * session publishes with no developer app at all, so point there.
+ */
+function pinterestApiBase() {
+  return String(process.env.ORBITPRESS_PINTEREST_API_BASE || 'https://api.pinterest.com').replace(/\/+$/, '');
+}
+
+function explainPinterestApiError(error, sessionFailure) {
+  const body = String((error && (error.body || error.message)) || '');
+  let parsed = null;
+  const firstBrace = body.indexOf('{');
+  if (firstBrace >= 0) {
+    try { parsed = JSON.parse(body.slice(firstBrace)); } catch { /* truncated snippet */ }
+  }
+  const code = parsed && parsed.code;
+  const apiMessage = parsed && parsed.message ? String(parsed.message) : body.slice(0, 180);
+  const sessionHint = sessionFailure
+    ? ` كما تعذّر مسار جلسة المتصفح (${sessionFailure.stage}): ${String(sessionFailure.message || '').slice(0, 220)}.`
+    : ' ولا توجد جلسة Pinterest متصلة حالياً.';
+  if (Number(code) === 3 || /consumer type is not supported/i.test(body)) {
+    return 'رفض Pinterest رمز الـ API (الكود 3: application consumer type is not supported). تطبيق المطوّر الذي أنشأت منه الرمز ما زال في حالة "Trial access pending" أو غير مُفعَّل من Pinterest، فلا يقبل إنشاء الدبابيس حتى تتم الموافقة عليه (ورموز sandbox لا تعمل إلا على api-sandbox.pinterest.com). الحل الفوري بلا انتظار موافقة: افتح Settings ثم بطاقة "الحسابات المرتبطة — تسجيل دخول السيرفر" وسجّل دخول Pinterest مرة واحدة، فينشر OrbitPress عبر جلسة المتصفح نفسها بدون تطبيق مطوّر.' + sessionHint;
+  }
+  if (Number(code) === 1 || Number(code) === 2 || /unauthorized|invalid.*token|token.*expired|not logged in/i.test(body)) {
+    return `رفض Pinterest رمز الوصول (${apiMessage || `الحالة ${error && error.status}`}). أنشئ رمزاً جديداً بصلاحيات boards:write وpins:write، أو استخدم بطاقة "الحسابات المرتبطة" لتسجيل الدخول بالجلسة بلا رمز API.${sessionHint}`;
+  }
+  return `فشل النشر عبر Pinterest API: ${apiMessage}${sessionHint}`;
 }
 
 // --- image generation (Cloudflare Workers AI / OpenAI-compatible) ----------

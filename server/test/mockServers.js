@@ -437,4 +437,35 @@ function startPinterestResourceMock() {
   });
 }
 
-module.exports = { tinyPng, realImage, startImageApiMock, startPinterestPublishMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };
+/**
+ * Mock of the official Pinterest v5 API (api.pinterest.com). A freshly created
+ * developer app sits on "Trial access pending" and every endpoint answers
+ * HTTP 401 {"code":3,"message":"Your application consumer type is not
+ * supported, please contact support."} until Pinterest activates it.
+ */
+function startPinterestApiMock(options = {}) {
+  const calls = [];
+  const status = options.status || 401;
+  const payload = options.payload !== undefined
+    ? options.payload
+    : { code: 3, message: 'Your application consumer type is not supported, please contact support.' };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      calls.push({ method: req.method, path: req.url, authorization: req.headers.authorization, body: body ? JSON.parse(body) : null });
+      if (options.success) {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: '99887766554433221', link: 'https://www.pinterest.com/pin/99887766554433221/' }));
+        return;
+      }
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(payload));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, calls }));
+  });
+}
+
+module.exports = { tinyPng, realImage, startImageApiMock, startPinterestPublishMock, startPinterestApiMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };

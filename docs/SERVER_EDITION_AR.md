@@ -21,5 +21,5 @@ npm start                 # http://localhost:8080
 ## اختبارات
 
 ```bash
-cd server && npm test     # 46 اختباراً: عقود + WordPress + تحويل صور + توليد + ماسح + FeedSpy + جسر + إقلاع الواجهة
+cd server && npm test     # 49 اختباراً: عقود + WordPress + تحويل صور + Pinterest API + توليد + ماسح + FeedSpy + جسر + إقلاع الواجهة
 ```

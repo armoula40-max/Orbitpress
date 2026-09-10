@@ -362,6 +362,101 @@ test('publishing a Pin uses the signed-in session, not an API token', async (t) 
   assert.ok(mock.calls.includes('/resource/PinResource/create/'));
 });
 
+test('an unapproved Pinterest app (API code 3) points at the server session path', async (t) => {
+  const api = await mocks.startPinterestApiMock();
+  t.after(() => api.server.close());
+  const savedBase = process.env.ORBITPRESS_PINTEREST_API_BASE;
+  process.env.ORBITPRESS_PINTEREST_API_BASE = api.url;
+  t.after(() => {
+    if (savedBase == null) delete process.env.ORBITPRESS_PINTEREST_API_BASE;
+    else process.env.ORBITPRESS_PINTEREST_API_BASE = savedBase;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const originalCookie = sessions.cookieHeader;
+  // No browser session connected: publishPinWithSession returns stage 'session'.
+  sessions.cookieHeader = async () => '';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  store.saveSiteSettings({ pinterestAccessToken: 'trial-app-token', pinterestBoardId: '112233445566778899' }, 'site-pin-code3');
+  let message = '';
+  try {
+    await wordpress.publishPinterest({
+      siteId: 'site-pin-code3',
+      link: 'https://example.test/post',
+      image: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+      draft: { title: 'Test Pin' },
+    });
+  } catch (error) {
+    message = String(error.message || '');
+  }
+  assert.ok(message, 'the pin call fails instead of swallowing the 401');
+  assert.match(message, /consumer type is not supported|الكود 3/);
+  assert.match(message, /Trial access pending/i);
+  assert.match(message, /الحسابات المرتبطة/, 'the message names the settings card to connect the session');
+  assert.equal(api.calls.length, 1, 'the token endpoint was tried once as the fallback');
+  assert.equal(api.calls[0].path, '/v5/pins');
+});
+
+test('an invalid Pinterest token is explained rather than echoed as a raw 401', async (t) => {
+  const api = await mocks.startPinterestApiMock({ status: 401, payload: { code: 2, message: 'Authentication failed.' } });
+  t.after(() => api.server.close());
+  const savedBase = process.env.ORBITPRESS_PINTEREST_API_BASE;
+  process.env.ORBITPRESS_PINTEREST_API_BASE = api.url;
+  t.after(() => {
+    if (savedBase == null) delete process.env.ORBITPRESS_PINTEREST_API_BASE;
+    else process.env.ORBITPRESS_PINTEREST_API_BASE = savedBase;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => '';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  store.saveSiteSettings({ pinterestAccessToken: 'bad-token', pinterestBoardId: '112233445566778899' }, 'site-pin-code2');
+  let message = '';
+  try {
+    await wordpress.publishPinterest({
+      siteId: 'site-pin-code2',
+      link: 'https://example.test/post',
+      image: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+      draft: { title: 'Test Pin' },
+    });
+  } catch (error) {
+    message = String(error.message || '');
+  }
+  assert.match(message, /رمز الوصول|boards:write/);
+  assert.match(message, /الحسابات المرتبطة/);
+});
+
+test('an approved Pinterest token publishes through the v5 API fallback', async (t) => {
+  const api = await mocks.startPinterestApiMock({ success: true });
+  t.after(() => api.server.close());
+  const savedBase = process.env.ORBITPRESS_PINTEREST_API_BASE;
+  process.env.ORBITPRESS_PINTEREST_API_BASE = api.url;
+  t.after(() => {
+    if (savedBase == null) delete process.env.ORBITPRESS_PINTEREST_API_BASE;
+    else process.env.ORBITPRESS_PINTEREST_API_BASE = savedBase;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => '';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  store.saveSiteSettings({ pinterestAccessToken: 'approved-token', pinterestBoardId: '112233445566778899' }, 'site-pin-ok');
+  const result = await wordpress.publishPinterest({
+    siteId: 'site-pin-ok',
+    link: 'https://example.test/post',
+    image: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+    draft: { title: 'Test Pin' },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'api-token');
+  assert.equal(result.id, '99887766554433221');
+  assert.equal(api.calls.length, 1);
+  assert.equal(api.calls[0].authorization, 'Bearer approved-token');
+  assert.equal(api.calls[0].body.board_id, '112233445566778899');
+  assert.equal(api.calls[0].body.media_source.source_type, 'image_base64');
+});
+
 // --- pin studio: the pin is drawn in the browser, its maths is tested here --
 
 /** Minimal stand-in for a canvas 2D context: ~0.55 em per character. */
