@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { requestText } = require('../http');
-const { DATA_DIR } = require('../store');
+const { getDataDir } = require('../reqContext');
 
 /**
  * Hosts are read per call, not at module load: ORBITPRESS_PINTEREST_HOSTS is
@@ -53,7 +53,7 @@ function csrfFrom(cookieHeader) {
 function probe(tag, info) {
   if (process.env.ORBITPRESS_PINTEREST_PROBE !== '1') return;
   try {
-    const dir = path.join(DATA_DIR, 'debug');
+    const dir = path.join(getDataDir(), 'debug');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     fs.writeFileSync(path.join(dir, `pinterest-publish-${tag}-${stamp}.txt`),

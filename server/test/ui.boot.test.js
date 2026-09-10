@@ -255,6 +255,84 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   close();
 });
 
+test('admin console is owner-only and renders users, oversight and audit', async () => {
+  const overview = {
+    ok: true,
+    totals: { users: 2, active: 1, blocked: 1, bytes: 4096 },
+    users: [
+      { id: 'u1', name: 'محمود', note: 'وصفات', status: 'active', codeTail: 'AB', createdAt: '2026-09-01T08:00:00Z', lastSeenAt: '2026-09-10T08:00:00Z', seenCount: 4, storage: { bytes: 3072, files: 2 } },
+      { id: 'u2', name: 'سفيان', note: '', status: 'blocked', codeTail: 'CD', createdAt: '2026-09-02T08:00:00Z', lastSeenAt: null, seenCount: 0, storage: { bytes: 1024, files: 1 } },
+    ],
+    audit: [
+      { at: '2026-09-10T09:00:00Z', action: 'user.created', id: 'u1', name: 'محمود' },
+      { at: '2026-09-10T10:00:00Z', action: 'auth.invalid_code', tail: 'ZZ' },
+      { at: '2026-09-10T11:00:00Z', action: 'admin.workspace_viewed', id: 'u1', name: 'محمود' },
+    ],
+  };
+  const { window, errors, close } = await startUi({ auth: { role: 'owner', user: null } }, (request, options, url) => {
+    url = String(url);
+    if (url.includes('/api/admin/users') && !url.includes('/workspace') && (!options || options.method === 'POST')) {
+      return { ok: true, user: overview.users[0], code: 'AB12-C3D4E' };
+    }
+    if (url.includes('/api/admin/users/u1/workspace')) {
+      return {
+        ok: true,
+        user: overview.users[0],
+        workspace: {
+          siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+          drafts: [{ id: 'd1', title: 'مقال حصري', status: 'مسودة', createdAt: '2026-09-09T08:00:00Z', html: '<p>محتوى المستخدم</p><script>alert(1)</script><img src="/api/images/x.jpg?siteId=site-default">' }],
+          reviewQueue: [],
+          keywords: ['كسكس', 'طاجين'],
+        },
+        settings: { 'site-default': { articleApiConfigured: true, wordpressConfigured: true, wordpressBaseUrl: 'https://wp.test', imageConfigured: false, pinterestConfigured: false, facebookConfigured: false } },
+        sessions: { pinterest: { connected: true } },
+      };
+    }
+    if (url.includes('/api/admin/')) return overview;
+    return { ok: true };
+  });
+  const { document } = window;
+
+  // Owner sees the admin menu item and the admin module loaded
+  assert.equal(document.getElementById('navAdmin').style.display, '', 'owner sees the admin nav item');
+  assert.equal(typeof window.renderAdmin, 'function', 'admin renderer installed');
+
+  window.showScreen('admin');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const cards = document.querySelectorAll('.admin-user-card');
+  assert.equal(cards.length, 2, 'both users render as cards');
+  assert.ok(document.querySelector('.admin-user-card.is-blocked'), 'the blocked user card is marked');
+  assert.ok(document.getElementById('adminUsersList').textContent.includes('محمود'));
+  assert.ok(document.getElementById('adminAuditList').textContent.includes('رمز دخول مرفوض'), 'audit actions carry Arabic labels');
+
+  // Creating a user reveals the one-time code exactly once
+  document.getElementById('newUserName').value = 'محمود';
+  document.getElementById('createUserBtn').click();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(document.getElementById('newCodeBox').style.display, 'block', 'the one-time code box appears');
+  assert.equal(document.getElementById('newCodeText').textContent, 'AB12-C3D4E');
+
+  // Oversight opens the tenant's full content, sanitized and image-proxied
+  document.querySelector('[data-view="u1"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const body = document.getElementById('adminOversightBody');
+  assert.ok(body.textContent.includes('مقال حصري'), 'the tenant draft title is shown');
+  assert.ok(body.textContent.includes('محتوى المستخدم'), 'the tenant draft body is shown');
+  assert.ok(body.textContent.includes('كسكس'), 'tenant keywords are shown');
+  assert.ok(body.innerHTML.includes('/api/admin/users/u1/images/'), 'tenant image URLs are rewritten to the owner proxy');
+  assert.ok(!body.innerHTML.includes('<script>'), 'tenant HTML is sanitized before display');
+  assert.ok(body.textContent.includes('ذكاء اصطناعي'), 'configured services are summarized');
+  assert.ok(!body.textContent.includes('appPassword'), 'no secrets leak into oversight');
+  assert.deepEqual(fatalErrors(errors), []);
+  close();
+
+  // A code-holding user must never see the admin surface
+  const userView = await startUi({ auth: { role: 'user', user: { id: 'u9', name: 'زائر' } } }, () => ({ ok: true }));
+  assert.equal(userView.window.document.getElementById('navAdmin'), null, 'the admin nav is removed for users');
+  assert.equal(typeof userView.window.renderAdmin, 'undefined', 'no admin renderer for users');
+  userView.close();
+});
+
 test('large workspace saves avoid the 64 KB keepalive request cap', async () => {
   const workspaceSaves = [];
   const { window, close } = await startUi({}, (request, options, url) => {

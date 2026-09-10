@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { DATA_DIR } = require('./store');
+const reqContext = require('./reqContext');
 const { PublishingContracts, MediaPublishingContract } = require('./contracts');
 
 const MAX_IMAGE_BYTES = 12_000_000;
@@ -19,7 +19,7 @@ function safeSiteId(value) {
 }
 
 function imageDirectory(siteId) {
-  const base = path.join(DATA_DIR, 'images');
+  const base = path.join(reqContext.getDataDir(), 'images');
   fs.mkdirSync(base, { recursive: true });
   const safe = safeSiteId(siteId);
   if (safe === 'site-default') return base;
@@ -161,7 +161,7 @@ function removeImage(request) {
 }
 
 module.exports = {
-  DATA_DIR,
+  DATA_DIR: reqContext.ROOT_DATA_DIR,
   imageDirectory,
   imageDimensions,
   safeImageFilename,

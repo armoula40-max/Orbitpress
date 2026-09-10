@@ -11,6 +11,18 @@
 const { loadWorkspace, saveWorkspace, loadNamedStore, saveNamedStore } = require('./store');
 const article = require('./article');
 const { ScheduleContract } = require('./contracts');
+const { runAs } = require('./reqContext');
+const tenantUsers = require('./users');
+
+// The scheduler runs outside request context: iterate the master owner
+// workspace plus every active access-code tenant, each in its own context.
+function tenantIds() {
+  const ids = ['owner'];
+  try {
+    tenantUsers.listUsers().filter((u) => u.status === 'active').forEach((u) => ids.push(u.id));
+  } catch { /* registry optional */ }
+  return ids;
+}
 
 const TICK_MS = 60 * 1000;
 const stateName = 'scheduler-state';
@@ -86,22 +98,28 @@ function sweepWorkspace() {
   if (changed) saveNamedStore(stateName, state);
 }
 
+async function tickForTenant(userId) {
+  sweepWorkspace();
+  const workspace = loadWorkspace();
+  const plan = workspace.plan || {};
+  if (!plan.scheduleEnabled) return;
+  const hour = Number(plan.firstHour);
+  const now = new Date();
+  if (!(Number.isInteger(hour) && hour >= 0 && hour <= 23)) return;
+  if (now.getUTCHours() < hour) return;
+  const siteIds = [...new Set((workspace.siteProfiles || [{ id: 'site-default' }]).map((p) => p.id))];
+  for (const siteId of siteIds) {
+    await runOnceForSite(workspace, siteId, plan);
+  }
+}
+
 async function tick() {
-  try {
-    sweepWorkspace();
-    const workspace = loadWorkspace();
-    const plan = workspace.plan || {};
-    if (!plan.scheduleEnabled) return;
-    const hour = Number(plan.firstHour);
-    const now = new Date();
-    if (!(Number.isInteger(hour) && hour >= 0 && hour <= 23)) return;
-    if (now.getUTCHours() < hour) return;
-    const siteIds = [...new Set((workspace.siteProfiles || [{ id: 'site-default' }]).map((p) => p.id))];
-    for (const siteId of siteIds) {
-      await runOnceForSite(workspace, siteId, plan);
+  for (const userId of tenantIds()) {
+    try {
+      await runAs(userId, tickForTenant);
+    } catch (error) {
+      try { logRun({ ok: false, error: `scheduler tick failed: ${error.message}` }); } catch { /* best effort */ }
     }
-  } catch (error) {
-    logRun({ ok: false, error: `scheduler tick failed: ${error.message}` });
   }
 }
 

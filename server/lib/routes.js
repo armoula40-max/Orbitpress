@@ -12,15 +12,28 @@ const article = require('./article');
 const socialapi = require('./socialapi');
 const scraper = require('./scraper');
 const scheduler = require('./scheduler');
+const users = require('./users');
+const reqContext = require('./reqContext');
 
 const router = express.Router();
+
+// Admin surface is only reachable with the master owner token; issued access
+// codes (even if compromised) can never manage other users.
+function requireOwner(req, res, next) {
+  if (!reqContext.isOwner()) return res.status(403).json({ ok: false, message: 'هذه الصفحة مخصصة للمدير فقط.' });
+  next();
+}
 
 function asyncRoute(handler) {
   return (req, res) => {
     Promise.resolve()
       .then(() => handler(req, res))
       .catch((error) => {
-        const status = error && error.status === 401 ? 401 : 200; // bridge protocol returns ok:false payloads
+        // The bridge protocol normally returns ok:false payloads with HTTP 200,
+        // but the admin REST endpoints annotate validation/not-found errors
+        // with an explicit status (400/403/404) which must pass through.
+        const explicit = error && (error.status || error.statusCode);
+        const status = [400, 401, 403, 404].includes(explicit) ? explicit : 200;
         res.status(status).json({ ok: false, message: error && error.message ? error.message : 'An unexpected error occurred.' });
       });
   };
@@ -32,6 +45,10 @@ function asyncRoute(handler) {
 
 router.get('/bootstrap', (req, res) => {
   res.json({
+    auth: {
+      role: reqContext.isOwner() ? 'owner' : 'user',
+      user: (req.auth && req.auth.profile) || null,
+    },
     workspace: store.loadWorkspace(),
     settingsLock: store.loadSettingsLock(),
     settings: store.allSettingsSummaries(),
@@ -57,6 +74,92 @@ router.get('/settings', (req, res) => {
 // customizable AI prompts without duplicating the defaults in the client.
 router.get('/prompt-defaults', (req, res) => {
   res.json({ ok: true, defaults: article.PROMPT_DEFAULTS });
+});
+
+// Who is signed in on this browser/session.
+router.get('/me', (req, res) => {
+  const id = reqContext.getUserId();
+  res.json({
+    ok: true,
+    role: reqContext.isOwner() ? 'owner' : 'user',
+    userId: id || 'owner',
+    user: (req.auth && req.auth.profile) || null,
+  });
+});
+
+// --- admin: user registry, content oversight, audit (master token only) ---
+router.get('/admin/overview', requireOwner, (req, res) => {
+  res.json({ ok: true, ...users.overview(), audit: users.readAudit(60) });
+});
+
+router.get('/admin/users', requireOwner, (req, res) => {
+  res.json({ ok: true, users: users.listUsers() });
+});
+
+router.post('/admin/users', requireOwner, asyncRoute(async (req, res) => {
+  const name = String((req.body && req.body.name) || '').trim();
+  const note = String((req.body && req.body.note) || '').trim();
+  if (!name) {
+    const err = new Error('اكتب اسم المستخدم أولاً (مثال: محمود - موقع وصفات).');
+    err.status = 400;
+    throw err;
+  }
+  const created = users.createUser({ name, note }, 'owner');
+  res.json({ ok: true, ...created });
+}));
+
+router.post('/admin/users/:id/status', requireOwner, asyncRoute(async (req, res) => {
+  const status = String((req.body && req.body.status) || '').trim();
+  res.json({ ok: true, user: users.setStatus(req.params.id, status) });
+}));
+
+router.post('/admin/users/:id/reset-code', requireOwner, asyncRoute(async (req, res) => {
+  res.json({ ok: true, ...users.resetCode(req.params.id) });
+}));
+
+// Content oversight for legal/compliance review: the admin can open the
+// complete workspace of any user (drafts, articles, keywords, activity).
+// Secret API keys/passwords are never returned — only a configured/unset
+// summary — and every oversight read is written to the audit log.
+router.get('/admin/users/:id/workspace', requireOwner, asyncRoute(async (req, res) => {
+  const target = users.listUsers().find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ ok: false, message: 'المستخدم غير موجود.' });
+  const result = reqContext.runAs(target.id, () => {
+    const workspace = store.loadWorkspace();
+    const settings = store.allSettingsSummaries ? store.allSettingsSummaries() : {};
+    const sessions = scraper.sessions.statuses();
+    return { workspace, settings, sessions };
+  });
+  users.audit('admin.workspace_viewed', { id: target.id, name: target.name });
+  res.json({ ok: true, user: target, ...result });
+}));
+
+// Owner-only view of a tenant's stored images so draft previews render
+// during a legal/compliance review (the regular /images route is scoped
+// to the caller's own data directory).
+router.get('/admin/users/:id/images/:filename', requireOwner, (req, res) => {
+  const target = users.listUsers().find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ ok: false, message: 'المستخدم غير موجود.' });
+  const siteId = String(req.query.siteId || 'site-default');
+  let filename;
+  try {
+    filename = images.safeImageFilename(`local://${req.params.filename}`);
+  } catch {
+    return res.status(404).json({ ok: false, message: 'Image not found.' });
+  }
+  const file = reqContext.runAs(target.id, () =>
+    path.join(images.imageDirectory(siteId), filename));
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    return res.status(404).json({ ok: false, message: 'This image is no longer stored on this server.' });
+  }
+  const extension = filename.split('.').pop().toLowerCase();
+  res.setHeader('Content-Type', extension === 'jpg' ? 'image/jpeg' : `image/${extension}`);
+  res.setHeader('Cache-Control', 'private, max-age=600');
+  fs.createReadStream(file).pipe(res);
+});
+
+router.get('/admin/audit', requireOwner, (req, res) => {
+  res.json({ ok: true, entries: users.readAudit(Number(req.query.limit) || 200) });
 });
 
 router.put('/settings', asyncRoute(async (req, res) => {

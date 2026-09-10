@@ -13,10 +13,16 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR, loadNamedStore, saveNamedStore } = require('../store');
+const { loadNamedStore, saveNamedStore } = require('../store');
+const reqContext = require('../reqContext');
 
-const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
-fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+// Per-tenant persistent browser profiles: each access-code user keeps their
+// own Pinterest/Facebook cookies; the master owner keeps data/sessions.
+function sessionsDir() {
+  const dir = path.join(reqContext.getDataDir(), 'sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 const PLATFORMS = {
   facebook: {
@@ -94,7 +100,7 @@ function platformConfig(platform) {
 }
 
 function profileDir(platform) {
-  return path.join(SESSIONS_DIR, `${platform}-profile`);
+  return path.join(sessionsDir(), `${platform}-profile`);
 }
 
 function metaStore() {
@@ -277,7 +283,7 @@ async function findFirst(page, selectors) {
 
 async function saveLoginDebug(platform, page, tag) {
   try {
-    const dir = path.join(DATA_DIR, 'debug');
+    const dir = path.join(getDataDir(), 'debug');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = `${platform}-${tag}-${Date.now()}`;
     await page.screenshot({ path: path.join(dir, `${stamp}.png`), fullPage: false }).catch(() => {});

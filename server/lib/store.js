@@ -11,8 +11,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { SettingsPersistenceContract } = require('./contracts');
+const reqContext = require('./reqContext');
 
-const DATA_DIR = process.env.ORBITPRESS_DATA_DIR || path.join(__dirname, '..', 'data');
+// DATA_DIR is the OWNER/root data directory (registry, master key and the
+// pre-multiuser workspace). Per-tenant paths resolve dynamically through
+// reqContext.getDataDir() (data/users/<id>/ for issued access-code users).
+const DATA_DIR = reqContext.ROOT_DATA_DIR;
 const SECRET_FIELDS = ['articleApiKey', 'wordpressAppPassword', 'imageApiToken', 'pinterestAccessToken', 'facebookAccessToken', 'scraperApiKey'];
 const SECRET_ENC_PREFIX = 'enc:v1:';
 const PBKDF2_ITERATIONS = 120000;
@@ -48,8 +52,14 @@ function decryptSecret(stored) {
   return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64')), decipher.final()]).toString('utf8');
 }
 
+function dataPath(filename) {
+  const dir = reqContext.getDataDir();
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, filename);
+}
+
 function readJson(filename, fallback) {
-  const file = path.join(DATA_DIR, filename);
+  const file = dataPath(filename);
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
@@ -58,7 +68,8 @@ function readJson(filename, fallback) {
 }
 
 function writeJson(filename, value) {
-  const file = path.join(DATA_DIR, filename);
+  const file = dataPath(filename);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
   fs.renameSync(tmp, file);

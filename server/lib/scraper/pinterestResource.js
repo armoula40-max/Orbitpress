@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { requestText } = require('../http');
-const { DATA_DIR } = require('../store');
+const { getDataDir } = require('../reqContext');
 
 // Hosts are tried in order; overridable so tests (and future mirrors) can
 // point the same calls elsewhere without touching production behaviour.
@@ -92,7 +92,7 @@ async function callResource(name, { host, sourceUrl, data, cookieHeader, timeout
 function logProbe(name, info) {
   if (process.env.ORBITPRESS_PINTEREST_PROBE !== '1') return;
   try {
-    const dir = path.join(DATA_DIR, 'debug');
+    const dir = path.join(getDataDir(), 'debug');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const pins = info.json ? pinsFromResourceJson(info.json) : [];

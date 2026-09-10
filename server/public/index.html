@@ -112,6 +112,30 @@
 
 .prompt-template-list{display:grid;gap:9px;margin-top:6px}.prompt-template-row{border:1px solid #d8e2cf;border-radius:12px;background:#fffdf8;padding:9px 10px}.prompt-template-head{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.prompt-template-head input{font-weight:800;font-size:12px;padding:9px 10px}.prompt-template-row textarea{margin-top:8px;min-height:64px;font-size:12px;line-height:1.5}
 .prompt-details{border:1px solid #d8e2cf;border-radius:12px;background:#fffdf8;margin-top:9px;padding:10px 12px}.prompt-details[open]{padding-bottom:12px}.prompt-details summary{cursor:pointer;list-style:none}.prompt-details summary::-webkit-details-marker{display:none}.prompt-details summary b{color:var(--forest);font-size:13px}.prompt-details summary small{display:block;margin-top:2px;color:var(--muted);font-weight:600;font-size:11px;line-height:1.45}.prompt-details summary:before{content:'▸ ';color:var(--green);font-weight:900}.prompt-details[open] summary:before{content:'▾ '}.prompt-details textarea{margin-top:10px;font-size:12px;min-height:96px}.prompt-details .small-button{margin-top:8px}.prompt-details label{margin-top:10px}
+    /* ---- Admin / multi-user oversight ---- */
+    .new-code-box{margin-top:14px;padding:14px;border:1px dashed var(--accent);border-radius:14px;background:rgba(52,211,153,.08)}
+    .new-code-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+    .new-code-row code{flex:1;min-width:170px;text-align:center;direction:ltr;letter-spacing:3px;font-size:clamp(18px,4vw,26px);font-weight:800;padding:12px 14px;border-radius:12px;background:rgba(0,0,0,.25);color:var(--accent);user-select:all}
+    .admin-users-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}
+    .admin-user-card{border:1px solid var(--line,rgba(148,163,184,.25));border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px;background:rgba(148,163,184,.05)}
+    .admin-user-card.is-blocked{opacity:.72;border-style:dashed}
+    .admin-user-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+    .admin-user-head b{font-size:16px;word-break:break-word}
+    .admin-user-meta{font-size:12px;color:var(--muted);line-height:1.7}
+    .admin-user-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+    .admin-badge{font-size:11px;padding:3px 9px;border-radius:999px;font-weight:700;white-space:nowrap}
+    .admin-badge.active{background:rgba(52,211,153,.16);color:#34d399}
+    .admin-badge.blocked{background:rgba(248,113,113,.16);color:#f87171}
+    .oversight-summary{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+    .oversight-chip{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid var(--line,rgba(148,163,184,.25));color:var(--muted)}
+    .oversight-chip.ok{color:#34d399;border-color:rgba(52,211,153,.4)}
+    .oversight-draft{border:1px solid var(--line,rgba(148,163,184,.25));border-radius:14px;padding:12px;margin-top:10px;background:rgba(148,163,184,.05)}
+    .oversight-draft summary{cursor:pointer;font-weight:700;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .oversight-draft .draft-preview{margin-top:10px;max-height:340px;overflow:auto;border-radius:10px;padding:10px;background:rgba(0,0,0,.22);font-size:13.5px;line-height:1.75}
+    .oversight-draft .draft-preview img{max-width:100%;border-radius:8px;margin:6px 0}
+    .oversight-draft .draft-stats{font-size:11.5px;color:var(--muted);font-weight:400}
+    .audit-row{font-size:12.5px;padding:8px 10px;border-bottom:1px solid var(--line,rgba(148,163,184,.15));display:flex;gap:10px;flex-wrap:wrap}
+    .audit-row .audit-at{color:var(--muted);direction:ltr;white-space:nowrap}
   </style>
 </head>
 <body>
@@ -166,8 +190,9 @@
 </section>
 <input type="hidden" id="pinterestBoardId">
 </section>
+    <section class="screen" id="screen-admin"><p class="eyebrow">Admin · المدير</p><h1 class="screen-title">إدارة المستخدمين والرقابة</h1><p class="screen-subtitle">أنشئ أكواد دخول شخصية لكل مستخدم، واحجبها أو جدّدها، وافتح مساحة أي مستخدم كاملة (المسودات والمقالات والصور) للتأكد من الاستخدام القانوني. لا تسجيل عام — الدخول بالكود فقط.</p><section class="card"><div class="connection-line"><h2>إضافة مستخدم جديد</h2><span class="connection-state ready">كود دخول لمرة واحدة</span></div><div class="row two"><div><label for="newUserName">اسم المستخدم</label><input id="newUserName" autocomplete="off" placeholder="مثال: محمود - موقع وصفات" maxlength="80"></div><div><label for="newUserNote">ملاحظة داخلية (اختياري)</label><input id="newUserNote" autocomplete="off" placeholder="مثال: ناشر محتوى الطبخ" maxlength="200"></div></div><button id="createUserBtn" class="button scan-button" type="button">توليد كود الدخول</button><div id="newCodeBox" class="new-code-box" style="display:none"><p>أرسل هذا الكود للمستخدم <b>مرة واحدة</b>. لن يظهر مجدداً بعد إغلاق الصندوق.</p><div class="new-code-row"><code id="newCodeText"></code><button id="copyNewCode" class="small-button" type="button">نسخ</button></div><p class="helper">يُدخله المستخدم في نفس صفحة الدخول. الكود الفعّال مخزّن بصيغة تشفير لا يمكن استرجاعها.</p></div></section><section class="card"><div class="connection-line"><h2>المستخدمون</h2><span id="adminUserCount" class="connection-state">—</span></div><div id="adminUsersList" class="admin-users-list"><div class="empty">جارٍ التحميل…</div></div></section><section class="card" id="adminOversightCard" style="display:none"><div class="connection-line"><h2 id="adminOversightTitle">مساحة المستخدم</h2><button id="adminOversightClose" class="small-button plain" type="button">إغلاق</button></div><div id="adminOversightBody"></div></section><section class="card"><div class="connection-line"><h2>سجل التدقيق</h2><span class="tag">audit.log</span></div><div id="adminAuditList" class="log-list"><div class="empty">جارٍ التحميل…</div></div></section></section>
   </main>
-  <div id="menuLayer" class="menu-layer" aria-hidden="true"><button id="menuBackdrop" class="menu-backdrop" type="button" aria-label="Close application menu"></button><aside class="menu-panel" aria-label="Application menu"><p class="eyebrow">OrbitPress</p><h2 class="menu-heading">Menu</h2><p class="menu-subtitle">Everything is organized here. No feature is hidden or removed.</p><div class="menu-list"><button class="menu-item active" data-screen="studio" type="button"><span class="menu-icon">⌂</span>Content Studio</button><button class="menu-item" data-screen="facebook" type="button"><span class="menu-icon">f</span>Facebook Analyzer</button><button class="menu-item" data-screen="pinterest" type="button"><span class="menu-icon">◉</span>Pinterest Analyzer</button><button class="menu-item" data-screen="drafts" type="button"><span class="menu-icon">▤</span>Drafts</button><button class="menu-item" data-screen="activity" type="button"><span class="menu-icon">◷</span>Activity</button><button class="menu-item" data-screen="performance" type="button"><span class="menu-icon">⌁</span>Performance</button></div><div class="menu-divider"></div><button class="menu-item settings" data-screen="settings" type="button"><span class="menu-icon">⚙</span>Paramètres / Settings</button><button id="menuRefresh" class="menu-item" type="button"><span class="menu-icon">↻</span>Refresh WordPress</button><button id="menuTheme" class="menu-item" type="button"><span class="menu-icon">☾</span>Night mode</button><p class="menu-footer">Refresh reads categories and the status of posts previously published by this app. It never publishes, edits, or deletes WordPress content.</p></aside></div>
+  <div id="menuLayer" class="menu-layer" aria-hidden="true"><button id="menuBackdrop" class="menu-backdrop" type="button" aria-label="Close application menu"></button><aside class="menu-panel" aria-label="Application menu"><p class="eyebrow">OrbitPress</p><h2 class="menu-heading">Menu</h2><p class="menu-subtitle">Everything is organized here. No feature is hidden or removed.</p><div class="menu-list"><button class="menu-item active" data-screen="studio" type="button"><span class="menu-icon">⌂</span>Content Studio</button><button class="menu-item" data-screen="facebook" type="button"><span class="menu-icon">f</span>Facebook Analyzer</button><button class="menu-item" data-screen="pinterest" type="button"><span class="menu-icon">◉</span>Pinterest Analyzer</button><button class="menu-item" data-screen="drafts" type="button"><span class="menu-icon">▤</span>Drafts</button><button class="menu-item" data-screen="activity" type="button"><span class="menu-icon">◷</span>Activity</button><button class="menu-item" data-screen="performance" type="button"><span class="menu-icon">⌁</span>Performance</button><button id="navAdmin" class="menu-item" data-screen="admin" type="button" style="display:none"><span class="menu-icon">⛨</span>المدير · Admin</button></div><div class="menu-divider"></div><button class="menu-item settings" data-screen="settings" type="button"><span class="menu-icon">⚙</span>Paramètres / Settings</button><button id="menuRefresh" class="menu-item" type="button"><span class="menu-icon">↻</span>Refresh WordPress</button><button id="menuTheme" class="menu-item" type="button"><span class="menu-icon">☾</span>Night mode</button><p class="menu-footer">Refresh reads categories and the status of posts previously published by this app. It never publishes, edits, or deletes WordPress content.</p></aside></div>
   <div id="status" class="status hide" role="status"></div>
   <script>
     const $=id=>document.getElementById(id), bridge=window.Native||{loadSettings:()=>"{}",saveSettings:()=>{},loadSettingsLock:()=>'{"enabled":false}',saveSettingsLock:()=>{},verifySettingsLock:()=>true,loadWorkspace:()=>"{}",saveWorkspace:()=>{},call:()=>{}};
@@ -447,7 +472,7 @@
     function setMenu(open){const layer=$('menuLayer');layer.classList.toggle('open',!!open);layer.setAttribute('aria-hidden',String(!open));$('menuToggle').setAttribute('aria-expanded',String(!!open))}
     function applyTheme(theme){const night=theme==='night';state.workspace.theme=night?'night':'day';document.documentElement.dataset.theme=night?'night':'day';const menuTheme=$('menuTheme');if(menuTheme)menuTheme.innerHTML=`<span class="menu-icon">${night?'☀':'☾'}</span>${night?'Day mode':'Night mode'}`}
     function toggleTheme(){applyTheme(state.workspace.theme==='night'?'day':'night');persist();notice(state.workspace.theme==='night'?'Night mode enabled.':'Day mode enabled.','good')}
-    function showScreen(name){if(name==='settings'&&state.settingsLock.enabled&&!state.settingsLock.unlocked){const pin=window.prompt('Enter your Settings PIN to continue.');if(!pin||!bridge.verifySettingsLock(pin)){notice('Settings stayed locked.','bad');return}state.settingsLock.unlocked=true}document.querySelectorAll('.screen').forEach(el=>el.classList.toggle('active',el.id==='screen-'+name));document.querySelectorAll('.menu-item[data-screen]').forEach(el=>el.classList.toggle('active',el.dataset.screen===name));setMenu(false);if(name==='studio')renderStudio();if(name==='drafts')renderDrafts();if(name==='review')renderReview();if(name==='repair')renderRepair();if(name==='activity')renderActivity();if(name==='settings')renderSettings();window.scrollTo({top:0,behavior:'smooth'})}
+    function showScreen(name){if(name==='settings'&&state.settingsLock.enabled&&!state.settingsLock.unlocked){const pin=window.prompt('Enter your Settings PIN to continue.');if(!pin||!bridge.verifySettingsLock(pin)){notice('Settings stayed locked.','bad');return}state.settingsLock.unlocked=true}document.querySelectorAll('.screen').forEach(el=>el.classList.toggle('active',el.id==='screen-'+name));document.querySelectorAll('.menu-item[data-screen]').forEach(el=>el.classList.toggle('active',el.dataset.screen===name));setMenu(false);if(name==='studio')renderStudio();if(name==='drafts')renderDrafts();if(name==='review')renderReview();if(name==='repair')renderRepair();if(name==='activity')renderActivity();if(name==='settings')renderSettings();if(name==='admin'&&window.renderAdmin)renderAdmin();window.scrollTo({top:0,behavior:'smooth'})}
     function renderConnection(){const ai=aiReady(),wp=wpReady();let detail='<span class="connection-state warn">Settings needed</span>';if(wp&&state.connection?.verified)detail='<span class="connection-state ready">● WordPress connected</span>';else if(ai&&wp)detail='<span class="connection-state ready">● Settings saved</span>';else if(ai)detail='<span class="connection-state ready">● AI ready</span>';const aiLine=ai?'AI: ready (generation and analysis work).':'AI: needs '+missingFor('ai').join(', ')+'.';const wpLine=wp?(state.connection?.verified?(state.connection.uploadsVerified?'WordPress: connected, media uploads verified.':'WordPress: connected.'):'WordPress: saved (press Refresh to test).'):'WordPress: needs '+missingFor('wp').join(', ')+' — publishing only.';$('connectionCard').innerHTML=`<section class="notice ${wp&&state.connection?.verified?'':'warn'}"><div style="flex:1"><strong>${wp&&state.connection?.verified?'Publishing connection is ready':ai?'AI is ready — WordPress is optional until you publish':'Publishing needs configuration'}</strong><br>${escapeHtml(aiLine)}<br>${escapeHtml(wpLine)}${state.workspace.lastWordPressSyncAt?`<br>Last refresh: ${escapeHtml(formatDate(state.workspace.lastWordPressSyncAt))}.`:''}</div>${detail}</section>${wp?'<button id="refreshFromStudio" class="button secondary" type="button">↻ Refresh WordPress updates</button>':''}`;const refresh=$('refreshFromStudio');if(refresh)refresh.onclick=syncWordPress}
     function renderMetrics(){const keys=activeKeywords(),drafts=activeDrafts();$('metrics').innerHTML=`<div class="metric"><b>${keys.filter(x=>x.status==='queued'||x.status==='failed').length}</b><span>In queue</span></div><div class="metric"><b>${drafts.filter(x=>x.generationStatus==='ready').length}</b><span>Ready</span></div><div class="metric"><b>${drafts.filter(x=>x.generationStatus==='published').length}</b><span>Published</span></div>`}
     function categoryOptions(selected=''){const categories=state.workspace.categories.filter(item=>!item.siteId||item.siteId===activeSiteId());return `<option value="">Choose WordPress category</option>${categories.map(item=>`<option value="${escapeHtml(item.id)}" ${String(item.id)===String(selected)?'selected':''}>${escapeHtml(item.name)}</option>`).join('')}`}
@@ -737,6 +762,139 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
     initialize();
   </script>
   <div id="buildStamp" aria-hidden="true" style="position:fixed;bottom:3px;inset-inline-end:8px;font-size:10px;opacity:.45;pointer-events:none;z-index:9999"></div>
+  <script>
+  /* Admin console — rendered only for the master-token owner. Uses the
+     same cookie session and plain same-origin fetch calls. */
+  (function(){
+    var boot=window.__BOOT__||{},auth=boot.auth||{role:'owner'};
+    var $=function(id){return document.getElementById(id)};
+    var nav=$('navAdmin');
+    if(auth.role==='user'){if(nav)nav.parentNode.removeChild(nav);return;}
+    if(nav)nav.style.display='';
+    function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+    function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleString('ar-DZ',{dateStyle:'short',timeStyle:'short'});}catch(e){return esc(s);}}
+    function fmtBytes(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
+    function api(path,opts){opts=opts||{};opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});if(opts.body&&typeof opts.body!=='string')opts.body=JSON.stringify(opts.body);return fetch(path,opts).then(function(r){return r.json().catch(function(){return{};}).then(function(j){if(!r.ok||j.ok===false)throw new Error(j.message||('HTTP '+r.status));return j;});});}
+    function actionLabel(a){return{
+      'user.created':'إنشاء مستخدم','user.blocked':'حظر مستخدم','user.activated':'تفعيل مستخدم','user.code_reset':'تجديد كود الدخول',
+      'auth.invalid_code':'رمز دخول مرفوض','auth.blocked_attempt':'محاولة دخول بحساب محظور','admin.workspace_viewed':'فتح مساحة مستخدم للمراجعة'
+    }[a]||a;}
+    function showCode(user,code){var box=$('newCodeBox');$('newCodeText').textContent=code;box.style.display='block';if(box.scrollIntoView)box.scrollIntoView({behavior:'smooth',block:'center'});}
+    function renderUsers(entry){
+      var users=(entry.users||[]).slice().sort(function(a,b){return (b.createdAt||'').localeCompare(a.createdAt||'');});
+      $('adminUserCount').textContent=users.length+' مستخدم';
+      if(!users.length){$('adminUsersList').innerHTML='<div class="empty">لا يوجد مستخدمون بعد. أنشئ أول كود دخول.</div>';return;}
+      $('adminUsersList').innerHTML=users.map(function(u){
+        var blocked=u.status==='blocked';
+        return '<div class="admin-user-card'+(blocked?' is-blocked':'')+'">'
+          +'<div class="admin-user-head"><div><b>'+esc(u.name)+'</b><div class="admin-user-meta">'+(u.note?esc(u.note)+'<br>':'')+'الكود ينتهي بـ <b dir="ltr">'+esc(u.codeTail)+'•••••••</b><br>أُنشئ: '+fmtDate(u.createdAt)+'<br>آخر دخول: '+fmtDate(u.lastSeenAt)+' ('+(u.seenCount||0)+' جلسة)<br>المساحة: '+fmtBytes((u.storage&&u.storage.bytes)||u.directorySize||0)+'</div></div>'
+          +'<span class="admin-badge '+(blocked?'blocked':'active')+'">'+(blocked?'محظور':'نشط')+'</span></div>'
+          +'<div class="admin-user-actions">'
+          +'<button class="small-button" type="button" data-view="'+u.id+'">عرض المحتوى</button>'
+          +'<button class="small-button plain" type="button" data-reset="'+u.id+'">كود جديد</button>'
+          +(blocked?'<button class="small-button" type="button" data-activate="'+u.id+'">تفعيل</button>':'<button class="small-button remove" type="button" data-block="'+u.id+'">حظر</button>')
+          +'</div></div>';
+      }).join('');
+      $('adminUsersList').querySelectorAll('[data-view]').forEach(function(b){b.onclick=function(){viewWorkspace(b.dataset.view);};});
+      $('adminUsersList').querySelectorAll('[data-block]').forEach(function(b){b.onclick=function(){setStatus(b.dataset.block,'blocked');};});
+      $('adminUsersList').querySelectorAll('[data-activate]').forEach(function(b){b.onclick=function(){setStatus(b.dataset.activate,'active');};});
+      $('adminUsersList').querySelectorAll('[data-reset]').forEach(function(b){b.onclick=function(){resetCode(b.dataset.reset);};});
+    }
+    function renderAudit(entries){
+      entries=(entries||[]).slice().reverse();
+      $('adminAuditList').innerHTML=entries.length?entries.map(function(e){
+        return '<div class="audit-row"><span class="audit-at">'+fmtDate(e.at)+'</span><b>'+esc(actionLabel(e.action))+'</b><span>'+esc(e.name||e.id||'')+'</span></div>';
+      }).join(''):'<div class="empty">لا أحداث بعد.</div>';
+    }
+    window.renderAdmin=function(){
+      $('adminOversightCard').style.display='none';
+      api('/api/admin/overview').then(function(entry){
+        renderUsers(entry);renderAudit(entry.audit);
+      }).catch(function(e){notice('تعذّر تحميل بيانات المدير: '+(e.message||''),'bad');});
+    };
+    function setStatus(id,status){
+      var verb=status==='blocked'?'حظر':'تفعيل';
+      if(!window.confirm(status==='blocked'?'حظر هذا المستخدم؟ سيفقد الوصول فوراً وتُسجَّل محاولات دخوله.':'إعادة تفعيل هذا المستخدم؟'))return;
+      api('/api/admin/users/'+id+'/status',{method:'POST',body:{status:status}}).then(function(){notice('تم '+verb+' المستخدم.','good');window.renderAdmin();})
+        .catch(function(e){notice(e.message||'فشل الإجراء','bad');});
+    }
+    function resetCode(id){
+      if(!window.confirm('توليد كود جديد؟ يُلغى الكود القديم فوراً ولن يمكن استرجاعه.'))return;
+      api('/api/admin/users/'+id+'/reset-code',{method:'POST',body:{}}).then(function(j){showCode(j.user,j.code);window.renderAdmin();})
+        .catch(function(e){notice(e.message||'فشل توليد الكود','bad');});
+    }
+    // Strip anything executable before showing a tenant's stored HTML.
+    function safeHtml(html,userId){
+      try{
+        var doc=new DOMParser().parseFromString(String(html||''),'text/html');
+        doc.querySelectorAll('script,iframe,object,embed,link,meta').forEach(function(n){n.remove();});
+        doc.querySelectorAll('*').forEach(function(el){
+          for(var i=el.attributes.length-1;i>=0;i--){var a=el.attributes[i];if(/^on/i.test(a.name)||/^\s*javascript:/i.test(a.value))el.removeAttribute(a.name);}
+          ['src','href'].forEach(function(attr){var v=el.getAttribute(attr);if(v&&/^local:\/\//.test(v))el.setAttribute(attr,'/api/admin/users/'+userId+'/images/'+v.replace(/^local:\/\//,''));if(v&&/^\/api\/images\//.test(v))el.setAttribute(attr,v.replace(/^\/api\/images\//,'/api/admin/users/'+userId+'/images/'));});
+        });
+        return doc.body.innerHTML;
+      }catch(e){return esc(html);}
+    }
+    function draftBlock(d,userId){
+      var title=esc(d.title||d.topic||'بدون عنوان');
+      var meta=[];
+      if(d.status)meta.push(esc(d.status));
+      if(d.createdAt)meta.push(fmtDate(d.createdAt));
+      if(d.wordCount)meta.push(d.wordCount+' كلمة');
+      if(Array.isArray(d.keywords)&&d.keywords.length)meta.push(esc(d.keywords.slice(0,6).join('، ')));
+      var body=d.html||d.htmlContent||d.content||'';
+      return '<details class="oversight-draft" open><summary>'+title+' <span class="draft-stats">— '+meta.join(' · ')+'</span></summary><div class="draft-preview">'+(body?safeHtml(body,userId):'<i>لا يوجد نص.</i>')+'</div></details>';
+    }
+    function viewWorkspace(id){
+      var card=$('adminOversightCard'),body=$('adminOversightBody');
+      card.style.display='block';$('adminOversightTitle').textContent='جارٍ فتح المساحة…';body.innerHTML='<div class="empty">جارٍ التحميل…</div>';
+      if(card.scrollIntoView)card.scrollIntoView({behavior:'smooth',block:'start'});
+      api('/api/admin/users/'+id+'/workspace').then(function(j){
+        $('adminOversightTitle').textContent='مساحة: '+(j.user.name||id);
+        var w=j.workspace||{},settings=j.settings||{},profiles=w.siteProfiles||[{id:'site-default',name:'الموقع الافتراضي'}];
+        var chips=[];
+        profiles.forEach(function(p){
+          var s=settings[p.id]||{};
+          function chip(ok,label){chips.push('<span class="oversight-chip '+(ok?'ok':'')+'">'+esc(p.name)+' · '+label+': '+(ok?'مضبوط ✓':'غير مضبوط')+'</span>');}
+          chip(!!s.articleApiConfigured,'ذكاء اصطناعي');
+          chip(!!s.wordpressConfigured,'وردبريس'+(s.wordpressBaseUrl?' ('+esc(s.wordpressBaseUrl)+')':''));
+          chip(!!s.imageConfigured,'توليد الصور');
+          chip(!!s.pinterestConfigured,'بنترست');
+          chip(!!s.facebookConfigured,'فيسبوك');
+        });
+        var sessions=j.sessions||{};
+        Object.keys(sessions).forEach(function(platform){
+          var st=sessions[platform]||{};
+          chips.push('<span class="oversight-chip '+((st.connected||st.loggedIn)?'ok':'')+'">جلسة '+esc(platform)+': '+(st.connected||st.loggedIn?'متصلة':'غير متصلة')+'</span>');
+        });
+        var drafts=w.drafts||[],queue=w.reviewQueue||[],keywords=(w.keywordQueue||w.queue||w.keywords||[]);
+        var kwText=Array.isArray(keywords)?keywords.map(function(k){return typeof k==='string'?k:(k.keyword||k.topic||JSON.stringify(k));}).filter(Boolean):[];
+        var html='<div class="oversight-summary">'+chips.join('')+'</div>'
+          +'<p class="helper">معاينة كاملة لمحتوى المستخدم (المسودات، طابور المراجعة، الكلمات المفتاحية). كلمات السر ومفاتيح API لا تُعرض أبداً. كل فتح يُسجَّل في سجل التدقيق.</p>'
+          +'<h3 style="margin:14px 0 4px">المسودات ('+drafts.length+')</h3>'
+          +(drafts.length?drafts.map(function(d){return draftBlock(d,id);}).join(''):'<div class="empty">لا مسودات.</div>')
+          +'<h3 style="margin:14px 0 4px">طابور المراجعة ('+queue.length+')</h3>'
+          +(queue.length?queue.map(function(d){return draftBlock(d,id);}).join(''):'<div class="empty">لا شيء.</div>')
+          +'<h3 style="margin:14px 0 4px">الكلمات المفتاحية/طابور النشر ('+kwText.length+')</h3>'
+          +(kwText.length?'<div class="oversight-summary">'+kwText.slice(0,80).map(function(k){return '<span class="oversight-chip">'+esc(k)+'</span>';}).join('')+'</div>':'<div class="empty">لا كلمات.</div>');
+        body.innerHTML=html;
+      }).catch(function(e){body.innerHTML='<div class="empty">تعذّر الفتح: '+esc(e.message||'')+'</div>';});
+    }
+    $('adminOversightClose').onclick=function(){$('adminOversightCard').style.display='none';};
+    $('createUserBtn').onclick=function(){
+      var name=$('newUserName').value.trim(),note=$('newUserNote').value.trim();
+      if(!name)return notice('اكتب اسم المستخدم أولاً.','bad');
+      var btn=this;btn.disabled=true;
+      api('/api/admin/users',{method:'POST',body:{name:name,note:note}}).then(function(j){
+        showCode(j.user,j.code);$('newUserName').value='';$('newUserNote').value='';window.renderAdmin();
+      }).catch(function(e){notice(e.message||'تعذّر إنشاء المستخدم','bad');}).finally(function(){btn.disabled=false;});
+    };
+    $('copyNewCode').onclick=function(){
+      var text=$('newCodeText').textContent;
+      navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){notice('تم نسخ الكود.','good');},function(){});
+    };
+  })();
+  </script>
   <script>fetch('build.txt',{cache:'no-store'}).then(function(r){return r.ok?r.text():''}).then(function(t){if(t)document.getElementById('buildStamp').textContent=t.trim()}).catch(function(){})</script>
 </body>
 </html>

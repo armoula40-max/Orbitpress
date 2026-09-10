@@ -17,7 +17,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('../store');
+const { getDataDir } = require('../reqContext');
 const { requestText } = require('../http');
 const analyzer = require('./analyzer');
 
@@ -98,7 +98,7 @@ function writePinDebug(pinId, url, html, overlay) {
   if (pinDebugWritten.size >= 3) return;
   pinDebugWritten.add(pinId);
   try {
-    const dir = path.join(DATA_DIR, 'debug');
+    const dir = path.join(getDataDir(), 'debug');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const base = path.join(dir, `pinterest-pin-${pinId}-${stamp}`);
