@@ -7,7 +7,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
@@ -485,7 +488,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val response = http("https://api.cloudflare.com/client/v4/accounts/$accountId/ai/run/$model", "POST", mapOf("Authorization" to "Bearer ${settings.getString("imageApiToken")}", "Content-Type" to "application/json"), body.toString().toByteArray())
     val encoded = JSONObject(response).optString("image")
     require(encoded.isNotBlank()) { "Cloudflare returned no generated image." }
-    return ImagePayload(Base64.decode(encoded, Base64.DEFAULT), "image/jpeg", "jpg")
+    return imagePayloadFromProviderBytes(Base64.decode(encoded, Base64.DEFAULT))
   }
 
   private fun generateOpenAiCompatibleImage(settings: JSONObject, prompt: String, width: Int, height: Int): ImagePayload {
@@ -495,7 +498,24 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val item = JSONObject(response).getJSONArray("data").getJSONObject(0)
     val encoded = item.optString("b64_json")
     require(encoded.isNotBlank()) { "Image provider returned no base64 image." }
-    return ImagePayload(Base64.decode(encoded, Base64.DEFAULT), "image/png", "png")
+    return imagePayloadFromProviderBytes(Base64.decode(encoded, Base64.DEFAULT))
+  }
+
+  /**
+   * Labels provider output from its real magic bytes rather than the advertised format:
+   * OpenAI-compatible endpoints may return JPEG while documenting PNG, and providers may
+   * start returning WebP. Unrecognized data is decoded and re-encoded to standard JPEG.
+   */
+  private fun imagePayloadFromProviderBytes(bytes: ByteArray): ImagePayload {
+    require(bytes.isNotEmpty()) { "Image provider returned an empty image." }
+    val detected = PublishingContracts.detectImageMimeType(bytes)
+    if (detected == "image/jpeg" || detected == "image/png" || detected == "image/webp") {
+      val extension = if (detected == "image/jpeg") "jpg" else detected.removePrefix("image/")
+      return ImagePayload(bytes, detected, extension)
+    }
+    val decoded = decodeBitmapForTranscode(bytes)
+      ?: throw IllegalArgumentException("Image provider returned data that is not a supported JPEG, PNG, or WebP image.")
+    return ImagePayload(encodeJpeg(decoded), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
   }
 
   private fun publishPinterest(request: JSONObject): JSONObject {
@@ -560,7 +580,30 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val settings = requireStoredSettings(request)
     val root = wpRoot(settings.getString("wordpressBaseUrl"))
     val profile = JSONObject(http("$root/wp-json/wp/v2/users/me?context=edit", "GET", wordpressHeaders(settings), null))
-    return JSONObject().put("ok", true).put("accountName", profile.optString("name", profile.optString("slug", "WordPress account")))
+    verifyMediaUpload(root, settings)
+    return JSONObject().put("ok", true)
+      .put("accountName", profile.optString("name", profile.optString("slug", "WordPress account")))
+      .put("uploadsVerified", true)
+  }
+
+  /**
+   * A successful GET /users/me only proves the application password is valid; it does not
+   * prove the role can upload media or that no firewall strips upload bodies. Round-trip a
+   * tiny JPEG through the media endpoint and delete it, so the connection test fails with
+   * an actionable message instead of a false positive that surfaces only at publish time.
+   */
+  private fun verifyMediaUpload(root: String, settings: JSONObject) {
+    val probeBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+    val probe = ImagePayload(encodeJpeg(probeBitmap), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
+    val uploaded = try {
+      JSONObject(postMediaBytes(root, settings, probe, "orbitpress-connection-test"))
+    } catch (error: IllegalStateException) {
+      throw IllegalStateException(WordPressUploadContract.describeMediaFailure(error.message), error)
+    }
+    val mediaId = uploaded.optInt("id", 0)
+    if (mediaId > 0) {
+      runCatching { http("$root/wp-json/wp/v2/media/$mediaId?force=true", "DELETE", wordpressHeaders(settings), null) }
+    }
   }
 
   private fun safeSiteId(value: String): String = value.ifBlank { "site-default" }.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
@@ -816,11 +859,81 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   }
 
   private fun uploadMedia(root: String, settings: JSONObject, image: ImagePayload, basename: String, altText: String): JSONObject {
-    val response = http("$root/wp-json/wp/v2/media", "POST", wordpressHeaders(settings) + mapOf("Content-Type" to image.mimeType, "Content-Disposition" to "attachment; filename=\"$basename.${image.extension}\""), image.bytes)
-    val media = JSONObject(response)
+    // WebP is rejected by older WordPress, multisite networks, and some security plugins;
+    // JPEG is accepted everywhere, so normalize proactively at the WordPress boundary.
+    val prepared = if (WordPressUploadContract.shouldTranscodeToJpeg(image.mimeType)) {
+      transcodeImageToJpeg(image) ?: image
+    } else {
+      image
+    }
+    val media = try {
+      JSONObject(postMediaBytes(root, settings, prepared, basename))
+    } catch (error: IllegalStateException) {
+      val message = error.message.orEmpty()
+      if (WordPressUploadContract.isFileTypeRejection(message) &&
+        prepared.mimeType != WordPressUploadContract.JPEG_MIME) {
+        // A PNG (or WebP that could not be pre-converted) was refused; retry once as plain JPEG.
+        val fallback = transcodeImageToJpeg(image)
+        if (fallback != null) {
+          try {
+            JSONObject(postMediaBytes(root, settings, fallback, basename))
+          } catch (retryError: IllegalStateException) {
+            throw IllegalStateException(WordPressUploadContract.describeMediaFailure(retryError.message), retryError)
+          }
+        } else {
+          throw IllegalStateException(WordPressUploadContract.describeMediaFailure(message), error)
+        }
+      } else if (WordPressUploadContract.isFileTypeRejection(message) ||
+        WordPressUploadContract.isUploadPermissionRejection(message)) {
+        throw IllegalStateException(WordPressUploadContract.describeMediaFailure(message), error)
+      } else {
+        throw error
+      }
+    }
     http("$root/wp-json/wp/v2/media/${media.getInt("id")}", "POST", wordpressHeaders(settings) + mapOf("Content-Type" to "application/json"), JSONObject().put("alt_text", altText.take(320)).toString().toByteArray())
     return media
   }
+
+  private fun postMediaBytes(root: String, settings: JSONObject, image: ImagePayload, basename: String): String =
+    http(
+      "$root/wp-json/wp/v2/media",
+      "POST",
+      wordpressHeaders(settings) + mapOf(
+        "Content-Type" to image.mimeType,
+        "Content-Disposition" to "attachment; filename=\"$basename.${image.extension}\"",
+      ),
+      image.bytes,
+    )
+
+  private fun transcodeImageToJpeg(image: ImagePayload): ImagePayload? {
+    val bitmap = decodeBitmapForTranscode(image.bytes) ?: return null
+    return ImagePayload(encodeJpeg(bitmap), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
+  }
+
+  /** Decodes any Android-supported image, flattening transparency onto white and guarding memory. */
+  private fun decodeBitmapForTranscode(bytes: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sampleSize = 1
+    val longestEdge = maxOf(bounds.outWidth, bounds.outHeight)
+    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+      while (longestEdge / sampleSize > WordPressUploadContract.MAX_TRANSCODE_EDGE) sampleSize *= 2
+    }
+    val source = BitmapFactory.decodeByteArray(
+      bytes,
+      0,
+      bytes.size,
+      BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    ) ?: return null
+    val flattened = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(flattened)
+    canvas.drawColor(Color.WHITE)
+    canvas.drawBitmap(source, 0f, 0f, null)
+    return flattened
+  }
+
+  private fun encodeJpeg(bitmap: Bitmap): ByteArray =
+    ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
 
   private fun resolveTagIds(root: String, settings: JSONObject, names: List<String>): JSONArray {
     val ids = JSONArray()

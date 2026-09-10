@@ -10,13 +10,17 @@ object PublishingContracts {
     return normalized
   }
 
+  /** Detects the real image format from magic bytes; returns null for unsupported data. */
+  fun detectImageMimeType(bytes: ByteArray): String? = when {
+    bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte() -> "image/png"
+    bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() -> "image/jpeg"
+    bytes.size >= 12 && bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() && bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() && bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte() -> "image/webp"
+    else -> null
+  }
+
   fun validatedImageMimeType(declaredMime: String, bytes: ByteArray): String {
-    val actual = when {
-      bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte() -> "image/png"
-      bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() -> "image/jpeg"
-      bytes.size >= 12 && bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() && bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() && bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte() -> "image/webp"
-      else -> throw IllegalArgumentException("Image bytes are not a supported JPEG, PNG, or WebP file.")
-    }
+    val actual = detectImageMimeType(bytes)
+      ?: throw IllegalArgumentException("Image bytes are not a supported JPEG, PNG, or WebP file.")
     require(declaredMime == actual) { "Image MIME type does not match its actual bytes." }
     return actual
   }
