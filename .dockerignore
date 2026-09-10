@@ -1,0 +1,6 @@
+# repo-root build context (used by docker-compose.yml + server/Dockerfile)
+.git
+server/node_modules
+server/data
+server/test
+**/*.log
