@@ -935,6 +935,55 @@ test('a provider that only accepts square images is retried instead of failing',
   assert.equal(raw.width, 64);
 });
 
+test('an explicit per-image prompt overrides the saved article image prompt', async (t) => {
+  const api = await mocks.startImageApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings(
+    { imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'test-image', imageApiToken: 'k', imagePrompt: 'SAVED BASE PROMPT {{title}}' },
+    'site-role',
+  );
+  // Each additional in-article image sends its own shot-role prompt; it must
+  // win over the shared saved prompt so images never come back identical.
+  await wordpress.generateImage({ siteId: 'site-role', kind: 'article', prompt: 'UNIQUE INGREDIENTS FLAT LAY SHOT', title: 'Bread', store: false });
+  assert.equal(api.calls.at(-1).prompt, 'UNIQUE INGREDIENTS FLAT LAY SHOT');
+  // With no explicit prompt the saved setting is the fallback (variables expanded).
+  await wordpress.generateImage({ siteId: 'site-role', kind: 'article', title: 'Bread', store: false });
+  assert.equal(api.calls.at(-1).prompt, 'SAVED BASE PROMPT Bread');
+});
+
+test('pinterest images fall back to the first saved template and accept a chosen one', async (t) => {
+  const api = await mocks.startImageApiMock();
+  t.after(() => api.server.close());
+  store.saveSiteSettings(
+    {
+      imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'test-image', imageApiToken: 'k',
+      pinterestPrompts: [{ name: 'moody', prompt: 'MOODY TEMPLATE {{title}}' }, { name: 'macro', prompt: 'MACRO TEMPLATE' }],
+    },
+    'site-tpl',
+  );
+  await wordpress.generateImage({ siteId: 'site-tpl', kind: 'pinterest', title: 'Soup', store: false });
+  assert.equal(api.calls.at(-1).prompt, 'MOODY TEMPLATE Soup', 'no explicit prompt uses the first saved template');
+  await wordpress.generateImage({ siteId: 'site-tpl', kind: 'pinterest', prompt: 'CHOSEN TEMPLATE', title: 'Soup', store: false });
+  assert.equal(api.calls.at(-1).prompt, 'CHOSEN TEMPLATE', 'the template picked in the studio wins');
+});
+
+test('settings merge keeps and sanitizes pinterest prompt templates', () => {
+  const merged = contracts.SettingsPersistenceContract.merge({}, {
+    pinterestPrompts: [
+      { name: ' Moody ', prompt: ' prompt A ' },
+      { name: 'empty', prompt: '   ' },
+      { prompt: 'prompt C' },
+    ],
+  });
+  assert.deepEqual(merged.pinterestPrompts, [
+    { name: 'Moody', prompt: 'prompt A' },
+    { name: '', prompt: 'prompt C' },
+  ]);
+  // a non-array payload never wipes the stored library
+  const kept = contracts.SettingsPersistenceContract.merge({ pinterestPrompts: [{ name: 'x', prompt: 'y' }] }, { pinterestPrompts: null });
+  assert.deepEqual(kept.pinterestPrompts, [{ name: 'x', prompt: 'y' }]);
+});
+
 test('pin fitting crops to cover and letterboxes to contain', () => {
   const pin = require('../public/app/pinStudio.js');
   const cover = pin.fitRect(1200, 800, 1000, 1500, 'cover');

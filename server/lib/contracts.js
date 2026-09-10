@@ -572,6 +572,17 @@ const SettingsPersistenceContract = {
       const value = optStr(incoming[key]).trim();
       if (value) merged[key] = value;
     });
+    // Multiple Pinterest background-prompt templates (name + prompt), kept
+    // distinct from the legacy single pinterestPrompt string.
+    if (Array.isArray(incoming.pinterestPrompts)) {
+      merged.pinterestPrompts = incoming.pinterestPrompts
+        .map((item) => ({
+          name: optStr(item && item.name).trim().slice(0, 80),
+          prompt: optStr(item && item.prompt).trim().slice(0, 4000),
+        }))
+        .filter((item) => item.prompt)
+        .slice(0, 20);
+    }
     return merged;
   },
 

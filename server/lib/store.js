@@ -128,6 +128,12 @@ function getSettingsSummary(siteId) {
     textPrompt: saved.textPrompt || '',
     imagePrompt: saved.imagePrompt || '',
     pinterestPrompt: saved.pinterestPrompt || '',
+    pinterestPrompts: Array.isArray(saved.pinterestPrompts)
+      ? saved.pinterestPrompts
+        .map((t) => ({ name: String(t && t.name || '').slice(0, 80), prompt: String(t && t.prompt || '').slice(0, 4000) }))
+        .filter((t) => t.prompt.trim())
+        .slice(0, 20)
+      : [],
     articleImageCount: Number(saved.articleImageCount) || 0,
     scraperApiBaseUrl: saved.scraperApiBaseUrl || '',
     scraperApiConfigured: !!saved.scraperApiKey,

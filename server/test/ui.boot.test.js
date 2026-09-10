@@ -112,6 +112,26 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   assert.ok(window.document.querySelector('#spyFToolbar'), 'facebook toolbar present');
   assert.ok(window.document.querySelector('#spyPToolbar'), 'pinterest toolbar present');
 
+  // the single Pinterest prompt field is now a library of editable templates
+  const tplList = window.document.getElementById('pinterestPromptList');
+  assert.ok(tplList, 'the Pinterest template manager is rendered');
+  assert.equal(tplList.querySelectorAll('.prompt-template-row').length, 5, 'five default Pinterest prompt templates are offered');
+  assert.ok(tplList.querySelector('.pt-prompt').value.includes('{{title}}'), 'templates use the {{title}} variable');
+
+  // additional in-article images describe DIFFERENT moments (hero / ingredients / preparation)
+  const recipeDraft = { title: 'Easy Sourdough Bread', niche: 'food', recipe: { ingredients: ['500g flour', '300ml water', '10g salt'] } };
+  const p0 = window.additionalArticleImagePrompt(recipeDraft, 0);
+  const p1 = window.additionalArticleImagePrompt(recipeDraft, 1);
+  const p2 = window.additionalArticleImagePrompt(recipeDraft, 2);
+  assert.match(p0, /hero photograph/i, 'image 1 is the finished-dish hero');
+  assert.match(p1, /flat lay of the raw ingredients/i, 'image 2 is the ingredients flat lay');
+  assert.match(p1, /500g flour/i, 'the ingredients shot names the recipe ingredients');
+  assert.match(p2, /Hands preparing/i, 'image 3 is the hands-on preparation');
+  assert.notEqual(p0, p1);
+  assert.notEqual(p1, p2, 'the three prompts never repeat');
+  assert.match(window.additionalArticleImagePrompt({ title: 'Herb Garden', niche: 'gardening' }, 1), /gardening supplies/i, 'other niches get their own role table');
+  assert.equal(window.pinterestTemplateList().length, 5, 'five default pin background templates');
+
   // the WordPress card can diagnose a refused connection, not just report 401
   assert.ok(window.document.getElementById('diagnoseWordPress'), 'diagnose button present');
   window.document.getElementById('diagnoseWordPress').click();
@@ -160,6 +180,12 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   assert.equal(document.getElementById('pinPublish').disabled, false, 'a published URL unlocks publishing');
   assert.ok(card.textContent.includes('https://www.pinterest.com/askinz/bread/'), 'the board is shown so the destination is never a guess');
   assert.equal(document.querySelectorAll('[data-pin-template]').length, 3, 'three templates are offered');
+  const bgTemplates = document.getElementById('pinPromptTemplate');
+  assert.ok(bgTemplates, 'the studio offers a background prompt template picker');
+  assert.ok(bgTemplates.options.length >= 5, 'all saved Pinterest prompt templates are selectable');
+  bgTemplates.value = '3';
+  bgTemplates.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(bgTemplates.value, '3', 'another background template can be selected before regenerating');
 
   // switching template keeps the design on the draft, not only in the DOM
   document.querySelector('[data-pin-template="card"]').click();

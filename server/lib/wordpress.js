@@ -803,8 +803,18 @@ async function generateImage(request) {
   const settings = requireImageSettings(request);
   const provider = String(settings.imageProvider || 'cloudflare').toLowerCase();
   const kind = String(request.kind || 'featured');
-  const configuredPrompt = String(kind === 'pinterest' ? (settings.pinterestPrompt || '') : (settings.imagePrompt || '')).trim();
-  const prompt = (configuredPrompt || String(request.prompt || '')).trim()
+  // The client sends the exact prompt for this image: each in-article image
+  // gets its own shot role (hero / ingredients / preparation...) and each pin
+  // can use a chosen Pinterest template, so an explicit request wins. Saved
+  // settings prompts are only the fallback; the first saved Pinterest template
+  // backstops the legacy single pinterestPrompt.
+  const templateFallback = kind === 'pinterest' && Array.isArray(settings.pinterestPrompts)
+    ? String((settings.pinterestPrompts.find((t) => t && t.prompt) || {}).prompt || '')
+    : '';
+  const configuredPrompt = String(
+    kind === 'pinterest' ? (settings.pinterestPrompt || templateFallback || '') : (settings.imagePrompt || ''),
+  ).trim();
+  const prompt = (String(request.prompt || '').trim() || configuredPrompt)
     .replace(/\{\{title\}\}/g, String(request.title || ''))
     .replace(/\{\{keyword\}\}/g, String(request.keyword || ''));
   const { MediaPublishingContract } = require('./contracts');

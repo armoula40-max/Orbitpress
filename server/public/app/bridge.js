@@ -51,7 +51,7 @@
       articleApiConfigured: false, wordpressConfigured: false, imageConfigured: false,
       pinterestConfigured: false, facebookConfigured: false, imageProvider: 'cloudflare',
       imageBaseUrl: '', imageAccountId: '', imageModel: '', pinterestBoardId: '', facebookGraphVersion: 'v23.0',
-      textPrompt: '', imagePrompt: '', pinterestPrompt: '', articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
+      textPrompt: '', imagePrompt: '', pinterestPrompt: '', pinterestPrompts: [], articleImageCount: 0, scraperApiBaseUrl: '', scraperApiConfigured: false,
     };
   }
 
@@ -174,6 +174,7 @@
       ['articleBaseUrl', 'articleModel', 'wordpressBaseUrl', 'wordpressUsername', 'categoryId', 'imageProvider', 'imageBaseUrl', 'imageAccountId', 'imageModel', 'pinterestBoardId', 'facebookGraphVersion', 'textPrompt', 'imagePrompt', 'pinterestPrompt', 'articleImageCount', 'scraperApiBaseUrl'].forEach(function (key) {
         if (incoming[key] !== undefined) summary[key] = incoming[key];
       });
+      if (Array.isArray(incoming.pinterestPrompts)) summary.pinterestPrompts = incoming.pinterestPrompts;
       if (incoming.pinterestAccessToken) summary.pinterestConfigured = !!(incoming.pinterestBoardId || summary.pinterestBoardId);
       settingsCache[id] = summary;
     },
