@@ -16,6 +16,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
+import android.util.TypedValue
+import android.view.Gravity
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
@@ -23,6 +25,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.work.ExistingWorkPolicy
@@ -36,6 +41,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -45,24 +51,111 @@ private const val PINTEREST_SCAN_REQUEST = 7101
 class MainActivity : Activity() {
   private lateinit var webView: WebView
   private var fileCallback: ValueCallback<Array<Uri>>? = null
+  private var serverBase: String? = null
+  private var leavingForLogin = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    webView = WebView(this)
-    webView.settings.javaScriptEnabled = true
-    webView.settings.domStorageEnabled = true
-    webView.settings.allowFileAccess = false
-    webView.settings.allowContentAccess = true
-    webView.settings.javaScriptCanOpenWindowsAutomatically = false
+    createNotificationChannel()
+    val store = ConnectionStore(this)
+    val base = store.serverBase
+    val token = store.token
+    if (base.isNullOrBlank() || token.isNullOrBlank()) {
+      startActivity(Intent(this, ServerLoginActivity::class.java))
+      finish()
+      return
+    }
+    serverBase = base
+    buildShell(base, token)
+    webView.loadUrl("$base/")
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+    }
+  }
+
+  /**
+   * Thin server shell: a compact native top bar (server identity, refresh,
+   * logout) over a WebView that renders the whole tool from the VPS. The
+   * server's own bridge.js replaces the old bundled NativeBridge, so no
+   * JavascriptInterface is injected and scanning runs server-side.
+   */
+  private fun buildShell(base: String, token: String) {
+    val root = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setBackgroundColor(Color.parseColor("#0B1220"))
+    }
+
+    val bar = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+      setPadding(dp(12), dp(6), dp(6), dp(6))
+      setBackgroundColor(Color.parseColor("#0D1528"))
+    }
+    val titles = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    titles.addView(TextView(this).apply {
+      text = if (BuildConfig.APP_ROLE == "admin") "OrbitPress · المدير" else "OrbitPress"
+      setTextColor(Color.WHITE)
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+      setTypeface(typeface, android.graphics.Typeface.BOLD)
+    })
+    titles.addView(TextView(this).apply {
+      text = runCatching {
+        URL(base).let { url -> url.host + if (url.port != -1) ":${url.port}" else "" }
+      }.getOrDefault(base)
+      setTextColor(Color.parseColor("#7C8DB0"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+    })
+    bar.addView(titles)
+    bar.addView(barButton("⟳") { webView.reload() })
+    bar.addView(barButton("خروج") { confirmLogout() })
+    root.addView(bar)
+
+    webView = WebView(this).apply {
+      settings.javaScriptEnabled = true
+      settings.domStorageEnabled = true
+      settings.databaseEnabled = true
+      settings.allowFileAccess = false
+      settings.allowContentAccess = true
+      settings.mediaPlaybackRequiresUserGesture = false
+      settings.javaScriptCanOpenWindowsAutomatically = false
+      settings.userAgentString = settings.userAgentString + " OrbitPressAndroid/4.1"
+    }
     WebView.setWebContentsDebuggingEnabled(false)
+
+    val cookieManager = CookieManager.getInstance()
+    cookieManager.setAcceptCookie(true)
+    cookieManager.setAcceptThirdPartyCookies(webView, false)
+    cookieManager.setCookie(base, "orbitpress_token=${URLEncoder.encode(token, "UTF-8")}; path=/")
+    cookieManager.flush()
+
     webView.webViewClient = object : WebViewClient() {
       override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
         val url = request?.url ?: return false
-        if (url.scheme == "https" || url.scheme == "http") {
-          startActivity(Intent(Intent.ACTION_VIEW, url))
-          return true
+        if (url.scheme != "http" && url.scheme != "https") return false
+        val sameServer = runCatching {
+          val destination = URL(url.toString())
+          val origin = URL(base)
+          destination.host.equals(origin.host, ignoreCase = true) && destination.port == origin.port
+        }.getOrDefault(false)
+        if (sameServer) return false // app navigation stays inside the shell
+        startActivity(Intent(Intent.ACTION_VIEW, url)) // external links open in the browser
+        return true
+      }
+
+      override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: android.webkit.WebResourceResponse?) {
+        val status = errorResponse?.statusCode ?: return
+        if (status != 401 && status != 403) return
+        val path = request?.url?.path.orEmpty()
+        if (request?.isForMainFrame == true || path.startsWith("/api/")) {
+          val message = if (status == 403)
+            "تم رفض الوصول: كود الدخول محظور من قبل المدير. تواصل مع الإدارة."
+          else
+            "انتهت الجلسة أو الكود غير صالح. سجّل الدخول مجددًا."
+          runOnUiThread { returnToLogin(message) }
         }
-        return false
       }
     }
     webView.webChromeClient = object : WebChromeClient() {
@@ -71,20 +164,71 @@ class MainActivity : Activity() {
         fileCallback = callback
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
           addCategory(Intent.CATEGORY_OPENABLE)
-          type = "image/*"
+          type = if (params.acceptTypes?.any { it.contains("image") == true } == true) "image/*" else "*/*"
         }
         startActivityForResult(intent, FILE_PICKER_REQUEST)
         return true
       }
     }
-    webView.addJavascriptInterface(NativeBridge(this, webView), "Native")
-    webView.loadUrl("file:///android_asset/index.html")
-    setContentView(webView)
-    createNotificationChannel()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
-    }
+    root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    setContentView(root)
   }
+
+  private fun barButton(label: String, action: () -> Unit) = Button(this).apply {
+    text = label
+    setTextColor(Color.parseColor("#CBD5E1"))
+    setBackgroundColor(Color.TRANSPARENT)
+    minHeight = dp(40)
+    minimumHeight = dp(40)
+    setPadding(dp(10), 0, dp(10), 0)
+    setOnClickListener { action() }
+  }
+
+  private fun confirmLogout() {
+    android.app.AlertDialog.Builder(this)
+      .setTitle("تسجيل الخروج")
+      .setMessage("سيتم مسح كود الدخول من هذا التطبيق. يمكنك الدخول مجددًا بنفس الكود أو بكود جديد من المدير.")
+      .setPositiveButton("خروج") { _, _ ->
+        leavingForLogin = true
+        ConnectionStore(this).clear()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        startActivity(
+          Intent(this, ServerLoginActivity::class.java).apply {
+            putExtra(ServerLoginActivity.EXTRA_LOGOUT, true)
+            putExtra(ServerLoginActivity.EXTRA_SERVER, serverBase)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+          },
+        )
+        finish()
+      }
+      .setNegativeButton("إلغاء", null)
+      .show()
+  }
+
+  private fun returnToLogin(message: String) {
+    if (leavingForLogin) return
+    leavingForLogin = true
+    ConnectionStore(this).clear()
+    CookieManager.getInstance().removeAllCookies(null)
+    CookieManager.getInstance().flush()
+    startActivity(
+      Intent(this, ServerLoginActivity::class.java).apply {
+        putExtra(ServerLoginActivity.EXTRA_MESSAGE, message)
+        putExtra(ServerLoginActivity.EXTRA_SERVER, serverBase)
+        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+      },
+    )
+    finish()
+  }
+
+  @Deprecated("Deprecated in Java")
+  override fun onBackPressed() {
+    if (::webView.isInitialized && webView.canGoBack()) webView.goBack() else super.onBackPressed()
+  }
+
+  private fun dp(value: Int): Int =
+    (value * resources.displayMetrics.density + 0.5f).toInt()
 
   private fun createNotificationChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -97,18 +241,6 @@ class MainActivity : Activity() {
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
-    if (requestCode == PINTEREST_SCAN_REQUEST) {
-      val raw = data?.getStringExtra(PinterestScanActivity.EXTRA_RESULT)
-        ?: data?.getStringExtra(SocialScanActivity.EXTRA_RESULT)
-        ?: JSONObject().put("ok", false).put("message", "Social scan returned no result.").toString()
-      val platform = runCatching { JSONObject(raw).optString("platform").lowercase() }.getOrDefault("")
-      if (platform == "facebook" || platform == "reddit") {
-        webView.evaluateJavascript("window.__socialScanResult(${JSONObject.quote(raw)})", null)
-      } else {
-        webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
-      }
-      return
-    }
     if (requestCode != FILE_PICKER_REQUEST) return
     val callback = fileCallback ?: return
     fileCallback = null
