@@ -108,12 +108,14 @@ test('a JSON export containing __Host-, expired and third-party cookies still yi
   assert.equal(parsed.filter(belongs).length, 3);
 });
 
-test('isAuthenticated enforces the real platform markers', () => {
-  // Pinterest keeps _pinterest_sess for guests: _auth=1 is the real marker.
-  assert.equal(sessions.isAuthenticated('pinterest', [{ name: '_pinterest_sess', value: 'guest' }]), false);
-  assert.equal(sessions.isAuthenticated('pinterest', [{ name: '_pinterest_sess', value: 'x' }, { name: '_auth', value: '0' }]), false);
-  assert.equal(sessions.isAuthenticated('pinterest', [{ name: '_pinterest_sess', value: 'x' }, { name: '_auth', value: '1' }]), true);
-  // Facebook needs both identity cookies.
-  assert.equal(sessions.isAuthenticated('facebook', [{ name: 'c_user', value: '42' }]), false);
-  assert.equal(sessions.isAuthenticated('facebook', [{ name: 'c_user', value: '42' }, { name: 'xs', value: 'tok' }]), true);
-});
+test('hasSessionCookies uses the same lenient presence rule the working login used', () => {
+  // Pinterest: a stored profile carries _pinterest_sess only after a real
+  // login; the optional _auth cookie must not be required.
+  assert.equal(sessions.hasSessionCookies('pinterest', [{ name: '_pinterest_sess', value: 'guest' }]), true);
+  assert.equal(sessions.hasSessionCookies('pinterest', [{ name: '_pinterest_sess', value: 'x' }, { name: '_auth', value: '1' }]), true);
+  assert.equal(sessions.hasSessionCookies('pinterest', [{ name: 'csrftoken', value: 't' }]), false);
+  // Facebook: c_user or xs marks the session
+  assert.equal(sessions.hasSessionCookies('facebook', [{ name: 'c_user', value: '42' }]), true);
+  assert.equal(sessions.hasSessionCookies('facebook', [{ name: 'xs', value: 'tok' }]), true);
+  assert.equal(sessions.hasSessionCookies('facebook', [{ name: 'datr', value: 'x' }]), false);
+});;

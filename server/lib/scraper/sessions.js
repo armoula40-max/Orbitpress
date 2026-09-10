@@ -22,7 +22,6 @@ const PLATFORMS = {
   facebook: {
     loginUrl: 'https://www.facebook.com/login',
     sessionCookies: ['c_user', 'xs'],
-    authCookies: { c_user: null, xs: null },
     homeUrl: 'https://www.facebook.com/',
     usernameCandidates: ['input[name="email"]', '#email'],
     passwordCandidates: ['input[name="pass"]', '#pass'],
@@ -30,88 +29,13 @@ const PLATFORMS = {
   },
   pinterest: {
     loginUrl: 'https://www.pinterest.com/login/',
-    // NOTE: Pinterest keeps `_pinterest_sess` present even after logout, and
-    // some valid sessions never receive `_auth=1`. These cookie markers are a
-    // fast hint only — liveAuthenticated() verifies Pinterest sessions
-    // functionally via the UserResource/get XHR (see pinterestLoggedIn()).
-    sessionCookies: ['_pinterest_sess', '_auth'],
-    authCookies: { _auth: '1' },
+    sessionCookies: ['_pinterest_sess'],
     homeUrl: 'https://www.pinterest.com/',
     usernameCandidates: ['input[name="id"]', 'input#email', 'input[type="email"]'],
     passwordCandidates: ['input[name="password"]', 'input#password', 'input[type="password"]'],
     submitCandidates: ['button[type="submit"]', '[data-test-id="registerFormSubmitButton"] button', 'form button.LLM'],
   },
 };
-
-/**
- * Presence alone is not enough: for Pinterest `_auth` must equal "1".
- * `authCookies: { name: expectedValue }` — null/undefined means "must exist".
- * NOTE: cookie markers are only a fast hint for Pinterest — some accounts
- * never receive `_auth` while being fully logged in (regional/rollout
- * differences). The authoritative check is liveAuthenticated(), which calls
- * UserResource/get the way the site itself does.
- */
-function isAuthenticated(platform, cookies) {
-  const config = PLATFORMS[platform];
-  if (!config) return false;
-  const byName = new Map((cookies || []).map((cookie) => [cookie.name, cookie.value]));
-  const required = config.authCookies || {};
-  for (const [name, expected] of Object.entries(required)) {
-    const value = byName.get(name);
-    if (!value) return false;
-    if (expected != null && value !== String(expected)) return false;
-  }
-  return config.sessionCookies.some((name) => !!byName.get(name));
-}
-
-/**
- * Authoritative, functional session check, executed inside the signed-in
- * browser so every fingerprint/header matches the site's own XHR:
- *  - Facebook: c_user + xs cookies remain the reliable markers
- *  - Pinterest: GET /resource/UserResource/get/ (field_set_key=auth) returns
- *    the username when logged in; guests get code 2 "Authentication failed".
- * The page must currently be on a pinterest.com origin.
- */
-async function pinterestLoggedIn(page) {
-  try {
-    if (!/^https:\/\/[^/]*pinterest\.com\//.test(page.url())) return false;
-    return await page.evaluate(async () => {
-      try {
-        const q = `source_url=${encodeURIComponent('/')}&data=${encodeURIComponent(JSON.stringify({ options: { isPrefetch: false, field_set_key: 'auth' }, context: {} }))}`;
-        const r = await fetch(`/resource/UserResource/get/?${q}`, {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            Accept: 'application/json, text/javascript, */*; q=0.01',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-Pinterest-AppState': 'active',
-            'X-Pinterest-PWS-Handler': 'www/[username].js',
-          },
-        });
-        if (!r.ok) return false;
-        const j = await r.json();
-        if (Number(j.code) === 1 || Number(j.code) === 2 || String(j.status) === 'failure') return false;
-        const data = j && j.resource_response && j.resource_response.data;
-        return !!(data && (data.username || data.id));
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return false;
-  }
-}
-
-async function liveAuthenticated(platform, page) {
-  if (platform === 'pinterest') return pinterestLoggedIn(page);
-  return isAuthenticated(platform, await page.context().cookies());
-}
-
-const CODE_INPUT_SELECTORS = [
-  'input[name="approvals_code"]', '#approvals_code',
-  'input[autocomplete="one-time-code"]', 'input[name="code"]', 'input#code',
-  'input[inputmode="numeric"]', 'input[name="captcha_response"]',
-];
 
 const liveContexts = new Map();
 
@@ -204,58 +128,12 @@ async function getContext(platform, { headless = true } = {}) {
     viewport: { width: 1280, height: 900 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     locale: 'en-US',
-    colorScheme: 'light',
     ignoreHTTPSErrors: false,
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage',
-      '--no-sandbox',
-      '--disable-features=IsolateOrigins,site-per-process,AutomationControlled',
-    ],
-  });
-  // Basic anti-fingerprinting: Pinterest/Facebook challenge datacenter IPs
-  // harder when the navigator looks like a normal Chrome.
-  await context.addInitScript(() => {
-    try {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5].map((i) => ({ name: `Plugin ${i}`, filename: `plugin${i}.dll`, description: '' })),
-      });
-      window.chrome = window.chrome || { runtime: {} };
-    } catch { /* page may be cross-origin */ }
+    args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--no-sandbox'],
   });
   liveContexts.set(key, context);
   context.on('close', () => liveContexts.delete(key));
   return context;
-}
-
-/**
- * CAPTCHA detection that cannot false-positive on Pinterest's login page:
- * that page always EMBEDS the reCAPTCHA Enterprise script/config in its HTML,
- * so grepping raw markup for "captcha" reports a challenge that is not shown.
- * A real wall has a visible widget or visible human-check text.
- */
-async function showsVisibleCaptcha(page) {
-  const selectors = [
-    'iframe[src*="recaptcha"]', 'iframe[src*="captcha"]', 'iframe[title*="captcha" i]',
-    '#g-recaptcha', '.g-recaptcha', '.recaptcha-checkbox',
-    '[data-testid*="captcha" i]', '[data-test-id*="captcha" i]',
-    '#px-captcha', '.px-captcha',
-  ];
-  for (const selector of selectors) {
-    try {
-      const handle = await page.$(selector);
-      if (handle && await handle.isVisible().catch(() => false)) return true;
-    } catch { /* page navigating */ }
-  }
-  try {
-    const text = await page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
-    if (/verify you('?re| are) human|confirm you('?re| are) human|unusual activity|security check|تحقق من أنك إنسان|نشاط غير معتاد/i.test(String(text))) {
-      return true;
-    }
-  } catch { /* page navigating */ }
-  return false;
 }
 
 async function closeAllContexts() {
@@ -267,8 +145,6 @@ async function closeAllContexts() {
  * Attempt a platform login through the server browser and persist the session.
  * Returns { connected, label } or throws with a clear, user-facing message.
  */
-const CAPTCHA_GUIDANCE = 'عرضت المنصة اختبار تحقق بشري (CAPTCHA) على متصفح السيرفر، وهو شائع مع عناوين IP الخاصة بالخوادم ولا يمكن حله آلياً. الحل الأسهل: سجّل دخول حسابك في متصفحك العادي، ثم صدّر الكوكيز بإضافة «Cookie-Editor» (زر Export على صفحة المنصة) والصقها في حقل «استيراد الكوكيز» داخل هذه البطاقة — ستتصل الجلسة فوراً بلا CAPTCHA. أو انتظر بضع دقائق وأعد المحاولة.';
-
 async function login(platform, credentials) {
   const config = platformConfig(platform);
   const username = String(credentials && credentials.username || '').trim();
@@ -277,41 +153,70 @@ async function login(platform, credentials) {
   const context = await getContext(platform);
   const page = await context.newPage();
   try {
-    // One full attempt, plus a single fresh retry if a VISIBLE captcha blocks
-    // the first one (datacenter IPs get challenged intermittently; the second
-    // clean navigation often goes through).
-    let outcome = await runLoginAttempt(platform, page, config, username, password);
-    if (!outcome.authenticated && outcome.captcha) {
-      await page.waitForTimeout(3000);
-      outcome = await runLoginAttempt(platform, page, config, username, password, true);
+    await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(2500);
+    await dismissConsentWalls(page);
+    await page.waitForTimeout(500);
+
+    const userInput = await findFirst(page, [
+      ...config.usernameCandidates,
+      'input[name="email"]', 'input#email', 'input[type="email"]', 'input[autocomplete="username"]',
+    ]);
+    const passInput = await findFirst(page, [
+      ...config.passwordCandidates,
+      'input[name="pass"]', 'input[type="password"]', 'input[autocomplete="current-password"]',
+    ]);
+    if (!userInput || !passInput) {
+      await saveLoginDebug(platform, page, 'form-not-found');
+      throw new Error('The login form could not be found on the served page (the platform shows a different layout to this server). A debug screenshot+HTML snapshot was saved on the server under data/debug/ — send it for analysis, or try again in a minute.');
     }
-    if (outcome.authenticated) {
+    await userInput.fill(username);
+    await passInput.fill(password);
+    await dismissConsentWalls(page);
+
+    // Submit: dedicated button first, Enter as the universal fallback.
+    let submitted = false;
+    for (const selector of [...config.submitCandidates, 'button[name="login"]', '#loginbutton', 'button[type="submit"]']) {
+      try {
+        const button = await page.waitForSelector(selector, { timeout: 4000, state: 'visible' });
+        if (button) { await button.click({ timeout: 5000 }); submitted = true; break; }
+      } catch { /* try next candidate */ }
+    }
+    if (!submitted) {
+      await passInput.press('Enter');
+    }
+    await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(6000);
+
+    const currentUrl = page.url();
+    const pageHtml = await page.content();
+    const cookiesNow = await context.cookies();
+    const hasSession = config.sessionCookies.some((name) => cookiesNow.some((cookie) => cookie.name === name && cookie.value));
+    if (hasSession) {
       return finishLogin(platform, context, username);
     }
-    if (outcome.challenge) {
-      const { challenge, codeInput } = outcome;
+
+    // Verification challenge? Keep the page alive and hand the user control.
+    const codeInput = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"], input[name="captcha_response"]');
+    const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two_step|login\/cookie/i.test(currentUrl) || !!codeInput;
+    if (!hasSession && isCheckpoint) {
+      const challenge = codeInput ? 'code' : 'device_approval';
       rememberPending(platform, page, context, challenge);
-      void codeInput;
       await saveLoginDebug(platform, page, `verification-${challenge}`);
       return {
         ...sessionStatus(platform),
         status: 'verification_required',
         challenge,
-        challengeHint: challengeHint(platform, challenge),
+        challengeHint: challenge === 'code'
+          ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في البطاقة هنا.'
+          : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك (إشعار "هل كنت أنت؟")، ثم اضغط زر التحقق هنا.',
       };
     }
-    if (outcome.captcha) {
+    if (/captcha|recaptcha/i.test(pageHtml.slice(0, 6000))) {
       await saveLoginDebug(platform, page, 'captcha');
-      throw new Error(CAPTCHA_GUIDANCE);
-    }
-    if (outcome.formMissing) {
-      await saveLoginDebug(platform, page, 'form-not-found');
-      throw new Error('تعذّر العثور على نموذج الدخول في الصفحة التي عرضها الخادم (المنصة تُظهر تصميماً مختلفاً أو جدار تحقق). إن تكرر الأمر، استورد الكوكيز من متصفحك عبر حقل «استيراد الكوكيز» في البطاقة. حُفظت لقطة تشخيص في data/debug/.');
+      throw new Error('المنصة عرضت CAPTCHA لا يمكن للسيرفر حلّها. سجّل دخول نفس الحساب من متصفحك العادي أكمل التحقق ثم أعد المحاولة.');
     }
     await saveLoginDebug(platform, page, 'no-session-cookie');
-    if (platform === 'pinterest') {
-      throw new Error('لم يؤكّد Pinterest الدخول وظيفياً (استدعاء بيانات الحساب لم يتعرف على مستخدم مسجّل). تحقق من البريد وكلمة المرور، وإن كان حسابك يسجّل الدخول عبر Google/Facebook فأضف كلمة مرور لحساب Pinterest من إعدادات الحساب ثم أعد المحاولة. أو استورد الكوكيز من متصفحك عبر حقل الاستيراد بالبطاقة إن ظهر CAPTCHA. حُفظت لقطة تشخيص في data/debug/.');
-    }
     throw new Error('لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة). حُفظت لقطة تشخيص في data/debug/ على السيرفر.');
   } catch (error) {
     if (!/data\/debug\//.test(String(error.message))) {
@@ -323,83 +228,6 @@ async function login(platform, credentials) {
       await page.close().catch(() => {});
     }
   }
-}
-
-/**
- * One login-page round trip: load, fill, submit, poll for the real auth
- * markers. Returns a structured outcome so login() can retry once.
- */
-async function runLoginAttempt(platform, page, config, username, password, isRetry = false) {
-  const context = page.context();
-  await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(isRetry ? 4000 : 2500);
-  await dismissConsentWalls(page);
-  await page.waitForTimeout(500);
-
-  const userInput = await findFirst(page, [
-    ...config.usernameCandidates,
-    'input[name="email"]', 'input#email', 'input[type="email"]', 'input[autocomplete="username"]',
-  ]);
-  const passInput = await findFirst(page, [
-    ...config.passwordCandidates,
-    'input[name="pass"]', 'input[type="password"]', 'input[autocomplete="current-password"]',
-  ]);
-  if (!userInput || !passInput) {
-    if (await showsVisibleCaptcha(page)) return { authenticated: false, captcha: true };
-    return { authenticated: false, formMissing: true };
-  }
-  await userInput.fill(username);
-  await passInput.fill(password);
-  await dismissConsentWalls(page);
-
-  // Submit: dedicated button first, Enter as the universal fallback.
-  let submitted = false;
-  for (const selector of [...config.submitCandidates, 'button[name="login"]', '#loginbutton', 'button[type="submit"]']) {
-    try {
-      const button = await page.waitForSelector(selector, { timeout: 4000, state: 'visible' });
-      if (button) { await button.click({ timeout: 5000 }); submitted = true; break; }
-    } catch { /* try next candidate */ }
-  }
-  if (!submitted) {
-    await passInput.press('Enter');
-  }
-  await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-
-  // Real auth takes a few redirects to land. Poll with the FUNCTIONAL check
-  // (the site's own UserResource XHR) instead of trusting cookie names —
-  // Pinterest keeps `_pinterest_sess` for guests and some real sessions never
-  // carry `_auth=1`.
-  let captcha = false;
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    await page.waitForTimeout(2500);
-    if (await liveAuthenticated(platform, page)) {
-      // Load home once so the full cookie set (csrftoken, routing…) is present
-      // before the publisher sends its first request.
-      await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2000);
-      return { authenticated: true };
-    }
-    const codeInput = await page.$(CODE_INPUT_SELECTORS.join(','));
-    if (codeInput && await codeInput.isVisible().catch(() => false)) {
-      return { authenticated: false, challenge: codeInput ? 'code' : 'device_approval', codeInput };
-    }
-    if (await showsVisibleCaptcha(page)) captcha = true;
-    // Some flows finish over XHR and stay on the login URL; a gentle nudge to
-    // home reveals whether the session is live. Skip while a code box is on
-    // screen — that is a challenge the user has to finish.
-    if (attempt === 5 && !(await page.$(CODE_INPUT_SELECTORS.join(',')))) {
-      await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    }
-  }
-
-  const currentUrl = page.url();
-  const codeInput = await page.$(CODE_INPUT_SELECTORS.join(','));
-  const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two[_-]?step|verification|verify|security-check|login\/cookie/i.test(currentUrl) || !!(codeInput && await codeInput.isVisible().catch(() => false));
-  if (isCheckpoint) {
-    return { authenticated: false, challenge: codeInput ? 'code' : 'device_approval', codeInput };
-  }
-  if (captcha || await showsVisibleCaptcha(page)) return { authenticated: false, captcha: true };
-  return { authenticated: false };
 }
 
 const CONSENT_SELECTORS = [
@@ -463,17 +291,6 @@ async function captureDebug(platform, page, tag) {
   return saveLoginDebug(platform, page, `scan-${tag}`);
 }
 
-function challengeHint(platform, challenge) {
-  if (platform === 'pinterest') {
-    return challenge === 'code'
-      ? 'أدخل رمز التحقق الذي أرسله Pinterest إلى بريدك الإلكتروني (أو تطبيق المصادقة) في الحقل أدناه.'
-      : 'أكّد محاولة الدخول من بريدك أو تطبيق Pinterest، ثم اضغط زر التحقق أدناه.';
-  }
-  return challenge === 'code'
-    ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في البطاقة هنا.'
-    : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك (إشعار "هل كنت أنت؟")، ثم اضغط زر التحقق هنا.';
-}
-
 function normalizeLoginError(error) {
   const message = String(error && error.message || 'Login failed.');
   if (/Timeout.*exceeded/i.test(message)) {
@@ -507,278 +324,44 @@ async function submitVerification(platform, code) {
     throw new Error('لا توجد محاولة تحقق نشطة (انتهت مهلة 10 دقائق أو بدأت محاولة جديدة). أعد تسجيل الدخول من البداية.');
   }
   const config = platformConfig(platform);
-  void config;
   const { page, context } = pending;
   pending.createdAt = Date.now(); // activity extends the window
 
   if (pending.challenge === 'code') {
     const cleanCode = String(code || '').replace(/\s+/g, '');
     if (!cleanCode) throw new Error('أدخل رمز التحقق أولاً.');
-    const codeField = await findFirst(page, CODE_INPUT_SELECTORS);
+    const codeField = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"]');
     if (!codeField) throw new Error('حقل الرمز لم يعد ظاهراً في الصفحة — أعد تسجيل الدخول.');
     await codeField.fill(cleanCode);
-    const submit = await page.$('#checkpointSubmitButton')
-      || await page.$('button[type="submit"]:not([disabled])')
-      || await page.$('form button[type="submit"]');
-    if (submit) await submit.click({ timeout: 5000 }).catch(() => {});
+    const submit = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"]');
+    if (submit) await submit.click().catch(() => {});
     else await codeField.press('Enter');
   } else {
-    // device approval: user pushed "Approve" in their phone app; continue the flow
-    const continueButton = await page.$('#checkpointSubmitButton')
-      || await page.$('button[type="submit"][name="submit[Continue]"]')
-      || await page.$('button[type="submit"]:not([disabled])');
-    if (continueButton) await continueButton.click({ timeout: 5000 }).catch(() => {});
+    // device approval: user pushed "Approve" in their Facebook app; continue the flow
+    const continueButton = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"][name="submit[Continue]"]') || await page.$('button');
+    if (continueButton) await continueButton.click().catch(() => {});
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   }
   await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(5000);
 
-  // The platform can take a few redirects to mint the session; poll with the
-  // functional check (UserResource XHR) — cookie names are not reliable proof.
-  let authenticated = false;
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    await page.waitForTimeout(2500);
-    if (await liveAuthenticated(platform, page)) { authenticated = true; break; }
-    if (attempt === 6) await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-  }
-  if (authenticated) return finishLogin(platform, context, '');
+  const cookies = await context.cookies();
+  const hasSession = config.sessionCookies.some((name) => cookies.some((cookie) => cookie.name === name && cookie.value));
+  if (hasSession) return finishLogin(platform, context, '');
 
   const url = page.url();
   const html = await page.content();
   // Still on a code page? Probably a wrong code.
-  if (pending.challenge === 'code' && /approvals_code|checkpoint|two[_-]?factor|two[_-]?step|verification|verify/i.test(url + html.slice(0, 3000))) {
-    throw new Error(platform === 'pinterest'
-      ? 'الرمز لم يقبله Pinterest — تأكد أنه الأحدث الذي وصلك بالبريد أو تطبيق المصادقة وأعد المحاولة.'
-      : 'الرمز لم يُقبل — تأكد أنه الأحدث من تطبيق المصادقة/الرسائل وأعد المحاولة.');
+  if (pending.challenge === 'code' && /approvals_code|checkpoint|two[_-]?step/i.test(url + html.slice(0, 3000))) {
+    throw new Error('الرمز لم يُقبل — تأكد أنه الأحدث من تطبيق المصادقة/الرسائل وأعد المحاولة.');
   }
-  const freshCodeInput = await page.$(CODE_INPUT_SELECTORS.join(','));
+  const freshCodeInput = await page.$('input[name="approvals_code"], #approvals_code');
   if (freshCodeInput) {
     pending.challenge = 'code';
     throw new Error('التحقق لم يكتمل بعد — أُظهر حقل رمز جديد؛ أدخله وأعد المحاولة.');
   }
   await saveLoginDebug(platform, page, 'verification-stuck');
   throw new Error('لم تتأكد الجلسة بعد. إن وافقتَ على الدخول من هاتفك بالفعل، انتظر ثواني وأعد الضغط؛ وإلا أعد تسجيل الدخول من البداية.');
-}
-
-/**
- * Re-validate a stored profile against the live site with the FUNCTIONAL
- * session check and update its connected flag. This is how the Settings card
- * can correct a stale label in either direction — a guest jar that pretended
- * to be connected, or (as happens on some Pinterest accounts) a perfectly
- * valid session that never carries `_auth=1`. Network hiccups are retried so
- * a transient failure does not downgrade a good session.
- */
-async function verifyConnected(platform) {
-  platformConfig(platform);
-  if (!fs.existsSync(profileDir(platform))) {
-    return sessionStatus(platform);
-  }
-  const context = await getContext(platform);
-  const page = await context.newPage();
-  try {
-    await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await dismissConsentWalls(page);
-    let ok = false;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await page.waitForTimeout(attempt === 0 ? 3500 : 2500);
-      if (await liveAuthenticated(platform, page)) { ok = true; break; }
-      if (attempt < 2) {
-        await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-        await dismissConsentWalls(page);
-      }
-    }
-    const cookies = await context.cookies();
-    const meta = metaStore();
-    const entry = meta.platforms[platform] || {};
-    entry.connected = ok;
-    entry.lastVerifiedAt = new Date().toISOString();
-    if (ok) {
-      entry.lastLoginAt = entry.lastLoginAt || entry.lastVerifiedAt;
-      entry.label = labelFromCookies(platform, cookies) || entry.label || platform;
-    }
-    meta.platforms[platform] = entry;
-    saveNamedStore('sessions-meta', meta);
-    return sessionStatus(platform);
-  } finally {
-    await page.close().catch(() => {});
-  }
-}
-
-// --- cookie import: bypass server-browser CAPTCHA with the user's own ------
-// logged-in browser session. Cookies never leave this server: they are seeded
-// straight into the same persistent Playwright profile the scanner uses.
-
-function normalizeSameSite(value) {
-  const v = String(value || '').toLowerCase();
-  if (v.includes('none') || v.includes('no_restriction')) return 'None';
-  if (v.includes('strict')) return 'Strict';
-  if (v.includes('lax')) return 'Lax';
-  return 'Lax';
-}
-
-function platformCookieRoots(platform) {
-  if (platform === 'pinterest') return { rootDomain: '.pinterest.com', rootUrl: 'https://www.pinterest.com/' };
-  return { rootDomain: '.facebook.com', rootUrl: 'https://www.facebook.com/' };
-}
-
-/**
- * Turn one parsed cookie into the exact shape Playwright/CDP accepts. CDP
- * Storage.setCookies rejects the WHOLE batch with "Invalid cookie fields" on
- * a single bad entry, so every rule is enforced here:
- *  - domain must look like a domain (fallback to the platform root);
- *  - path must start with "/" (fallback "/");
- *  - sameSite None forces secure;
- *  - expires must be a future unix second or omitted (session cookie);
- *  - "__Host-" prefixed cookies forbid a Domain attribute and require path
- *    "/" + secure, so they are expressed via `url` instead of `domain`;
- *  - "__Secure-" prefixed cookies require secure.
- * Returns null for entries that cannot be salvaged.
- */
-function normalizePlaywrightCookie(cookie, platform) {
-  if (!cookie || !cookie.name || cookie.value === undefined || cookie.value === null) return null;
-  const name = String(cookie.name).trim();
-  if (!name || /[\s;=]/.test(name)) return null;
-  const { rootDomain, rootUrl } = platformCookieRoots(platform);
-  const rawDomain = String(cookie.domain || '').trim().toLowerCase();
-  const domain = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(rawDomain) ? rawDomain : rootDomain;
-  const path = /^\//.test(String(cookie.path || '')) ? String(cookie.path) : '/';
-  let secure = cookie.secure !== false;
-  const sameSite = ['Strict', 'Lax', 'None'].includes(cookie.sameSite)
-    ? cookie.sameSite
-    : normalizeSameSite(cookie.sameSite);
-  if (/^__secure-/i.test(name)) secure = true;
-  const hostPrefix = /^__host-/i.test(name);
-  if (hostPrefix) secure = true;
-  if (sameSite === 'None') secure = true;
-
-  const entry = {
-    name,
-    value: String(cookie.value),
-    path: hostPrefix ? '/' : path,
-    httpOnly: !!cookie.httpOnly,
-    secure,
-    sameSite,
-  };
-  if (hostPrefix) {
-    // __Host- cookies must be host-only: pass an origin URL, never a domain.
-    entry.url = rootUrl;
-    delete entry.path;
-  } else {
-    entry.domain = domain;
-  }
-  const expires = Number(cookie.expires != null ? cookie.expires : cookie.expirationDate);
-  if (Number.isFinite(expires)) {
-    const when = Math.floor(expires);
-    if (when > Math.floor(Date.now() / 1000)) entry.expires = when;
-    // past/zero/negative expiry → leave it as a session cookie
-  }
-  return entry;
-}
-
-/**
- * Parse pasted cookies in three common shapes into Playwright addCookies()
- * entries:
- *   1. Cookie-Editor extension JSON export (array or { cookies: [...] })
- *   2. Netscape cookies.txt (tab separated, #HttpOnly_ tolerated)
- *   3. A raw "Cookie:" header line (name=value; name2=value2)
- */
-function parseCookieImport(platform, raw) {
-  const text = String(raw || '').trim();
-  if (!text) throw new Error('الصق الكوكيز أولاً.');
-  const { rootDomain } = platformCookieRoots(platform);
-  const out = [];
-  const push = (cookie) => {
-    const entry = normalizePlaywrightCookie(cookie, platform);
-    if (entry) out.push(entry);
-  };
-
-  if (text[0] === '[' || text[0] === '{') {
-    let parsed;
-    try { parsed = JSON.parse(text); } catch { throw new Error('نص JSON غير صالح. صدّر الكوكيز مجدداً من إضافة Cookie-Editor (زر Export).'); }
-    const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.cookies) ? parsed.cookies : []);
-    if (!list.length) throw new Error('ملف JSON لا يحتوي كوكيز.');
-    for (const c of list) push(c);
-  } else if (/\t/.test(text) && /(?:^|\n)(?:#HttpOnly_)?\.?[a-z0-9.-]+\.[a-z]{2,}\t/i.test(text)) {
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.trim() || line.trim().startsWith('#') && !line.startsWith('#HttpOnly_')) continue;
-      const parts = line.replace(/^#HttpOnly_/, '').split('\t');
-      if (parts.length < 7) continue;
-      const [domain, , cookiePath, secure, expiration, name, ...valueParts] = parts;
-      push({
-        name, value: valueParts.join('\t'), domain, path: cookiePath || '/',
-        secure: /^true$/i.test(secure.trim()), expires: Number(expiration),
-        httpOnly: line.startsWith('#HttpOnly_'), sameSite: 'Lax',
-      });
-    }
-  } else {
-    for (const part of text.split(';')) {
-      const idx = part.indexOf('=');
-      if (idx <= 0) continue;
-      const name = part.slice(0, idx).trim();
-      const value = part.slice(idx + 1).trim();
-      if (!name) continue;
-      push({ name, value, domain: rootDomain, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
-    }
-  }
-
-  if (!out.length) {
-    throw new Error('لم أتعرف على أي كوكيز في النص الملصوق. استخدم زر Export في Cookie-Editor أو الصق سطر Cookie كاملاً.');
-  }
-  return out;
-}
-
-/**
- * Seed the persistent profile with cookies copied from the user's own
- * browser, then prove against the live site that they form a real login.
- */
-async function importCookies(platform, raw) {
-  platformConfig(platform);
-  const cookies = parseCookieImport(platform, raw);
-  const config = PLATFORMS[platform];
-  const context = await getContext(platform);
-  const page = await context.newPage();
-  try {
-    // Establish the origin before adding domain cookies.
-    await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-    await context.clearCookies().catch(() => {});
-    const suffix = platform === 'pinterest' ? 'pinterest.' : 'facebook.';
-    const belongs = (c) => (c.url && c.url.includes(suffix)) || (c.domain && c.domain.includes(suffix));
-    const valid = cookies.filter(belongs);
-    if (!valid.length) {
-      throw new Error('لا توجد كوكيز تخص المنصة في النص الملصوق. تأكد أنك صدّرت الكوكيز من صفحة المنصة نفسها (وليس من موقع آخر).');
-    }
-    // CDP rejects the entire batch on one malformed entry: seed each cookie
-    // individually and keep going, naming the ones that fail.
-    const failures = [];
-    let imported = 0;
-    for (const cookie of valid) {
-      try {
-        await context.addCookies([cookie]);
-        imported += 1;
-      } catch (error) {
-        failures.push(`${cookie.name}: ${String(error && error.message || error).slice(0, 120)}`);
-      }
-    }
-    if (!imported) {
-      throw new Error(`رفض متصفح السيرفر كل الكوكيز (${cookies.length}) — سبب أول رفض: ${failures[0] || 'Invalid cookie fields'}. أعد التصدير من Cookie-Editor بصيغة JSON وأنت على صفحة المنصة.`);
-    }
-
-    let authenticated = false;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(2500);
-      if (await liveAuthenticated(platform, page)) { authenticated = true; break; }
-    }
-    if (!authenticated) {
-      await saveLoginDebug(platform, page, 'cookie-import-unauth');
-      if (platform === 'pinterest') {
-        throw new Error('الكوكيز المستوردة لا تُمثّل جلسة دخول (استدعاء بيانات المستخدم رُفض). افتح pinterest.com في متصفحك وتأكد أنك داخل حسابك فعلاً وترى صفحتك الرئيسية، ثم اضغط Export في Cookie-Editor من جديد والصق النص فوراً (لا تُسجّل الخروج بعد النسخ).');
-      }
-      throw new Error('الكوكيز المستوردة لا تُمثّل جلسة دخول. كرّر التصدير وأنت مسجّل الدخول فعلاً على صفحة المنصة.');
-    }
-    return finishLogin(platform, context, '');
-  } finally {
-    await page.close().catch(() => {});
-  }
 }
 
 function verificationState(platform) {
@@ -841,6 +424,208 @@ async function logout(platform) {
   return { ok: true };
 }
 
+/**
+ * The same success rule login() uses: a session cookie is present in the jar.
+ * This is deliberately lenient — Pinterest keeps `_pinterest_sess` for guests,
+ * but a stored persistent profile only contains it after a real login, and
+ * stricter name-based checks (_auth=1) wrongly downgraded valid sessions whose
+ * accounts never receive that cookie.
+ */
+function hasSessionCookies(platform, cookies) {
+  const config = PLATFORMS[platform];
+  if (!config) return false;
+  const names = new Set((cookies || []).map((cookie) => cookie.name));
+  return config.sessionCookies.some((name) => names.has(name));
+}
+
+// --- cookie import: bypass server-browser CAPTCHA with the user's own ------
+// logged-in browser session. Cookies never leave this server: they are seeded
+// straight into the same persistent Playwright profile the scanner uses.
+
+function normalizeSameSite(value) {
+  const v = String(value || '').toLowerCase();
+  if (v.includes('none') || v.includes('no_restriction')) return 'None';
+  if (v.includes('strict')) return 'Strict';
+  if (v.includes('lax')) return 'Lax';
+  return 'Lax';
+}
+
+function platformCookieRoots(platform) {
+  if (platform === 'pinterest') return { rootDomain: '.pinterest.com', rootUrl: 'https://www.pinterest.com/' };
+  return { rootDomain: '.facebook.com', rootUrl: 'https://www.facebook.com/' };
+}
+
+/**
+ * Turn one parsed cookie into the shape Playwright/CDP accepts. CDP
+ * Storage.setCookies rejects the WHOLE batch ("Invalid cookie fields") on one
+ * bad entry, so every rule is enforced here (see the import loop below).
+ */
+function normalizePlaywrightCookie(cookie, platform) {
+  if (!cookie || !cookie.name || cookie.value === undefined || cookie.value === null) return null;
+  const name = String(cookie.name).trim();
+  if (!name || /[\s;=]/.test(name)) return null;
+  const { rootDomain, rootUrl } = platformCookieRoots(platform);
+  const rawDomain = String(cookie.domain || '').trim().toLowerCase();
+  const domain = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(rawDomain) ? rawDomain : rootDomain;
+  const path = /^\//.test(String(cookie.path || '')) ? String(cookie.path) : '/';
+  let secure = cookie.secure !== false;
+  const sameSite = ['Strict', 'Lax', 'None'].includes(cookie.sameSite)
+    ? cookie.sameSite
+    : normalizeSameSite(cookie.sameSite);
+  const hostPrefix = /^__host-/i.test(name);
+  if (/^__secure-/i.test(name) || hostPrefix || sameSite === 'None') secure = true;
+
+  const entry = { name, value: String(cookie.value), httpOnly: !!cookie.httpOnly, secure, sameSite };
+  if (hostPrefix) {
+    // __Host- cookies forbid a Domain attribute: bind them to the origin URL.
+    entry.url = rootUrl;
+  } else {
+    entry.domain = domain;
+    entry.path = path;
+  }
+  const expires = Number(cookie.expires != null ? cookie.expires : cookie.expirationDate);
+  if (Number.isFinite(expires) && Math.floor(expires) > Math.floor(Date.now() / 1000)) {
+    entry.expires = Math.floor(expires); // past/zero expiry → session cookie
+  }
+  return entry;
+}
+
+/**
+ * Parse pasted cookies into Playwright addCookies() entries. Accepted shapes:
+ *   1. Cookie-Editor extension JSON export (array or { cookies: [...] })
+ *   2. Netscape cookies.txt (tab separated, #HttpOnly_ tolerated)
+ *   3. A raw "Cookie:" header line (name=value; name2=value2)
+ */
+function parseCookieImport(platform, raw) {
+  const text = String(raw || '').trim();
+  if (!text) throw new Error('الصق الكوكيز أولاً.');
+  const { rootDomain } = platformCookieRoots(platform);
+  const out = [];
+  const push = (cookie) => {
+    const entry = normalizePlaywrightCookie(cookie, platform);
+    if (entry) out.push(entry);
+  };
+
+  if (text[0] === '[' || text[0] === '{') {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { throw new Error('نص JSON غير صالح. صدّر الكوكيز مجدداً من إضافة Cookie-Editor (زر Export).'); }
+    const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.cookies) ? parsed.cookies : []);
+    if (!list.length) throw new Error('ملف JSON لا يحتوي كوكيز.');
+    for (const c of list) push(c);
+  } else if (/\t/.test(text) && /(?:^|\n)(?:#HttpOnly_)?\.?[a-z0-9.-]+\.[a-z]{2,}\t/i.test(text)) {
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim() || (line.trim().startsWith('#') && !line.startsWith('#HttpOnly_'))) continue;
+      const parts = line.replace(/^#HttpOnly_/, '').split('\t');
+      if (parts.length < 7) continue;
+      const [domain, , cookiePath, secure, expiration, name, ...valueParts] = parts;
+      push({
+        name, value: valueParts.join('\t'), domain, path: cookiePath || '/',
+        secure: /^true$/i.test(secure.trim()), expires: Number(expiration),
+        httpOnly: line.startsWith('#HttpOnly_'), sameSite: 'Lax',
+      });
+    }
+  } else {
+    for (const part of text.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx <= 0) continue;
+      const name = part.slice(0, idx).trim();
+      const value = part.slice(idx + 1).trim();
+      if (name) push({ name, value, domain: rootDomain, path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
+    }
+  }
+
+  if (!out.length) {
+    throw new Error('لم أتعرف على أي كوكيز في النص الملصوق. استخدم زر Export في Cookie-Editor أو الصق سطر Cookie كاملاً.');
+  }
+  return out;
+}
+
+/**
+ * Seed the persistent profile with cookies copied from the user's browser and
+ * accept them using the SAME presence rule a successful interactive login
+ * uses (this profile only carries the platform session cookie after a real
+ * login). Cookies are added one by one so a single malformed entry cannot
+ * abort the rest.
+ */
+async function importCookies(platform, raw) {
+  platformConfig(platform);
+  const cookies = parseCookieImport(platform, raw);
+  const config = PLATFORMS[platform];
+  const context = await getContext(platform);
+  const page = await context.newPage();
+  try {
+    await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await context.clearCookies().catch(() => {});
+    const suffix = platform === 'pinterest' ? 'pinterest.' : 'facebook.';
+    const belongs = (c) => (c.url && c.url.includes(suffix)) || (c.domain && c.domain.includes(suffix));
+    const valid = cookies.filter(belongs);
+    if (!valid.length) {
+      throw new Error('لا توجد كوكيز تخص المنصة في النص الملصوق. تأكد أنك صدّرت الكوكيز من صفحة المنصة نفسها (وليس من موقع آخر).');
+    }
+    const failures = [];
+    let imported = 0;
+    for (const cookie of valid) {
+      try {
+        await context.addCookies([cookie]);
+        imported += 1;
+      } catch (error) {
+        failures.push(`${cookie.name}: ${String((error && error.message) || error).slice(0, 100)}`);
+      }
+    }
+    if (!imported) {
+      throw new Error(`رفض متصفح السيرفر كل الكوكيز (${cookies.length}) — سبب أول رفض: ${failures[0] || 'Invalid cookie fields'}. أعد التصدير من Cookie-Editor بصيغة JSON وأنت على صفحة المنصة.`);
+    }
+
+    let ok = false;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+      if (hasSessionCookies(platform, await context.cookies())) { ok = true; break; }
+    }
+    if (!ok) {
+      await saveLoginDebug(platform, page, 'cookie-import-unauth');
+      throw new Error('الكوكيز المستوردة لم تُنشئ جلسة دخول. افتح صفحة المنصة في متصفحك وتأكد أنك ترى حسابك مسجّلاً، ثم اضغط Export في Cookie-Editor من جديد والصق النص فوراً (لا تُسجّل الخروج بعد النسخ).');
+    }
+    return finishLogin(platform, context, '');
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/**
+ * Re-check a stored profile the lenient, proven way: open the home page so the
+ * jar refreshes, then apply the same session-cookie presence rule login uses.
+ * It never downgrades a profile whose browser could not be reached.
+ */
+async function verifyConnected(platform) {
+  platformConfig(platform);
+  if (!fs.existsSync(profileDir(platform))) {
+    return sessionStatus(platform);
+  }
+  const context = await getContext(platform);
+  const page = await context.newPage();
+  try {
+    await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await dismissConsentWalls(page);
+    await page.waitForTimeout(4000);
+    const cookies = await context.cookies();
+    const ok = hasSessionCookies(platform, cookies);
+    const meta = metaStore();
+    const entry = meta.platforms[platform] || {};
+    entry.connected = ok;
+    entry.lastVerifiedAt = new Date().toISOString();
+    if (ok) {
+      entry.lastLoginAt = entry.lastLoginAt || entry.lastVerifiedAt;
+      entry.label = labelFromCookies(platform, cookies) || entry.label || platform;
+    }
+    meta.platforms[platform] = entry;
+    saveNamedStore('sessions-meta', meta);
+    return sessionStatus(platform);
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 module.exports = {
   PLATFORMS,
   getContext,
@@ -854,7 +639,7 @@ module.exports = {
   importCookies,
   parseCookieImport,
   normalizePlaywrightCookie,
-  isAuthenticated,
+  hasSessionCookies,
   submitVerification,
   verificationState,
   cancelVerification,
