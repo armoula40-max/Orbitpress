@@ -293,6 +293,49 @@ async function createPinFromUpload(hostsList, cookieHeader, fields) {
   return { pinId: String(id), pinUrl: `https://www.pinterest.com/pin/${id}/` };
 }
 
+function canonicalLink(value) {
+  return String(value || '').trim().toLowerCase()
+    .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+}
+
+/**
+ * The "Read recipe / Visit" button is powered by the pin's destination link,
+ * whose scraping runs asynchronously and sometimes misses on the create call
+ * for uploaded images. Read the pin back; if the link is missing (or wrong),
+ * set it with PinResource/update exactly like the web pin editor. A failure
+ * here never undoes a created pin — it is reported back as linkPending.
+ */
+async function ensurePinLink(hostsList, cookieHeader, fields) {
+  const pinId = String(fields.pinId);
+  const link = String(fields.link || '').trim();
+  if (!link) return { confirmed: false, reason: 'no-link' };
+  let attached = '';
+  try {
+    const got = await getResource(hostsList, cookieHeader, 'PinResource/get/', {
+      id: pinId, field_set_key: 'detailed',
+    }, `/pin/${pinId}/`, { stage: 'create', timeoutMs: 30000 });
+    const data = got && got.resource_response && got.resource_response.data;
+    attached = String((data && data.link) || '');
+  } catch (error) {
+    if (error.auth) return { confirmed: false, reason: 'auth' };
+  }
+  if (attached && canonicalLink(attached) === canonicalLink(link)) return { confirmed: true };
+
+  const options = { id: pinId, link };
+  if (fields.title) options.title = String(fields.title).slice(0, 100);
+  if (fields.description) options.description = String(fields.description).slice(0, 800);
+  try {
+    await postResource(hostsList, cookieHeader, 'PinResource/update/', options,
+      `/pin/${pinId}/`, { stage: 'create' });
+    probe('pin-link-updated', { pinId, link });
+    return { confirmed: true, updated: true };
+  } catch (error) {
+    if (error.auth) return { confirmed: false, reason: 'auth' };
+    probe('pin-link-failed', { pinId, error: String(error.message).slice(0, 200) });
+    return { confirmed: false, reason: 'update-failed' };
+  }
+}
+
 // --- legacy /upload-image/ flow (kept as a fallback) ------------------------
 
 /** Legacy step 1: upload the image the way the old web app did. */
@@ -701,7 +744,8 @@ async function publishPinWithSession({ boardId, title, description, link, image,
     const created = await createPinFromUpload(mirrors, cookieHeader, {
       boardId: resolution.id, uploadId: registration.uploadId, signature, title, description, link, altText,
     });
-    return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl };
+    const linkState = await ensurePinLink(mirrors, cookieHeader, { pinId: created.pinId, link, title, description });
+    return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl, linkState };
   } catch (modernError) {
     if (modernError.auth) return { ok: false, stage: 'session', message: modernError.message };
     probe('modern-flow-failed', { stage: modernError.stage, message: String(modernError.message).slice(0, 400) });
@@ -720,7 +764,8 @@ async function publishPinWithSession({ boardId, title, description, link, image,
         altText,
       });
       if (!created.ok) throw stageError('create', created.message);
-      return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl };
+      const linkState = await ensurePinLink(mirrors, cookieHeader, { pinId: created.pinId, link, title, description });
+      return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl, linkState };
     } catch (legacyError) {
       if (legacyError.auth) return { ok: false, stage: 'session', message: legacyError.message };
       const stage = modernError.stage || 'upload';
@@ -752,6 +797,7 @@ module.exports = {
   uploadToS3,
   pollUploadSignature,
   createPinFromUpload,
+  ensurePinLink,
   boardKey,
   csrfFrom,
   SESSION_RELOGIN_MESSAGE,

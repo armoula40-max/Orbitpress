@@ -467,6 +467,63 @@ test('an expired Pinterest session (register answers auth code 2) returns re-log
   assert.ok(!mock.paths().includes('/s3-upload'), 'nothing is uploaded after an auth failure');
 });
 
+test('a created pin missing its destination link gets it set via PinResource/update', async (t) => {
+  const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'Bread Pin',
+    description: 'x',
+    link: 'https://askinz.test/sourdough-bread/',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, true, result.message);
+  assert.ok(mock.paths().includes('/resource/PinResource/update/'), 'the link is repaired with PinResource/update');
+  const update = mock.bodies.find((b) => b.options && b.options.link && b.options.id);
+  assert.equal(update.options.link, 'https://askinz.test/sourdough-bread/');
+  assert.equal(update.options.id, '987654321098765432');
+});
+
+test('a created pin already carrying the destination link is not updated twice', async (t) => {
+  const mock = await mocks.startPinterestPublishMock({ pinAttachedLink: 'https://askinz.test/sourdough-bread/' });
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'Bread Pin',
+    description: 'x',
+    link: 'https://askinz.test/sourdough-bread',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, true, result.message);
+  assert.ok(!mock.paths().includes('/resource/PinResource/update/'), 'no update when the link already matches (trailing-slash tolerant)');
+});
+
 test('when the S3 upload stage is unavailable, the legacy /upload-image/ flow still publishes', async (t) => {
   const mock = await mocks.startPinterestPublishMock({ failStage: 's3' });
   t.after(() => mock.server.close());

@@ -335,6 +335,7 @@ function startArticleApiMock(options = {}) {
 function startPinterestPublishMock(options = {}) {
   const calls = [];
   const bodies = [];
+  const mockState = { pin: null };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     calls.push({ method: req.method, path: url.pathname });
@@ -443,7 +444,16 @@ function startPinterestPublishMock(options = {}) {
         return json({ success: true, image_url: 'https://i.pinimg.com/uploaded/legacy.jpg' });
       }
       if (url.pathname === '/resource/PinResource/create/') {
+        mockState.pin = { id: '987654321098765432', link: options.pinAttachedLink || '' };
         return json({ resource_response: { data: { id: '987654321098765432' } } });
+      }
+      if (url.pathname === '/resource/PinResource/get/') {
+        return json({ resource_response: { data: { id: '987654321098765432', link: (mockState.pin && mockState.pin.link) || '' } } });
+      }
+      if (url.pathname === '/resource/PinResource/update/') {
+        const updateBody = bodies[bodies.length - 1];
+        if (updateBody && updateBody.options) mockState.pin = { id: '987654321098765432', link: updateBody.options.link || '' };
+        return json({ resource_response: { data: { id: '987654321098765432', link: (mockState.pin && mockState.pin.link) || '' } } });
       }
       return json({ error: `unmocked ${url.pathname}` }, 404);
     });
@@ -455,6 +465,7 @@ function startPinterestPublishMock(options = {}) {
       calls,
       bodies,
       paths: () => calls.map((c) => c.path),
+      state: mockState,
     }));
   });
 }
