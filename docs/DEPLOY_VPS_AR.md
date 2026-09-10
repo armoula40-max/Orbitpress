@@ -130,6 +130,7 @@ cd /opt/orbitpress && docker compose up -d
 | Pinterest يرجع 403/429 | الخادم محظور مؤقتاً — سجّل الدخول من الإعدادات أو أعد المحاولة لاحقاً |
 | النشر: `rest_upload_sideload_error` / "not allowed to upload this file type" | السيرفر يحوّل WebP إلى JPEG ويعيد المحاولة تلقائياً. إن استمرت، فجدار حماية/إضافة أمان تُفرغ جسم الرفض من REST أو الحساب بلا صلاحية رفع: جرّب رفع JPEG يدوياً في wp-admin → Media، واستخدم حساباً بدور Author/Editor/Administrator، واطلب من الاستضافة السماح بالرفع إلى `/wp-json/wp/v2/media`. يفحص زر Save & test رفع الوسائط نفسه ويشير للسبب |
 | Pinterest: الخطأ 401 `code 3` "application consumer type is not supported" | تطبيق المطوّر الخاص بالرمز ما زال "Trial access pending" وترفض Pinterest كل استدعاءاته. لا حاجة للانتظار: اربط حساب Pinterest من بطاقة «الحسابات المرتبطة — تسجيل دخول السيرفر» في Settings، فينشر الدبابيس عبر جلسة المتصفح بلا تطبيق مطوّر |
+| Pinterest: النشر بالجلسة يفشل في مرحلة الرفع بـ 401 `"code":2,"Authentication failed"` رغم أن البطاقة تقول «متصل» | الجلسة المحفوظة لزائر (Pinterest يُبقي كوكي الجلسة بعد الخروج؛ الدليل الحقيقي `_auth=1`)، أو انتهت صلاحيتها. اضغط «قطع الاتصال» ثم سجّل الدخول مجدداً وأكمل رمز البريد/المصادقة، أو استخدم زر «إعادة فحص الاتصال». كما حدّث OrbitPress مسار الرفع إلى تدفق S3 الحالي بعد إلغاء Pinterest لنقطة `/upload-image/` القديمة |
 | `Out of memory` أثناء البناء (RAM 1GB) | `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` ثم أعد الأمر |
 | فقدت رمز الدخول | `grep ORBITPRESS_TOKEN /opt/orbitpress/.env` |
 

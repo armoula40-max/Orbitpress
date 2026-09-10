@@ -324,44 +324,92 @@ function startArticleApiMock(options = {}) {
   });
 }
 
-/** Minimal mock of the endpoints the Pinterest web app uses to create a Pin. */
-function startPinterestPublishMock() {
+/**
+ * Mock of the endpoints the Pinterest web app uses to create a Pin, matching
+ * the current S3 upload flow:
+ *   ApiResource/create (register) -> S3 POST -> VIPResource/get (poll)
+ *   -> PinResource/create
+ * options.failStage: 'register-auth' (code 2 envelope), 's3' (S3 refuses, which
+ * exercises the legacy /upload-image/ fallback).
+ */
+function startPinterestPublishMock(options = {}) {
   const calls = [];
   const bodies = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    calls.push(url.pathname);
-    const json = (payload) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+    calls.push({ method: req.method, path: url.pathname });
+    const json = (payload, status = 200) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     };
-    // The internal Pinterest endpoints carry their options either in ?data= or
-    // in a form-encoded body; record whichever shape was used.
-    const record = () => {
-      const encoded = url.searchParams.get('data');
-      if (!encoded) return;
-      try { bodies.push(JSON.parse(encoded)); } catch { /* not json */ }
-    };
+    const authFailure = () => json({
+      status: 'failure', code: 2, message: 'Authentication failed.', data: null,
+    }, 401);
     let raw = '';
     req.on('data', (chunk) => { raw += chunk; });
     req.on('end', () => {
-      if (raw) {
-        const encoded = new URLSearchParams(raw).get('data');
-        if (encoded) { try { bodies.push(JSON.parse(encoded)); } catch { /* ignore */ } }
+      // Internal endpoints carry options either in ?data= or in a form body.
+      const encoded = url.searchParams.get('data') || (raw ? new URLSearchParams(raw).get('data') : null);
+      if (encoded) { try { bodies.push(JSON.parse(encoded)); } catch { /* ignore */ } }
+      if (raw && url.pathname === '/s3-upload') {
+        bodies.push({ s3Upload: { length: Buffer.byteLength(raw), hasFile: raw.includes('name="file"') } });
       }
-      record();
-      if (url.pathname === '/upload-image/') return json({ success: true, image_url: 'https://i.pinimg.com/uploaded/test.jpg' });
-      if (url.pathname === '/resource/PinResource/create/') {
-        return json({ resource_response: { data: { id: '987654321098765432' } } });
-      }
+
       if (url.pathname === '/resource/BoardResource/get/') {
         return json({ resource_response: { data: { id: '112233445566778899' } } });
       }
-      return json({ error: `unmocked ${url.pathname}` });
+      if (url.pathname === '/resource/ApiResource/create/') {
+        if (options.failStage === 'register-auth') return authFailure();
+        const base = `http://127.0.0.1:${server.address().port}`;
+        return json({
+          resource_response: {
+            data: {
+              image_story_pin: {
+                upload_id: 777001,
+                upload_url: `${base}/s3-upload`,
+                upload_parameters: {
+                  key: 'uploads/orbitpress-test.jpg',
+                  AWSAccessKeyId: 'AKIAMOCK',
+                  policy: 'mock-policy',
+                  signature: 'mock-signature',
+                },
+              },
+            },
+          },
+        });
+      }
+      if (url.pathname === '/s3-upload') {
+        if (options.failStage === 's3') {
+          res.writeHead(403, { 'Content-Type': 'application/xml' });
+          return res.end('<Error><Code>AccessDenied</Code></Error>');
+        }
+        res.writeHead(204);
+        return res.end();
+      }
+      if (url.pathname === '/resource/VIPResource/get/') {
+        return json({
+          resource_response: {
+            data: { 777001: { status: 'succeeded', signature: 'imagesig-777001', image_url: 'https://i.pinimg.com/processed/777001.jpg' } },
+          },
+        });
+      }
+      if (url.pathname === '/upload-image/') {
+        return json({ success: true, image_url: 'https://i.pinimg.com/uploaded/legacy.jpg' });
+      }
+      if (url.pathname === '/resource/PinResource/create/') {
+        return json({ resource_response: { data: { id: '987654321098765432' } } });
+      }
+      return json({ error: `unmocked ${url.pathname}` }, 404);
     });
   });
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({ server, url: `http://127.0.0.1:${server.address().port}`, calls, bodies }));
+    server.listen(0, '127.0.0.1', () => resolve({
+      server,
+      url: `http://127.0.0.1:${server.address().port}`,
+      calls,
+      bodies,
+      paths: () => calls.map((c) => c.path),
+    }));
   });
 }
 

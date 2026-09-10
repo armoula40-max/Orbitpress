@@ -196,6 +196,12 @@ router.post('/sessions/:platform/login', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...status });
 }));
 
+// Re-validate a stored session against the live site (refreshes connected flag)
+router.post('/sessions/:platform/verify', asyncRoute(async (req, res) => {
+  const status = await scraper.sessions.verifyConnected(req.params.platform);
+  res.json({ ok: true, ...status });
+}));
+
 router.get('/sessions/:platform/verification', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform) });
 }));

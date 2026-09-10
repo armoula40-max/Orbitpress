@@ -775,7 +775,7 @@ function explainPinterestApiError(error, sessionFailure) {
   const code = parsed && parsed.code;
   const apiMessage = parsed && parsed.message ? String(parsed.message) : body.slice(0, 180);
   const sessionHint = sessionFailure
-    ? ` كما تعذّر مسار جلسة المتصفح (${sessionFailure.stage}): ${String(sessionFailure.message || '').slice(0, 220)}.`
+    ? ` كما تعذّر مسار جلسة المتصفح (${sessionFailure.stage}): ${String(sessionFailure.message || '').replace(/\s+/g, ' ').slice(0, 200)}.`
     : ' ولا توجد جلسة Pinterest متصلة حالياً.';
   if (Number(code) === 3 || /consumer type is not supported/i.test(body)) {
     return 'رفض Pinterest رمز الـ API (الكود 3: application consumer type is not supported). تطبيق المطوّر الذي أنشأت منه الرمز ما زال في حالة "Trial access pending" أو غير مُفعَّل من Pinterest، فلا يقبل إنشاء الدبابيس حتى تتم الموافقة عليه (ورموز sandbox لا تعمل إلا على api-sandbox.pinterest.com). الحل الفوري بلا انتظار موافقة: افتح Settings ثم بطاقة "الحسابات المرتبطة — تسجيل دخول السيرفر" وسجّل دخول Pinterest مرة واحدة، فينشر OrbitPress عبر جلسة المتصفح نفسها بدون تطبيق مطوّر.' + sessionHint;

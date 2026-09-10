@@ -22,6 +22,7 @@ const PLATFORMS = {
   facebook: {
     loginUrl: 'https://www.facebook.com/login',
     sessionCookies: ['c_user', 'xs'],
+    authCookies: { c_user: null, xs: null },
     homeUrl: 'https://www.facebook.com/',
     usernameCandidates: ['input[name="email"]', '#email'],
     passwordCandidates: ['input[name="pass"]', '#pass'],
@@ -29,13 +30,42 @@ const PLATFORMS = {
   },
   pinterest: {
     loginUrl: 'https://www.pinterest.com/login/',
-    sessionCookies: ['_pinterest_sess'],
+    // IMPORTANT: Pinterest keeps `_pinterest_sess` present even after logout
+    // ("authentication tokens are deleted but we leave the cookie present").
+    // The real proof of a signed-in session is `_auth=1`; checking only
+    // `_pinterest_sess` is how a failed login gets falsely reported as
+    // connected (every resource call then answers with auth code 2).
+    sessionCookies: ['_pinterest_sess', '_auth'],
+    authCookies: { _auth: '1' },
     homeUrl: 'https://www.pinterest.com/',
     usernameCandidates: ['input[name="id"]', 'input#email', 'input[type="email"]'],
     passwordCandidates: ['input[name="password"]', 'input#password', 'input[type="password"]'],
     submitCandidates: ['button[type="submit"]', '[data-test-id="registerFormSubmitButton"] button', 'form button.LLM'],
   },
 };
+
+/**
+ * Presence alone is not enough: for Pinterest `_auth` must equal "1".
+ * `authCookies: { name: expectedValue }` — null/undefined means "must exist".
+ */
+function isAuthenticated(platform, cookies) {
+  const config = PLATFORMS[platform];
+  if (!config) return false;
+  const byName = new Map((cookies || []).map((cookie) => [cookie.name, cookie.value]));
+  const required = config.authCookies || {};
+  for (const [name, expected] of Object.entries(required)) {
+    const value = byName.get(name);
+    if (!value) return false;
+    if (expected != null && value !== String(expected)) return false;
+  }
+  return config.sessionCookies.some((name) => !!byName.get(name));
+}
+
+const CODE_INPUT_SELECTORS = [
+  'input[name="approvals_code"]', '#approvals_code',
+  'input[autocomplete="one-time-code"]', 'input[name="code"]', 'input#code',
+  'input[inputmode="numeric"]', 'input[name="captcha_response"]',
+];
 
 const liveContexts = new Map();
 
@@ -186,20 +216,35 @@ async function login(platform, credentials) {
       await passInput.press('Enter');
     }
     await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(6000);
 
-    const currentUrl = page.url();
-    const pageHtml = await page.content();
-    const cookiesNow = await context.cookies();
-    const hasSession = config.sessionCookies.some((name) => cookiesNow.some((cookie) => cookie.name === name && cookie.value));
-    if (hasSession) {
+    // Real auth markers take a few redirects to land. Poll instead of trusting
+    // one early snapshot — Pinterest also sets `_pinterest_sess` for guests,
+    // so a single early cookie read reports false "connected".
+    let authenticated = false;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await page.waitForTimeout(2500);
+      if (isAuthenticated(platform, await context.cookies())) { authenticated = true; break; }
+      // Some flows finish over XHR and stay on the login URL; a gentle nudge to
+      // home reveals whether the session is live. Skip while a code box is on
+      // screen — that is a challenge the user has to finish.
+      if (attempt === 5 && !(await page.$(CODE_INPUT_SELECTORS.join(',')))) {
+        await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      }
+    }
+    if (authenticated) {
+      // Load home once so the full cookie set (csrftoken, routing…) is present
+      // before the publisher sends its first request.
+      await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(2000);
       return finishLogin(platform, context, username);
     }
 
+    const currentUrl = page.url();
+    const pageHtml = await page.content();
     // Verification challenge? Keep the page alive and hand the user control.
-    const codeInput = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"], input[name="captcha_response"]');
-    const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two_step|login\/cookie/i.test(currentUrl) || !!codeInput;
-    if (!hasSession && isCheckpoint) {
+    const codeInput = await page.$(CODE_INPUT_SELECTORS.join(','));
+    const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two[_-]?step|verification|verify|security-check|login\/cookie/i.test(currentUrl) || !!codeInput;
+    if (isCheckpoint) {
       const challenge = codeInput ? 'code' : 'device_approval';
       rememberPending(platform, page, context, challenge);
       await saveLoginDebug(platform, page, `verification-${challenge}`);
@@ -207,9 +252,7 @@ async function login(platform, credentials) {
         ...sessionStatus(platform),
         status: 'verification_required',
         challenge,
-        challengeHint: challenge === 'code'
-          ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في البطاقة هنا.'
-          : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك (إشعار "هل كنت أنت؟")، ثم اضغط زر التحقق هنا.',
+        challengeHint: challengeHint(platform, challenge),
       };
     }
     if (/captcha|recaptcha/i.test(pageHtml.slice(0, 6000))) {
@@ -217,6 +260,9 @@ async function login(platform, credentials) {
       throw new Error('المنصة عرضت CAPTCHA لا يمكن للسيرفر حلّها. سجّل دخول نفس الحساب من متصفحك العادي أكمل التحقق ثم أعد المحاولة.');
     }
     await saveLoginDebug(platform, page, 'no-session-cookie');
+    if (platform === 'pinterest') {
+      throw new Error('لم يؤكّد Pinterest الدخول (لا يوجد كوكي _auth=1). تحقق من البريد وكلمة المرور، وإن كان حسابك يسجّل الدخول عبر Google/Facebook فأضف كلمة مرور لحساب Pinterest من إعدادات الحساب ثم أعد المحاولة. إن طلب Pinterest رمز تحقق بالبريد ولم يظهر حقل إدخاله هنا، انتظر دقيقة وأعد المحاولة. حُفظت لقطة تشخيص في data/debug/.');
+    }
     throw new Error('لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة). حُفظت لقطة تشخيص في data/debug/ على السيرفر.');
   } catch (error) {
     if (!/data\/debug\//.test(String(error.message))) {
@@ -291,6 +337,17 @@ async function captureDebug(platform, page, tag) {
   return saveLoginDebug(platform, page, `scan-${tag}`);
 }
 
+function challengeHint(platform, challenge) {
+  if (platform === 'pinterest') {
+    return challenge === 'code'
+      ? 'أدخل رمز التحقق الذي أرسله Pinterest إلى بريدك الإلكتروني (أو تطبيق المصادقة) في الحقل أدناه.'
+      : 'أكّد محاولة الدخول من بريدك أو تطبيق Pinterest، ثم اضغط زر التحقق أدناه.';
+  }
+  return challenge === 'code'
+    ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في البطاقة هنا.'
+    : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك (إشعار "هل كنت أنت؟")، ثم اضغط زر التحقق هنا.';
+}
+
 function normalizeLoginError(error) {
   const message = String(error && error.message || 'Login failed.');
   if (/Timeout.*exceeded/i.test(message)) {
@@ -324,44 +381,90 @@ async function submitVerification(platform, code) {
     throw new Error('لا توجد محاولة تحقق نشطة (انتهت مهلة 10 دقائق أو بدأت محاولة جديدة). أعد تسجيل الدخول من البداية.');
   }
   const config = platformConfig(platform);
+  void config;
   const { page, context } = pending;
   pending.createdAt = Date.now(); // activity extends the window
 
   if (pending.challenge === 'code') {
     const cleanCode = String(code || '').replace(/\s+/g, '');
     if (!cleanCode) throw new Error('أدخل رمز التحقق أولاً.');
-    const codeField = await page.$('input[name="approvals_code"], #approvals_code, input[autocomplete="one-time-code"]');
+    const codeField = await findFirst(page, CODE_INPUT_SELECTORS);
     if (!codeField) throw new Error('حقل الرمز لم يعد ظاهراً في الصفحة — أعد تسجيل الدخول.');
     await codeField.fill(cleanCode);
-    const submit = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"]');
-    if (submit) await submit.click().catch(() => {});
+    const submit = await page.$('#checkpointSubmitButton')
+      || await page.$('button[type="submit"]:not([disabled])')
+      || await page.$('form button[type="submit"]');
+    if (submit) await submit.click({ timeout: 5000 }).catch(() => {});
     else await codeField.press('Enter');
   } else {
-    // device approval: user pushed "Approve" in their Facebook app; continue the flow
-    const continueButton = await page.$('#checkpointSubmitButton') || await page.$('button[type="submit"][name="submit[Continue]"]') || await page.$('button');
-    if (continueButton) await continueButton.click().catch(() => {});
+    // device approval: user pushed "Approve" in their phone app; continue the flow
+    const continueButton = await page.$('#checkpointSubmitButton')
+      || await page.$('button[type="submit"][name="submit[Continue]"]')
+      || await page.$('button[type="submit"]:not([disabled])');
+    if (continueButton) await continueButton.click({ timeout: 5000 }).catch(() => {});
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   }
   await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(5000);
 
-  const cookies = await context.cookies();
-  const hasSession = config.sessionCookies.some((name) => cookies.some((cookie) => cookie.name === name && cookie.value));
-  if (hasSession) return finishLogin(platform, context, '');
+  // The platform can take a few redirects to mint the session; poll the real
+  // auth markers (Pinterest's guest `_pinterest_sess` is not proof of login).
+  let authenticated = false;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await page.waitForTimeout(2500);
+    if (isAuthenticated(platform, await context.cookies())) { authenticated = true; break; }
+    if (attempt === 6) await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
+  if (authenticated) return finishLogin(platform, context, '');
 
   const url = page.url();
   const html = await page.content();
   // Still on a code page? Probably a wrong code.
-  if (pending.challenge === 'code' && /approvals_code|checkpoint|two[_-]?step/i.test(url + html.slice(0, 3000))) {
-    throw new Error('الرمز لم يُقبل — تأكد أنه الأحدث من تطبيق المصادقة/الرسائل وأعد المحاولة.');
+  if (pending.challenge === 'code' && /approvals_code|checkpoint|two[_-]?factor|two[_-]?step|verification|verify/i.test(url + html.slice(0, 3000))) {
+    throw new Error(platform === 'pinterest'
+      ? 'الرمز لم يقبله Pinterest — تأكد أنه الأحدث الذي وصلك بالبريد أو تطبيق المصادقة وأعد المحاولة.'
+      : 'الرمز لم يُقبل — تأكد أنه الأحدث من تطبيق المصادقة/الرسائل وأعد المحاولة.');
   }
-  const freshCodeInput = await page.$('input[name="approvals_code"], #approvals_code');
+  const freshCodeInput = await page.$(CODE_INPUT_SELECTORS.join(','));
   if (freshCodeInput) {
     pending.challenge = 'code';
     throw new Error('التحقق لم يكتمل بعد — أُظهر حقل رمز جديد؛ أدخله وأعد المحاولة.');
   }
   await saveLoginDebug(platform, page, 'verification-stuck');
   throw new Error('لم تتأكد الجلسة بعد. إن وافقتَ على الدخول من هاتفك بالفعل، انتظر ثواني وأعد الضغط؛ وإلا أعد تسجيل الدخول من البداية.');
+}
+
+/**
+ * Re-validate a stored profile against the live site and update its connected
+ * flag. This is how the Settings card can downgrade a stale "connected" label
+ * (Pinterest leaves the session cookie in place after logout/expiry).
+ */
+async function verifyConnected(platform) {
+  platformConfig(platform);
+  if (!fs.existsSync(profileDir(platform))) {
+    return sessionStatus(platform);
+  }
+  const context = await getContext(platform);
+  const page = await context.newPage();
+  try {
+    await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await dismissConsentWalls(page);
+    await page.waitForTimeout(4000);
+    const cookies = await context.cookies();
+    const ok = isAuthenticated(platform, cookies);
+    const meta = metaStore();
+    const entry = meta.platforms[platform] || {};
+    entry.connected = ok;
+    entry.lastVerifiedAt = new Date().toISOString();
+    if (ok) {
+      entry.lastLoginAt = entry.lastLoginAt || entry.lastVerifiedAt;
+      entry.label = labelFromCookies(platform, cookies) || entry.label || platform;
+    }
+    meta.platforms[platform] = entry;
+    saveNamedStore('sessions-meta', meta);
+    return sessionStatus(platform);
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 function verificationState(platform) {
@@ -433,6 +536,7 @@ module.exports = {
   sessionStatus,
   statuses,
   cookieHeader,
+  verifyConnected,
   submitVerification,
   verificationState,
   cancelVerification,

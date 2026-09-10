@@ -340,7 +340,8 @@ test('publishing a Pin uses the signed-in session, not an API token', async (t) 
   const sessions = require('../lib/scraper/sessions');
   const publisher = require('../lib/scraper/pinterestPublish');
   const originalCookie = sessions.cookieHeader;
-  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake';
+  const AUTHED_COOKIE = 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  sessions.cookieHeader = async () => AUTHED_COOKIE;
   t.after(() => { sessions.cookieHeader = originalCookie; });
 
   // a board URL is resolved to its numeric id first
@@ -358,8 +359,110 @@ test('publishing a Pin uses the signed-in session, not an API token', async (t) 
   assert.equal(result.ok, true, result.message);
   assert.equal(result.pinId, '987654321098765432');
   assert.equal(result.pinUrl, 'https://www.pinterest.com/pin/987654321098765432/');
-  assert.ok(mock.calls.includes('/upload-image/'));
-  assert.ok(mock.calls.includes('/resource/PinResource/create/'));
+  const paths = mock.paths();
+  for (const expected of ['/resource/ApiResource/create/', '/s3-upload', '/resource/VIPResource/get/', '/resource/PinResource/create/']) {
+    assert.ok(paths.includes(expected), `the current S3 upload flow calls ${expected}`);
+  }
+  // bytes were posted to S3 as the multipart "file" field
+  const s3Record = mock.bodies.find((b) => b.s3Upload);
+  assert.ok(s3Record && s3Record.s3Upload.hasFile, 'image bytes were PUT to the presigned S3 form');
+  // the pin was created from the registered upload, not a scraped image URL
+  const create = mock.bodies.find((b) => b.options && b.options.upload_id);
+  assert.equal(create.options.upload_id, 777001);
+  assert.equal(create.options.image_signature, 'imagesig-777001');
+  assert.equal(create.options.method, 'uploaded');
+});
+
+test('a Pinterest cookie jar without _auth=1 is rejected as a guest session before any upload', async (t) => {
+  // Pinterest keeps _pinterest_sess present even when logged out, so the old
+  // presence check reported false "connected" and every write got code 2.
+  const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=guest-jar';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'Test Pin',
+    description: 'x',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'session');
+  assert.match(result.message, /قطع الاتصال/);
+  assert.match(result.message, /مجدداً/);
+  assert.equal(mock.paths().length, 0, 'no Pinterest endpoint is called with a guest jar');
+});
+
+test('an expired Pinterest session (register answers auth code 2) returns re-login guidance', async (t) => {
+  const mock = await mocks.startPinterestPublishMock({ failStage: 'register-auth' });
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=stale; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'Test Pin',
+    description: 'x',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'session', result.message);
+  assert.match(result.message, /كود 2|code 2/i);
+  assert.match(result.message, /قطع الاتصال/);
+  assert.ok(!mock.paths().includes('/s3-upload'), 'nothing is uploaded after an auth failure');
+});
+
+test('when the S3 upload stage is unavailable, the legacy /upload-image/ flow still publishes', async (t) => {
+  const mock = await mocks.startPinterestPublishMock({ failStage: 's3' });
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'Legacy Pin',
+    description: 'fallback',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.pinId, '987654321098765432');
+  assert.ok(mock.paths().includes('/upload-image/'), 'the legacy endpoint was tried as the fallback');
+  const legacyCreate = mock.bodies.find((b) => b.options && b.options.image_url);
+  assert.equal(legacyCreate.options.image_url, 'https://i.pinimg.com/uploaded/legacy.jpg');
 });
 
 test('an unapproved Pinterest app (API code 3) points at the server session path', async (t) => {
@@ -545,7 +648,7 @@ test('the composed pin is stored as a 2:3 image and published instead of the raw
   });
   const sessions = require('../lib/scraper/sessions');
   const originalCookie = sessions.cookieHeader;
-  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake';
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=fake; _auth=1';
   t.after(() => { sessions.cookieHeader = originalCookie; });
 
   // the pin canvas always exports 1000 × 1500, and the server holds it to that

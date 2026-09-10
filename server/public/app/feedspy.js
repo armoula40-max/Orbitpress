@@ -586,7 +586,10 @@
           '<p class="helper">يبقى تسجيل الدخول على السيرفر فقط، ويستخدمه الماسح المدمج. لا API ولا رفع كوكيز. إذا طُلب رمز تحقق (2FA) سيظهر حقل إدخاله هنا فوراً.</p>' +
         '</div>' +
         '<div id="' + platform + 'VerifyStep" class="spy-verify" style="display:none"></div>' +
-        '<button type="button" class="small-button remove" id="' + platform + 'LogoutBtn" style="display:' + (connected ? 'inline-block' : 'none') + '">قطع الاتصال</button>' +
+        '<div class="spy-session-actions" style="display:' + (connected ? 'block' : 'none') + '">' +
+          '<button type="button" class="small-button" id="' + platform + 'RecheckBtn">إعادة فحص الاتصال</button> ' +
+          '<button type="button" class="small-button remove" id="' + platform + 'LogoutBtn">قطع الاتصال</button>' +
+        '</div>' +
       '</div>';
     };
     return '<section class="card" id="spySessionsCard"><div class="connection-line"><h2>الحسابات المرتبطة — تسجيل دخول السيرفر</h2><span class="connection-state ready">جديد</span></div>' +
@@ -687,6 +690,26 @@
             .then(function () { spyNotice('تم قطع اتصال ' + platform + '.', 'good'); })
             .finally(refreshSessionsCard);
         };
+        var recheckBtn = document.getElementById(platform + 'RecheckBtn');
+        if (recheckBtn) recheckBtn.onclick = function () {
+          recheckBtn.disabled = true;
+          recheckBtn.textContent = '…جارٍ الفحص';
+          fetch('/api/sessions/' + platform + '/verify', { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (result) {
+              if (!result.ok) throw new Error(result.message || 'تعذّر الفحص.');
+              spyNotice(result.connected
+                ? 'الاتصال بـ ' + platform + ' ساري ✓'
+                : 'الجلسة غير مُسجَّلة الدخول فعلياً — اقطع الاتصال ثم سجّل الدخول مجدداً.',
+                result.connected ? 'good' : 'bad');
+              refreshSessionsCard();
+            })
+            .catch(function (error) { spyNotice(error.message, 'bad'); })
+            .finally(function () {
+              recheckBtn.disabled = false;
+              recheckBtn.textContent = 'إعادة فحص الاتصال';
+            });
+        };
         // Resume an in-flight verification after page refresh
         fetch('/api/sessions/' + platform + '/verification')
           .then(function (r) { return r.json(); })
@@ -695,9 +718,13 @@
               enterVerificationMode(platform, {
                 challenge: v.challenge,
                 expiresInSec: v.expiresInSec,
-                challengeHint: v.challenge === 'code'
-                  ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في الحقل أدناه.'
-                  : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك، ثم اضغط زر التحقق.',
+                challengeHint: platform === 'pinterest'
+                  ? (v.challenge === 'code'
+                    ? 'أدخل رمز التحقق الذي أرسله Pinterest إلى بريدك الإلكتروني أو تطبيق المصادقة في الحقل أدناه.'
+                    : 'أكّد محاولة الدخول من بريدك أو تطبيق Pinterest، ثم اضغط زر التحقق.')
+                  : (v.challenge === 'code'
+                    ? 'أدخل رمز التحقق الذي وصلك (تطبيق المصادقة / SMS / بريد فيسبوك) في الحقل أدناه.'
+                    : 'وافق على هذا الدخول من تطبيق فيسبوك على هاتفك، ثم اضغط زر التحقق.'),
               });
             }
           })
