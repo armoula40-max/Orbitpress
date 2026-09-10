@@ -119,8 +119,17 @@ async function testConnection(request) {
   const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   return withWordPressHelp(Promise.resolve().then(async () => {
-    const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
-    return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
+    try {
+      const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
+      return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
+    } catch (error) {
+      // Security plugins and some hosts block the users endpoint while the
+      // credentials are perfectly good. Publishing only needs edit access to
+      // posts, so verify there before declaring the connection broken.
+      if (error.status !== 401 && error.status !== 403) throw error;
+      await requestJson(`${root}/wp-json/wp/v2/posts?context=edit&per_page=1`, 'GET', wordpressHeaders(settings));
+      return { ok: true, accountName: `${settings.wordpressUsername || 'WordPress user'} (verified through posts — users/me is blocked)`, usersEndpointBlocked: true };
+    }
   }));
 }
 
@@ -155,23 +164,28 @@ async function diagnoseWordPress(request) {
   }
 
   const trail = [];
-  const probe = async (label, path, useAuth) => {
+  /** One GET against the site. `mode` is 'anon', 'auth' or 'alt-header'. */
+  const probe = async (label, path, mode) => {
     const url = `${root}${path}`;
-    const headers = useAuth && username && password ? wordpressHeaders(settings) : {};
+    const basic = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
+    const headers = mode === 'auth' ? { Authorization: basic }
+      : mode === 'alt-header' ? { 'X-Authorization': basic }
+        : {};
+    const stepTrail = [];
     try {
-      const text = await requestText(url, 'GET', headers, null, { timeoutMs: 20000, trail });
+      const text = await requestText(url, 'GET', headers, null, { timeoutMs: 20000, trail: stepTrail });
       let json = null;
       try { json = JSON.parse(text); } catch { /* html or plain text */ }
-      return push({ label, url, status: 200, ok: true, json, note: json ? '' : `الرد ليس JSON (${text.slice(0, 80).replace(/\s+/g, ' ')})` });
+      return push({ label, url, status: 200, ok: true, json, redirected: stepTrail.length > 1 ? stepTrail[stepTrail.length - 1].url : '', note: json ? '' : `الرد ليس JSON (${text.slice(0, 80).replace(/\s+/g, ' ')})` });
     } catch (error) {
       let json = null;
       try { json = JSON.parse(String(error.body || '')); } catch { /* keep null */ }
-      return push({ label, url, status: error.status || 0, ok: false, code: json && json.code ? json.code : '', note: String(error.message || '').slice(0, 200) });
+      return push({ label, url, status: error.status || 0, ok: false, code: json && json.code ? json.code : '', redirected: stepTrail.length > 1 ? stepTrail[stepTrail.length - 1].url : '', note: String(error.message || '').slice(0, 200) });
     }
   };
 
   // 1. is the REST API there at all, and does it advertise application passwords?
-  const apiRoot = await probe('فحص REST API (بدون بيانات)', '/wp-json/', false);
+  const apiRoot = await probe('فحص REST API (بدون بيانات)', '/wp-json/', 'anon');
   const auth = apiRoot.json && apiRoot.json.authentication ? Object.keys(apiRoot.json.authentication) : [];
   const advertisesAppPasswords = auth.includes('application-passwords');
   if (!apiRoot.ok) {
@@ -182,13 +196,30 @@ async function diagnoseWordPress(request) {
 
   // 2. credentials against users/me, then again without ?context=edit to tell
   //    "wrong password" apart from "right password, not enough capability"
-  const me = await probe('فحص البيانات على users/me (context=edit)', '/wp-json/wp/v2/users/me?context=edit', true);
+  const me = await probe('فحص البيانات على users/me (context=edit)', '/wp-json/wp/v2/users/me?context=edit', 'auth');
   let capabilities = null;
   if (!me.ok && me.status === 401) {
-    const plain = await probe('فحص البيانات على users/me (بدون context=edit)', '/wp-json/wp/v2/users/me', true);
+    const plain = await probe('فحص البيانات على users/me (بدون context=edit)', '/wp-json/wp/v2/users/me', 'auth');
     if (plain.ok) {
       capabilities = true;
       advice.push('البيانات صحيحة لكن المستخدم لا يملك صلاحية التحرير (context=edit). استخدم مستخدماً بصلاحية Administrator أو Editor.');
+    }
+  }
+  let editAccess = null;
+  let altHeader = null;
+  if (!me.ok) {
+    // Two questions this report keeps being asked, and they have different
+    // answers: are the credentials good but the users endpoint blocked, and
+    // does the host drop the Authorization header on the way to PHP?
+    editAccess = await probe('فحص صلاحية التحرير على المقالات (posts?context=edit)', '/wp-json/wp/v2/posts?context=edit&per_page=1', 'auth');
+    if (editAccess.ok) {
+      advice.push('البيانات **صحيحة**: الموقع قبلها على posts?context=edit. المشكلة في مسار users/me نفسه، وغالباً تحجبه إضافة حماية (Wordfence وأشباهها) أو قاعدة في الخادم. عطّل حجب مسار users مؤقتاً، أو اكتفِ بصلاحية المقالات — OrbitPress يتحقق من الاتصال عبر المقالات عندما يكون users/me محجوباً.');
+    }
+    if (username && password) {
+      altHeader = await probe('فحص البيانات بترويسة X-Authorization', '/wp-json/wp/v2/users/me?context=edit', 'alt-header');
+      if (altHeader.ok) {
+        advice.push('الموقع قبل البيانات عبر ترويسة **X-Authorization** ورفضها عبر Authorization — أي أن الخادم يحذف ترويسة Authorization قبل أن تصل إلى PHP. أضف في .htaccess: SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1 وإن كان NGINX: fastcgi_param HTTP_AUTHORIZATION $http_authorization;');
+      }
     }
   }
   if (me.ok) {
@@ -198,9 +229,12 @@ async function diagnoseWordPress(request) {
   } else if (me.status === 403) {
     advice.push('وردبريس قبل البيانات لكنه منع هذا الطلب (403) — غالباً إضافة حماية تحجب مسارات REST.');
   }
+  if (!me.ok && !(editAccess && editAccess.ok) && !(altHeader && altHeader.ok)) {
+    advice.push('الموقع يردّ 401 نفسه مع البيانات وبدونها، وهذا لا يميّز بين «كلمة تطبيق خاطئة» و«الخادم يحذف الترويسة». احسمهما بأمر واحد على سيرفرك: curl -i -u \'USER:APP_PASSWORD\' \'<رابط الموقع>/wp-json/wp/v2/users/me?context=edit\' — إن أجاب 200 فالبيانات سليمة والترويسة تُحذف في الطريق، وإن أجاب 401 فالاسم أو كلمة التطبيق خطأ.');
+  }
 
   // 3. can we list categories? that is what publishing relies on
-  const categories = await probe('فحص التصنيفات (categories)', '/wp-json/wp/v2/categories?per_page=1&hide_empty=false', true);
+  const categories = await probe('فحص التصنيفات (المسار عام)', '/wp-json/wp/v2/categories?per_page=1&hide_empty=false', 'auth');
   if (!categories.ok) {
     advice.push('تعذّر جلب التصنيفات، وهذا يعني أن النشر سيفشل أيضاً. أصلح الخطوة السابقة أولاً.');
   }
@@ -223,6 +257,8 @@ async function diagnoseWordPress(request) {
     passwordConfigured: !!password,
     advertisesAppPasswords,
     capabilities,
+    editAccessWorks: !!(editAccess && editAccess.ok),
+    altHeaderWorks: !!(altHeader && altHeader.ok),
     accountName: me.ok && me.json ? (me.json.name || me.json.slug || '') : '',
     steps: steps.map(({ json, ...rest }) => rest),
     advice: advice.filter(Boolean),

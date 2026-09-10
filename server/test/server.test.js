@@ -55,6 +55,29 @@ test('WordPress connection diagnostic names the cause instead of a bare 401', as
   assert.ok(legacy.advice.some((line) => /Application Passwords/.test(line)));
 });
 
+test('a blocked users endpoint and a stripped Authorization header are told apart', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'app-pass' }, 'site-shapes');
+
+  // credentials are good, but a security plugin refuses the users endpoint
+  wp.data.blockUsersEndpoint = true;
+  const blocked = await wordpress.diagnoseWordPress({ siteId: 'site-shapes' });
+  assert.equal(blocked.editAccessWorks, true, 'posts?context=edit still answers, so the credentials work');
+  assert.ok(blocked.advice.some((line) => /users\/me/.test(line)), 'the advice names the blocked endpoint');
+  const connection = await wordpress.testConnection({ siteId: 'site-shapes' });
+  assert.equal(connection.ok, true, 'publishing does not depend on the users endpoint');
+  assert.equal(connection.usersEndpointBlocked, true);
+
+  // the host drops Authorization but passes X-Authorization through to PHP
+  wp.data.blockUsersEndpoint = false;
+  wp.data.acceptsAltHeader = true;
+  wp.data.expectedAuth = 'Basic ' + Buffer.from('admin:app-pass', 'utf8').toString('base64');
+  const stripped = await wordpress.diagnoseWordPress({ siteId: 'site-shapes' });
+  assert.equal(stripped.altHeaderWorks, true, 'the alternative header got through');
+  assert.ok(stripped.advice.some((line) => /SetEnvIf/.test(line)), 'and the fix for the stripped header is spelled out');
+});
+
 test('a refused connection explains itself instead of repeating the raw 401', async (t) => {
   const wp = await mocks.startWordPressMock();
   t.after(() => wp.server.close());

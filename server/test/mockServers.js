@@ -48,13 +48,25 @@ function startWordPressMock(state = {}) {
       const authentication = data.noApplicationPasswords ? {} : { 'application-passwords': { endpoints: { authorization: `${data.baseUrl}/wp-admin/authorize-application.php` } } };
       return json({ name: 'Mock Site', description: 'Just another WordPress site', url: data.baseUrl, namespaces: ['wp/v2'], authentication });
     }
-    if (!req.headers.authorization) return json({ code: 'rest_not_logged_in' }, 401);
+    if (!req.headers.authorization && !(data.acceptsAltHeader && req.headers['x-authorization'])) return json({ code: 'rest_not_logged_in' }, 401);
     // credentials are only enforced when a test asks for it
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/users/me') {
+      if (data.blockUsersEndpoint) return json({ code: 'rest_user_cannot_view', message: 'Sorry, you are not allowed to list users.', data: { status: 401 } }, 401);
+      // a host that drops the Authorization header: only X-Authorization lands
+      if (data.acceptsAltHeader) {
+        if (req.headers['x-authorization'] && req.headers['x-authorization'] === data.expectedAuth) return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
+        return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
+      }
       if (data.expectedAuth && req.headers.authorization !== data.expectedAuth) return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
       if (data.requireEditContext && !String(url.searchParams.get('context') || '').includes('edit')) return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
       if (data.requireEditContext) return json({ code: 'rest_forbidden_context', message: 'Sorry, you are not allowed to edit posts.', data: { status: 401 } }, 401);
       return json({ id: 1, name: 'Askinz Admin', slug: 'askinz' });
+    }
+    // a blocked users endpoint with working credentials: publishing is fine,
+    // only the account lookup is refused — the shape some security plugins make
+    if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/posts' && data.blockUsersEndpoint) {
+      if (data.expectedAuth && req.headers.authorization !== data.expectedAuth) return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
+      return json([]);
     }
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/categories') {
       if (data.expectedAuth && req.headers.authorization !== data.expectedAuth) return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
@@ -93,6 +105,10 @@ function startWordPressMock(state = {}) {
       return media ? json(media) : json({ code: 'rest_post_invalid_id' }, 404);
     }
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/posts') {
+      // context=edit is the one that needs real credentials, like WordPress
+      if (String(url.searchParams.get('context') || '') === 'edit' && data.expectedAuth && req.headers.authorization !== data.expectedAuth) {
+        return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
+      }
       const slug = url.searchParams.get('slug');
       return json(slug ? data.posts.filter((p) => p.slug === slug) : data.posts);
     }
