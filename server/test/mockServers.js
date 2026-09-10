@@ -355,6 +355,11 @@ function startPinterestPublishMock(options = {}) {
         bodies.push({ s3Upload: { length: Buffer.byteLength(raw), hasFile: raw.includes('name="file"') } });
       }
 
+      if (url.pathname === '/resource/UserResource/get/') {
+        // Functional session canary: guests/auth-expired jars get code 2.
+        if (options.failStage === 'user-auth') return authFailure();
+        return json({ resource_response: { data: { id: '555000111', username: 'mockuser' } } });
+      }
       if (url.pathname === '/resource/BoardResource/get/') {
         return json({ resource_response: { data: { id: '112233445566778899' } } });
       }

@@ -394,14 +394,34 @@ async function resolveBoardId(cookieHeader, value) {
  * Publish a pin with the signed-in session.
  * Returns { ok, pinUrl, pinId } or { ok:false, message, stage }.
  */
+/**
+ * Functional session canary: call UserResource/get the way the site's own
+ * header does. Cookie names (`_auth`, …) are NOT reliable proof — some fully
+ * logged-in accounts never receive `_auth=1` — whereas the authenticated user
+ * resource either returns the account or auth code 2.
+ */
+async function sessionAlive(hostsList, cookieHeader) {
+  try {
+    const parsed = await getResource(
+      hostsList, cookieHeader, 'UserResource/get/',
+      { isPrefetch: false, field_set_key: 'auth' }, '/', { stage: 'session', timeoutMs: 30000 },
+    );
+    const data = parsed && parsed.resource_response && parsed.resource_response.data;
+    return !!(data && (data.username || data.id));
+  } catch (error) {
+    if (error.auth) throw error;
+    // A non-auth failure (network quirk on a mirror) must not block publishing:
+    // the board resolution / upload right after will surface real problems.
+    return true;
+  }
+}
+
 async function publishPinWithSession({ boardId, title, description, link, image, altText }) {
   const sessions = require('./sessions');
   const cookieHeader = await sessions.cookieHeader('pinterest').catch(() => '');
   if (!cookieHeader) return { ok: false, stage: 'session', message: 'لا توجد جلسة Pinterest متصلة — اربط الحساب من الإعدادات أولاً.' };
-  // Pinterest leaves `_pinterest_sess` in the jar after logout; `_auth=1` is
-  // the marker that actually distinguishes a signed-in session.
-  if (!/(?:^|; )_auth=1(?:;|$)/.test(cookieHeader)) {
-    return { ok: false, stage: 'session', message: SESSION_RELOGIN_MESSAGE };
+  if (!/_pinterest_sess=/.test(cookieHeader)) {
+    return { ok: false, stage: 'session', message: 'ملف جلسة Pinterest ناقص — اقطع الاتصال من البطاقة وسجّل الدخول مجدداً (أو استورد الكوكيز)، ثم أعد النشر.' };
   }
   if (!csrfFrom(cookieHeader)) {
     return { ok: false, stage: 'session', message: 'تنقص كوكي csrftoken في جلسة Pinterest — اقطع الاتصال من البطاقة وسجّل الدخول مجدداً حتى تكتمل الجلسة، ثم أعد النشر.' };
@@ -409,6 +429,17 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   if (!boardId) return { ok: false, stage: 'board', message: 'حدّد لوحة النشر (Board ID أو رابط اللوحة) في الإعدادات.' };
 
   const mirrors = hosts();
+
+  // Canary: prove the plain-HTTP session is actually logged in before we
+  // register an upload (works for numeric board IDs too, which skip resolve).
+  try {
+    if (!(await sessionAlive(mirrors, cookieHeader))) {
+      return { ok: false, stage: 'session', message: SESSION_RELOGIN_MESSAGE };
+    }
+  } catch (error) {
+    if (error.auth) return { ok: false, stage: 'session', message: error.message };
+  }
+
   let resolved;
   try {
     resolved = await resolveBoardId(cookieHeader, boardId);

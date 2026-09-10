@@ -30,11 +30,10 @@ const PLATFORMS = {
   },
   pinterest: {
     loginUrl: 'https://www.pinterest.com/login/',
-    // IMPORTANT: Pinterest keeps `_pinterest_sess` present even after logout
-    // ("authentication tokens are deleted but we leave the cookie present").
-    // The real proof of a signed-in session is `_auth=1`; checking only
-    // `_pinterest_sess` is how a failed login gets falsely reported as
-    // connected (every resource call then answers with auth code 2).
+    // NOTE: Pinterest keeps `_pinterest_sess` present even after logout, and
+    // some valid sessions never receive `_auth=1`. These cookie markers are a
+    // fast hint only — liveAuthenticated() verifies Pinterest sessions
+    // functionally via the UserResource/get XHR (see pinterestLoggedIn()).
     sessionCookies: ['_pinterest_sess', '_auth'],
     authCookies: { _auth: '1' },
     homeUrl: 'https://www.pinterest.com/',
@@ -47,6 +46,10 @@ const PLATFORMS = {
 /**
  * Presence alone is not enough: for Pinterest `_auth` must equal "1".
  * `authCookies: { name: expectedValue }` — null/undefined means "must exist".
+ * NOTE: cookie markers are only a fast hint for Pinterest — some accounts
+ * never receive `_auth` while being fully logged in (regional/rollout
+ * differences). The authoritative check is liveAuthenticated(), which calls
+ * UserResource/get the way the site itself does.
  */
 function isAuthenticated(platform, cookies) {
   const config = PLATFORMS[platform];
@@ -59,6 +62,49 @@ function isAuthenticated(platform, cookies) {
     if (expected != null && value !== String(expected)) return false;
   }
   return config.sessionCookies.some((name) => !!byName.get(name));
+}
+
+/**
+ * Authoritative, functional session check, executed inside the signed-in
+ * browser so every fingerprint/header matches the site's own XHR:
+ *  - Facebook: c_user + xs cookies remain the reliable markers
+ *  - Pinterest: GET /resource/UserResource/get/ (field_set_key=auth) returns
+ *    the username when logged in; guests get code 2 "Authentication failed".
+ * The page must currently be on a pinterest.com origin.
+ */
+async function pinterestLoggedIn(page) {
+  try {
+    if (!/^https:\/\/[^/]*pinterest\.com\//.test(page.url())) return false;
+    return await page.evaluate(async () => {
+      try {
+        const q = `source_url=${encodeURIComponent('/')}&data=${encodeURIComponent(JSON.stringify({ options: { isPrefetch: false, field_set_key: 'auth' }, context: {} }))}`;
+        const r = await fetch(`/resource/UserResource/get/?${q}`, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json, text/javascript, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-Pinterest-AppState': 'active',
+            'X-Pinterest-PWS-Handler': 'www/[username].js',
+          },
+        });
+        if (!r.ok) return false;
+        const j = await r.json();
+        if (Number(j.code) === 1 || Number(j.code) === 2 || String(j.status) === 'failure') return false;
+        const data = j && j.resource_response && j.resource_response.data;
+        return !!(data && (data.username || data.id));
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function liveAuthenticated(platform, page) {
+  if (platform === 'pinterest') return pinterestLoggedIn(page);
+  return isAuthenticated(platform, await page.context().cookies());
 }
 
 const CODE_INPUT_SELECTORS = [
@@ -264,7 +310,7 @@ async function login(platform, credentials) {
     }
     await saveLoginDebug(platform, page, 'no-session-cookie');
     if (platform === 'pinterest') {
-      throw new Error('لم يؤكّد Pinterest الدخول (لا يوجد كوكي _auth=1). تحقق من البريد وكلمة المرور، وإن كان حسابك يسجّل الدخول عبر Google/Facebook فأضف كلمة مرور لحساب Pinterest من إعدادات الحساب ثم أعد المحاولة. أو استورد الكوكيز من متصفحك عبر حقل الاستيراد بالبطاقة إن ظهر CAPTCHA. حُفظت لقطة تشخيص في data/debug/.');
+      throw new Error('لم يؤكّد Pinterest الدخول وظيفياً (استدعاء بيانات الحساب لم يتعرف على مستخدم مسجّل). تحقق من البريد وكلمة المرور، وإن كان حسابك يسجّل الدخول عبر Google/Facebook فأضف كلمة مرور لحساب Pinterest من إعدادات الحساب ثم أعد المحاولة. أو استورد الكوكيز من متصفحك عبر حقل الاستيراد بالبطاقة إن ظهر CAPTCHA. حُفظت لقطة تشخيص في data/debug/.');
     }
     throw new Error('لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة). حُفظت لقطة تشخيص في data/debug/ على السيرفر.');
   } catch (error) {
@@ -319,13 +365,14 @@ async function runLoginAttempt(platform, page, config, username, password, isRet
   }
   await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
 
-  // Real auth markers take a few redirects to land. Poll instead of trusting
-  // one early snapshot — Pinterest also sets `_pinterest_sess` for guests,
-  // so a single early cookie read reports false "connected".
+  // Real auth takes a few redirects to land. Poll with the FUNCTIONAL check
+  // (the site's own UserResource XHR) instead of trusting cookie names —
+  // Pinterest keeps `_pinterest_sess` for guests and some real sessions never
+  // carry `_auth=1`.
   let captcha = false;
   for (let attempt = 0; attempt < 12; attempt += 1) {
     await page.waitForTimeout(2500);
-    if (isAuthenticated(platform, await context.cookies())) {
+    if (await liveAuthenticated(platform, page)) {
       // Load home once so the full cookie set (csrftoken, routing…) is present
       // before the publisher sends its first request.
       await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -485,12 +532,12 @@ async function submitVerification(platform, code) {
   }
   await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
 
-  // The platform can take a few redirects to mint the session; poll the real
-  // auth markers (Pinterest's guest `_pinterest_sess` is not proof of login).
+  // The platform can take a few redirects to mint the session; poll with the
+  // functional check (UserResource XHR) — cookie names are not reliable proof.
   let authenticated = false;
   for (let attempt = 0; attempt < 12; attempt += 1) {
     await page.waitForTimeout(2500);
-    if (isAuthenticated(platform, await context.cookies())) { authenticated = true; break; }
+    if (await liveAuthenticated(platform, page)) { authenticated = true; break; }
     if (attempt === 6) await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   }
   if (authenticated) return finishLogin(platform, context, '');
@@ -513,9 +560,12 @@ async function submitVerification(platform, code) {
 }
 
 /**
- * Re-validate a stored profile against the live site and update its connected
- * flag. This is how the Settings card can downgrade a stale "connected" label
- * (Pinterest leaves the session cookie in place after logout/expiry).
+ * Re-validate a stored profile against the live site with the FUNCTIONAL
+ * session check and update its connected flag. This is how the Settings card
+ * can correct a stale label in either direction — a guest jar that pretended
+ * to be connected, or (as happens on some Pinterest accounts) a perfectly
+ * valid session that never carries `_auth=1`. Network hiccups are retried so
+ * a transient failure does not downgrade a good session.
  */
 async function verifyConnected(platform) {
   platformConfig(platform);
@@ -527,9 +577,16 @@ async function verifyConnected(platform) {
   try {
     await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await dismissConsentWalls(page);
-    await page.waitForTimeout(4000);
+    let ok = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await page.waitForTimeout(attempt === 0 ? 3500 : 2500);
+      if (await liveAuthenticated(platform, page)) { ok = true; break; }
+      if (attempt < 2) {
+        await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        await dismissConsentWalls(page);
+      }
+    }
     const cookies = await context.cookies();
-    const ok = isAuthenticated(platform, cookies);
     const meta = metaStore();
     const entry = meta.platforms[platform] || {};
     entry.connected = ok;
@@ -643,12 +700,12 @@ async function importCookies(platform, raw) {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       await page.waitForTimeout(2500);
-      if (isAuthenticated(platform, await context.cookies())) { authenticated = true; break; }
+      if (await liveAuthenticated(platform, page)) { authenticated = true; break; }
     }
     if (!authenticated) {
       await saveLoginDebug(platform, page, 'cookie-import-unauth');
       if (platform === 'pinterest') {
-        throw new Error('الكوكيز المستوردة لا تُمثّل جلسة دخول (لم يظهر كوكي _auth=1). افتح pinterest.com في متصفحك وتأكد أنك داخل حسابك فعلاً، ثم اضغط Export في Cookie-Editor من جديد والصق النص فوراً (لا تُسجّل الخروج بعد النسخ).');
+        throw new Error('الكوكيز المستوردة لا تُمثّل جلسة دخول (استدعاء بيانات المستخدم رُفض). افتح pinterest.com في متصفحك وتأكد أنك داخل حسابك فعلاً وترى صفحتك الرئيسية، ثم اضغط Export في Cookie-Editor من جديد والصق النص فوراً (لا تُسجّل الخروج بعد النسخ).');
       }
       throw new Error('الكوكيز المستوردة لا تُمثّل جلسة دخول. كرّر التصدير وأنت مسجّل الدخول فعلاً على صفحة المنصة.');
     }

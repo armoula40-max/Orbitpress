@@ -373,10 +373,41 @@ test('publishing a Pin uses the signed-in session, not an API token', async (t) 
   assert.equal(create.options.method, 'uploaded');
 });
 
-test('a Pinterest cookie jar without _auth=1 is rejected as a guest session before any upload', async (t) => {
-  // Pinterest keeps _pinterest_sess present even when logged out, so the old
-  // presence check reported false "connected" and every write got code 2.
+test('a real Pinterest session that never received the _auth cookie still publishes (functional canary)', async (t) => {
+  // Some accounts/regions are fully logged in but never get `_auth=1`; the old
+  // name-based gate downgraded those valid sessions. The canary is now the
+  // site's own UserResource/get XHR.
   const mock = await mocks.startPinterestPublishMock();
+  t.after(() => mock.server.close());
+  const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
+  process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
+  t.after(() => {
+    if (savedHosts == null) delete process.env.ORBITPRESS_PINTEREST_HOSTS;
+    else process.env.ORBITPRESS_PINTEREST_HOSTS = savedHosts;
+  });
+  const sessions = require('../lib/scraper/sessions');
+  const publisher = require('../lib/scraper/pinterestPublish');
+  const originalCookie = sessions.cookieHeader;
+  sessions.cookieHeader = async () => 'csrftoken=abc123; _pinterest_sess=valid-no-auth-cookie';
+  t.after(() => { sessions.cookieHeader = originalCookie; });
+
+  const result = await publisher.publishPinWithSession({
+    boardId: '112233445566778899',
+    title: 'No Auth Cookie Pin',
+    description: 'x',
+    link: 'https://example.test/post',
+    image: { bytes: mocks.tinyPng(1000, 1500), mimeType: 'image/png' },
+    altText: 'x',
+  });
+  assert.equal(result.ok, true, result.message);
+  assert.ok(mock.paths().includes('/resource/UserResource/get/'), 'the functional canary ran');
+  assert.ok(mock.paths().includes('/resource/PinResource/create/'));
+});
+
+test('a guest/expired Pinterest jar is caught by the UserResource canary answering code 2', async (t) => {
+  // Pinterest keeps _pinterest_sess present even when logged out; the
+  // functional canary (not a cookie name) identifies those jars.
+  const mock = await mocks.startPinterestPublishMock({ failStage: 'user-auth' });
   t.after(() => mock.server.close());
   const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
   process.env.ORBITPRESS_PINTEREST_HOSTS = mock.url;
@@ -401,8 +432,9 @@ test('a Pinterest cookie jar without _auth=1 is rejected as a guest session befo
   assert.equal(result.ok, false);
   assert.equal(result.stage, 'session');
   assert.match(result.message, /قطع الاتصال/);
-  assert.match(result.message, /مجدداً/);
-  assert.equal(mock.paths().length, 0, 'no Pinterest endpoint is called with a guest jar');
+  assert.match(result.message, /كود 2|code 2/i);
+  assert.ok(!mock.paths().includes('/resource/ApiResource/create/'), 'no upload is registered for a guest jar');
+  assert.ok(!mock.paths().includes('/s3-upload'), 'no S3 upload happens for a guest jar');
 });
 
 test('an expired Pinterest session (register answers auth code 2) returns re-login guidance', async (t) => {
