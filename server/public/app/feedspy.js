@@ -584,6 +584,12 @@
           '<input type="password" id="' + platform + 'LoginPass" placeholder="كلمة المرور" autocomplete="off">' +
           '<button type="button" class="small-button" id="' + platform + 'LoginBtn">تسجيل الدخول عبر متصفح السيرفر</button>' +
           '<p class="helper">يبقى تسجيل الدخول على السيرفر فقط، ويستخدمه الماسح المدمج. لا API ولا رفع كوكيز. إذا طُلب رمز تحقق (2FA) سيظهر حقل إدخاله هنا فوراً.</p>' +
+          '<details class="spy-cookie-import">' +
+            '<summary>ظهر CAPTCHA أو رفض الدخول؟ استورد الكوكيز من متصفحك (الأضمنن)</summary>' +
+            '<p class="helper">1) افتح ' + label + ' في متصفحك العادي وسجّل دخولك. 2) ثبّت إضافة <b>Cookie-Editor</b> ثم افتحها وأنت على صفحة ' + label + ' واضغط <b>Export</b> (انسخ JSON). 3) الصق النص هنا واضغط استيراد — تبقى الكوكيز على السيرفر فقط.</p>' +
+            '<textarea id="' + platform + 'CookieImport" rows="4" dir="ltr" style="width:100%;font-family:monospace;font-size:11px" placeholder=\'[{"name":"_auth","value":"1",...}]\'></textarea>' +
+            '<button type="button" class="small-button" id="' + platform + 'ImportBtn">استيراد الكوكيز والاتصال</button>' +
+          '</details>' +
         '</div>' +
         '<div id="' + platform + 'VerifyStep" class="spy-verify" style="display:none"></div>' +
         '<div class="spy-session-actions" style="display:' + (connected ? 'block' : 'none') + '">' +
@@ -689,6 +695,29 @@
           fetch('/api/sessions/' + platform, { method: 'DELETE' })
             .then(function () { spyNotice('تم قطع اتصال ' + platform + '.', 'good'); })
             .finally(refreshSessionsCard);
+        };
+        var importBtn = document.getElementById(platform + 'ImportBtn');
+        if (importBtn) importBtn.onclick = function () {
+          var raw = (document.getElementById(platform + 'CookieImport') || {}).value || '';
+          if (!raw.trim()) { spyNotice('الصق الكوكيز المصدرة من متصفحك أولاً.', 'bad'); return; }
+          importBtn.disabled = true;
+          importBtn.textContent = '…جارٍ الاستيراد والتحقق من الجلسة';
+          fetch('/api/sessions/' + platform + '/cookies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cookies: raw }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (result) {
+              if (!result.ok) throw new Error(result.message || 'فشل استيراد الكوكيز.');
+              spyNotice('تم استيراد جلسة ' + platform + ' بنجاح ✓', 'good');
+              refreshSessionsCard();
+            })
+            .catch(function (error) { spyNotice(error.message, 'bad'); })
+            .finally(function () {
+              importBtn.disabled = false;
+              importBtn.textContent = 'استيراد الكوكيز والاتصال';
+            });
         };
         var recheckBtn = document.getElementById(platform + 'RecheckBtn');
         if (recheckBtn) recheckBtn.onclick = function () {

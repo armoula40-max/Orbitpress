@@ -202,6 +202,14 @@ router.post('/sessions/:platform/verify', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...status });
 }));
 
+// Seed the session with cookies copied from the user's own browser (the
+// reliable path when the headless server browser is shown a CAPTCHA wall).
+router.post('/sessions/:platform/cookies', asyncRoute(async (req, res) => {
+  const raw = req.body && (req.body.cookies || req.body.raw || '');
+  const status = await scraper.sessions.importCookies(req.params.platform, raw);
+  res.json({ ok: true, ...status });
+}));
+
 router.get('/sessions/:platform/verification', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform) });
 }));
