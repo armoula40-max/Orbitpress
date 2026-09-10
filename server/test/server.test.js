@@ -86,6 +86,35 @@ test('a refused connection explains itself instead of repeating the raw 401', as
   await assert.rejects(() => wordpress.testConnection({ siteId: 'site-401' }), /Diagnose WordPress connection/);
 });
 
+test('the connection test round-trips and removes a real JPEG through the media endpoint', async (t) => {
+  const wp = await mocks.startWordPressMock();
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' }, 'site-probe');
+  const connection = await wordpress.testConnection({ siteId: 'site-probe' });
+  assert.equal(connection.uploadsVerified, true, 'media upload capability is part of the test');
+  assert.equal(wp.data.uploads.length, 1, 'exactly one probe image was uploaded');
+  const [probe] = wp.data.uploads;
+  assert.equal(probe.contentType, 'image/jpeg');
+  assert.equal(probe.filename, 'orbitpress-connection-test.jpg');
+  assert.ok(probe.length > 0 && probe.bytes[0] === 0xff && probe.bytes[1] === 0xd8, 'a genuine JPEG body was sent');
+  assert.deepEqual(wp.data.deletions || [], [wp.data.media[0].id], 'the probe attachment was deleted');
+});
+
+test('the connection test fails with guidance when the site blocks media uploads', async (t) => {
+  const wp = await mocks.startWordPressMock({ rejectImageTypes: ['image/jpeg'] });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' }, 'site-probe-blocked');
+  let message = '';
+  try {
+    await wordpress.testConnection({ siteId: 'site-probe-blocked' });
+  } catch (error) {
+    message = String(error.message || '');
+  }
+  assert.ok(message, 'the test fails instead of reporting a false success');
+  assert.match(message, /standard JPEG/i);
+  assert.match(message, /security plugin|firewall|WAF/i);
+});
+
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -230,25 +259,71 @@ test('the image reaches WordPress as raw bytes with its own content type', async
   assert.equal(second.filename, 'crispy-air-fryer-chicken-wings-pinterest.png');
 });
 
-test('a site that refuses the image type is explained, not echoed as a raw 500', async (t) => {
+test('a site that refuses PNG still publishes via an automatic JPEG retry', async (t) => {
   const wp = await mocks.startWordPressMock({ rejectImageTypes: ['image/png'] });
   t.after(() => wp.server.close());
   store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', articleBaseUrl: 'https://ai.example.com/v1', articleModel: 'm', articleApiKey: 'k', categoryId: '3' }, 'site-mime');
+  const featuredPng = await mocks.realImage('png', 1200, 800);
+  const pinterestPng = await mocks.realImage('png', 1000, 1500);
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  const result = await wordpress.publish({
+    siteId: 'site-mime',
+    draft,
+    images: { featured: mocks.makeDataUrl(featuredPng, 'image/png'), pinterest: mocks.makeDataUrl(pinterestPng, 'image/png') },
+    postStatus: 'draft',
+  });
+  assert.ok(result.url, 'publish succeeds after retrying the refused PNG as JPEG');
+  // Each image was first sent as PNG (refused) then retried as standard JPEG.
+  const contentTypes = wp.data.uploads.map((u) => u.contentType);
+  assert.deepEqual([...contentTypes].sort(), ['image/jpeg', 'image/jpeg', 'image/png', 'image/png']);
+  assert.ok(wp.data.uploads.every((u) => /^[\x20-\x7e]+\.(jpg|png)$/.test(u.filename)));
+});
+
+test('WebP is sent to WordPress as JPEG without ever attempting a WebP upload', async (t) => {
+  const wp = await mocks.startWordPressMock({ rejectImageTypes: ['image/webp'] });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', articleBaseUrl: 'https://ai.example.com/v1', articleModel: 'm', articleApiKey: 'k', categoryId: '3' }, 'site-webp');
+  const featured = await mocks.realImage('webp', 1200, 800);
+  const pinterest = await mocks.realImage('webp', 1000, 1500);
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  const result = await wordpress.publish({
+    siteId: 'site-webp',
+    draft,
+    images: { featured: mocks.makeDataUrl(featured, 'image/webp'), pinterest: mocks.makeDataUrl(pinterest, 'image/webp') },
+    postStatus: 'draft',
+  });
+  assert.ok(result.url, 'publishing the WebP pair succeeds');
+  assert.equal(wp.data.uploads.length, 2, 'no failed WebP attempt is retried — it was normalized first');
+  for (const upload of wp.data.uploads) {
+    assert.equal(upload.contentType, 'image/jpeg', `${upload.filename} reaches WordPress as JPEG`);
+    assert.match(upload.filename, /\.jpg$/, `${upload.filename} carries a .jpg name`);
+    assert.equal(upload.bytes[0], 0xff, 'real JPEG magic bytes');
+    assert.equal(upload.bytes[1], 0xd8);
+  }
+});
+
+test('a site that refuses even JPEG gets firewall guidance, not a raw 500', async (t) => {
+  const wp = await mocks.startWordPressMock({ rejectImageTypes: ['image/png', 'image/jpeg', 'image/webp'] });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', articleBaseUrl: 'https://ai.example.com/v1', articleModel: 'm', articleApiKey: 'k', categoryId: '3' }, 'site-mime2');
+  const featured = await mocks.realImage('webp', 1200, 800);
+  const pinterest = await mocks.realImage('webp', 1000, 1500);
   const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
   let message = '';
   try {
     await wordpress.publish({
-      siteId: 'site-mime',
+      siteId: 'site-mime2',
       draft,
-      images: { featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)), pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)) },
+      images: { featured: mocks.makeDataUrl(featured, 'image/webp'), pinterest: mocks.makeDataUrl(pinterest, 'image/webp') },
       postStatus: 'draft',
     });
   } catch (error) {
     message = String(error.message || '');
   }
   assert.ok(message, 'publishing failed instead of silently skipping the image');
-  assert.match(message, /WordPress refused the image .* as image\/png/);
-  assert.match(message, /upload_mimes|security plugin/, 'the message names what to change');
+  assert.match(message, /standard JPEG/i, 'the message notes the format was already JPEG');
+  assert.match(message, /security plugin|firewall|WAF/i, 'the message names the likely firewall cause');
+  assert.match(message, /wp-admin/i, 'the message points at the manual Media upload check');
   assert.doesNotMatch(message, /^Request failed \(500\)/, 'the raw WordPress 500 is not what the user reads');
 });
 

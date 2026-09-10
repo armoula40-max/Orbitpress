@@ -24,6 +24,29 @@ function makeDataUrl(buffer, mime = 'image/png') {
   return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
+/**
+ * A REAL, fully-encodable image (unlike tinyPng, which only carries a PNG
+ * signature). Needed when the code under test hands bytes to sharp to
+ * transcode, e.g. WebP → JPEG on the WordPress upload path.
+ */
+async function realImage(format, width, height) {
+  const sharp = require('sharp');
+  const channels = 3;
+  const raw = Buffer.alloc(width * height * channels);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * channels;
+      raw[offset] = x < width / 3 ? 120 : 245;
+      raw[offset + 1] = 200;
+      raw[offset + 2] = 160;
+    }
+  }
+  const pipeline = sharp(raw, { raw: { width, height, channels } });
+  if (format === 'webp') return pipeline.webp({ quality: 90 }).toBuffer();
+  if (format === 'jpeg' || format === 'jpg') return pipeline.jpeg({ quality: 90 }).toBuffer();
+  return pipeline.png().toBuffer();
+}
+
 // ---------------------------------------------------------------------------
 
 function startWordPressMock(state = {}) {
@@ -135,6 +158,11 @@ function startWordPressMock(state = {}) {
     if (mediaMatch && req.method === 'GET') {
       const media = data.media.find((m) => m.id === Number(mediaMatch[1]));
       return media ? json(media) : json({ code: 'rest_post_invalid_id' }, 404);
+    }
+    if (mediaMatch && req.method === 'DELETE') {
+      data.deletions = data.deletions || [];
+      data.deletions.push(Number(mediaMatch[1]));
+      return json({ deleted: true, previous: { id: Number(mediaMatch[1]) } });
     }
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/posts') {
       // context=edit is the one that needs real credentials, like WordPress
@@ -409,4 +437,4 @@ function startPinterestResourceMock() {
   });
 }
 
-module.exports = { tinyPng, startImageApiMock, startPinterestPublishMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };
+module.exports = { tinyPng, realImage, startImageApiMock, startPinterestPublishMock, makeDataUrl, startWordPressMock, startPinterestMock, startArticleApiMock, startPinterestResourceMock, sampleArticleJson };

@@ -128,6 +128,7 @@ cd /opt/orbitpress && docker compose up -d
 | الماسح: "Playwright is not installed" | نادر داخل الصورة الجاهزة؛ تحقق بـ `docker compose logs` وأعد البناء بـ `docker compose build --no-cache` |
 | Facebook يطلب checkpoint | أنجز التحقق في متصفحك على نفس الحساب ثم أعد تسجيل الدخول من الإعدادات |
 | Pinterest يرجع 403/429 | الخادم محظور مؤقتاً — سجّل الدخول من الإعدادات أو أعد المحاولة لاحقاً |
+| النشر: `rest_upload_sideload_error` / "not allowed to upload this file type" | السيرفر يحوّل WebP إلى JPEG ويعيد المحاولة تلقائياً. إن استمرت، فجدار حماية/إضافة أمان تُفرغ جسم الرفض من REST أو الحساب بلا صلاحية رفع: جرّب رفع JPEG يدوياً في wp-admin → Media، واستخدم حساباً بدور Author/Editor/Administrator، واطلب من الاستضافة السماح بالرفع إلى `/wp-json/wp/v2/media`. يفحص زر Save & test رفع الوسائط نفسه ويشير للسبب |
 | `Out of memory` أثناء البناء (RAM 1GB) | `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` ثم أعد الأمر |
 | فقدت رمز الدخول | `grep ORBITPRESS_TOKEN /opt/orbitpress/.env` |
 

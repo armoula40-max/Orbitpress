@@ -331,6 +331,12 @@ const PublishingContracts = {
     return url;
   },
 
+  /** Real format from magic bytes, or null when the bytes are no supported image. */
+  detectImageMimeType(bytes) {
+    const detected = detectMimeType(bytes);
+    return detected === 'unknown' ? null : detected;
+  },
+
   validatedImageMimeType(declared, bytes) {
     const mime = optStr(declared).toLowerCase();
     const detected = detectMimeType(bytes);

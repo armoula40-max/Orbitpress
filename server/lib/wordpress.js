@@ -14,6 +14,7 @@ const {
 } = require('./contracts');
 const { getSiteSettings, loadNamedStore, saveNamedStore } = require('./store');
 const { parseImage } = require('./images');
+const transcode = require('./imagetranscode');
 
 function wpRoot(base) {
   return PublishingContracts.requireHttpsUrl(base, 'WordPress URL').replace(/\/wp-json$/, '');
@@ -119,18 +120,50 @@ async function testConnection(request) {
   const settings = requireWordPressSettings(request);
   const root = wpRoot(settings.wordpressBaseUrl);
   return withWordPressHelp(Promise.resolve().then(async () => {
+    let accountName;
+    let usersEndpointBlocked = false;
     try {
       const profile = await requestJson(`${root}/wp-json/wp/v2/users/me?context=edit`, 'GET', wordpressHeaders(settings));
-      return { ok: true, accountName: profile.name || profile.slug || 'WordPress account' };
+      accountName = profile.name || profile.slug || 'WordPress account';
     } catch (error) {
       // Security plugins and some hosts block the users endpoint while the
       // credentials are perfectly good. Publishing only needs edit access to
       // posts, so verify there before declaring the connection broken.
       if (error.status !== 401 && error.status !== 403) throw error;
       await requestJson(`${root}/wp-json/wp/v2/posts?context=edit&per_page=1`, 'GET', wordpressHeaders(settings));
-      return { ok: true, accountName: `${settings.wordpressUsername || 'WordPress user'} (verified through posts — users/me is blocked)`, usersEndpointBlocked: true };
+      accountName = `${settings.wordpressUsername || 'WordPress user'} (verified through posts — users/me is blocked)`;
+      usersEndpointBlocked = true;
     }
+    // A readable users/me only proves the password works; publishing also
+    // uploads binary media, which a role without upload_files or a host WAF
+    // can block independently. Round-trip a tiny JPEG and delete it so the
+    // failure surfaces here instead of halfway through a publish run.
+    await verifyMediaUpload(root, settings);
+    const result = { ok: true, accountName, uploadsVerified: true };
+    if (usersEndpointBlocked) result.usersEndpointBlocked = true;
+    return result;
   }));
+}
+
+/**
+ * POSTs a tiny JPEG to the media endpoint and deletes it. This exercises the
+ * exact raw-binary path publishing uses (auth, Content-Type/Disposition,
+ * body not stripped by a firewall), so a role/WAF/type problem is named from
+ * the Settings screen rather than reported as rest_upload_sideload_error at
+ * publish time.
+ */
+async function verifyMediaUpload(root, settings) {
+  const probe = await transcode.probeJpeg();
+  let media;
+  try {
+    media = await postMedia(root, settings, probe, 'orbitpress-connection-test.jpg');
+  } catch (error) {
+    throw new Error(explainUploadFailure(error, probe, 'orbitpress-connection-test.jpg'));
+  }
+  if (media && media.id) {
+    await request(`${root}/wp-json/wp/v2/media/${media.id}?force=true`, 'DELETE', wordpressHeaders(settings), null)
+      .catch(() => { /* the probe being stored is harmless; cleanup is best-effort */ });
+  }
 }
 
 /**
@@ -433,35 +466,87 @@ function safeUploadBasename(basename, extension) {
   return `${ascii || 'orbitpress-image'}.${extension}`;
 }
 
+function isFileTypeRejection(error) {
+  const body = String((error && (error.body || error.message)) || '');
+  return /rest_upload_sideload_error|rest_upload_image_type_not_supported|rest_upload_invalid_mime_type|not allowed to upload this file type|this file type is not permitted/i.test(body);
+}
+
+function isUploadPermissionRejection(error) {
+  const body = String((error && (error.body || error.message)) || '');
+  return /rest_cannot_create|not allowed to upload media/i.test(body);
+}
+
 /** WordPress' own refusal, in words that say what to change. */
 function explainUploadFailure(error, image, filename) {
-  const body = String(error.body || error.message || '');
+  const body = String((error && (error.body || error.message)) || '');
   const codeMatch = /"code"\s*:\s*"([a-z_]+)"/i.exec(body);
   const code = codeMatch ? codeMatch[1] : '';
-  const status = error.status ? ` (${error.status})` : '';
-  if (code === 'rest_upload_sideload_error') {
-    return `WordPress refused the image ${filename} as ${image.mimeType}${status}. WordPress decides the file type from the uploaded bytes and the Content-Type header — it is not a permissions problem, and the image was never accepted. Try a JPEG or PNG, or allow ${image.mimeType} on the site: a security plugin, a hosting policy, or the upload_mimes filter can remove a type WordPress would otherwise accept.`;
+  const status = error && error.status ? ` (${error.status})` : '';
+  if (isUploadPermissionRejection(error)) {
+    return `WordPress accepted the login, but this user account is not allowed to upload files${status}. Use an Administrator, Editor, or Author account, or grant the account the upload_files capability.`;
+  }
+  if (code === 'rest_upload_sideload_error' || isFileTypeRejection(error)) {
+    // A standard JPEG failing means the format cannot be the cause: the
+    // uploaded body is being stripped/emptied before WordPress stores it.
+    if (image.mimeType === 'image/jpeg') {
+      return `WordPress rejected a standard JPEG (${filename}) as a disallowed file type${status}, so this is not an image-format problem. A security plugin or the server firewall (WAF/ModSecurity) is usually stripping the uploaded body before WordPress stores it. Verify you can add a JPEG from wp-admin → Media → Add New, then ask your host to allow POST uploads to /wp-json/wp/v2/media.`;
+    }
+    return `WordPress refused the image ${filename} as ${image.mimeType}${status}. WordPress decides the file type from the uploaded bytes and the Content-Type header. OrbitPress already sends WebP images as JPEG and retries refused PNG images as JPEG; if you see this, allow ${image.mimeType} on the site (a security plugin, a hosting policy, or the upload_mimes filter can remove a type WordPress would otherwise accept), or use a JPEG.`;
   }
   if (code === 'rest_upload_no_data') {
-    return `WordPress received an empty upload for ${filename}${status}. Choose the image again.`;
+    return `WordPress received an empty upload for ${filename}${status}, which usually means a firewall or proxy stripped the request body. Try again; if it persists, ask your host to allow upload bodies on /wp-json/wp/v2/media.`;
   }
   if (code === 'rest_cannot_create') {
     return `WordPress accepted your credentials but your user is not allowed to upload files${status}. Use an Administrator or Editor account, or grant the account the upload_files capability.`;
   }
-  return String(error.message || `Uploading ${filename} failed.`).slice(0, 400);
+  return String((error && error.message) || `Uploading ${filename} failed.`).slice(0, 400);
+}
+
+function postMedia(root, settings, image, filename) {
+  return requestRawJson(`${root}/wp-json/wp/v2/media`, 'POST', {
+    ...wordpressHeaders(settings),
+    'Content-Type': image.mimeType,
+    'Content-Disposition': `attachment; filename="${filename}"`,
+  }, image.bytes);
 }
 
 async function uploadMedia(root, settings, image, basename, altText) {
-  const filename = safeUploadBasename(basename, image.extension);
+  // WebP is refused by WordPress < 5.8, by multisite upload lists and by
+  // several security plugins. JPEG is accepted everywhere, so normalize
+  // proactively at the WordPress boundary.
+  let prepared = image;
+  if (transcode.shouldTranscodeToJpeg(image.mimeType)) {
+    try {
+      prepared = await transcode.transcodeToJpeg(image.bytes);
+    } catch {
+      prepared = image; // fall through; the retry below handles refusal
+    }
+  }
   let media;
   try {
-    media = await requestRawJson(`${root}/wp-json/wp/v2/media`, 'POST', {
-      ...wordpressHeaders(settings),
-      'Content-Type': image.mimeType,
-      'Content-Disposition': `attachment; filename="${filename}"`,
-    }, image.bytes);
+    media = await postMedia(root, settings, prepared, safeUploadBasename(basename, prepared.extension));
   } catch (error) {
-    throw new Error(explainUploadFailure(error, image, filename));
+    if (isFileTypeRejection(error) && prepared.mimeType !== transcode.JPEG_MIME) {
+      // A PNG (or a WebP that could not be pre-converted) was refused: send
+      // the same image once more as a plain JPEG, which every install accepts.
+      let fallback = null;
+      try {
+        fallback = await transcode.transcodeToJpeg(image.bytes);
+      } catch {
+        fallback = null;
+      }
+      if (fallback) {
+        try {
+          media = await postMedia(root, settings, fallback, safeUploadBasename(basename, fallback.extension));
+        } catch (retryError) {
+          throw new Error(explainUploadFailure(retryError, fallback, safeUploadBasename(basename, fallback.extension)));
+        }
+      } else {
+        throw new Error(explainUploadFailure(error, prepared, safeUploadBasename(basename, prepared.extension)));
+      }
+    } else {
+      throw new Error(explainUploadFailure(error, prepared, safeUploadBasename(basename, prepared.extension)));
+    }
   }
   await requestJson(`${root}/wp-json/wp/v2/media/${media.id}`, 'POST', wordpressHeaders(settings), { alt_text: String(altText || '').slice(0, 320) });
   return media;
@@ -750,7 +835,7 @@ async function generateCloudflareImage(settings, prompt) {
   }, { prompt, steps: 4 });
   const encoded = response.image || (response.result && response.result.image) || '';
   if (!encoded) throw new Error('Cloudflare returned no generated image.');
-  return { bytes: Buffer.from(encoded, 'base64'), mimeType: 'image/jpeg' };
+  return transcode.normalizeProviderImage(Buffer.from(encoded, 'base64'));
 }
 
 async function generateOpenAiCompatibleImage(settings, prompt, width, height) {
@@ -773,7 +858,7 @@ async function generateOpenAiCompatibleImage(settings, prompt, width, height) {
   const item = response.data && response.data[0];
   const encoded = item && (item.b64_json || '');
   if (!encoded) throw new Error('Image provider returned no base64 image.');
-  return { bytes: Buffer.from(encoded, 'base64'), mimeType: 'image/png' };
+  return transcode.normalizeProviderImage(Buffer.from(encoded, 'base64'));
 }
 
 module.exports = {
