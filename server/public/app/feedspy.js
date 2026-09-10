@@ -845,19 +845,6 @@
     var old = document.getElementById('spySessionsCard');
     if (old) old.remove();
     installSessionCard();
-    updateSocialHub();
-  }
-
-  function updateSocialHub() {
-    var hub = document.getElementById('socialHubStatus');
-    if (!hub) return;
-    fetch('/api/sessions').then(function (r) { return r.json(); }).then(function (s) {
-      hub.innerHTML = '<div class="spy-hub">' +
-        '<span class="' + (s.facebook && s.facebook.connected ? 'on' : '') + '">Facebook: ' + (s.facebook && s.facebook.connected ? 'متصل ✓' : 'غير متصل') + '</span>' +
-        '<span class="' + (s.pinterest && s.pinterest.connected ? 'on' : '') + '">Pinterest: ' + (s.pinterest && s.pinterest.connected ? 'متصل ✓' : 'غير متصل') + '</span>' +
-        '<em>الماسح المدمج يعمل بلا API ولا رفع كوكيز — الاتصال اختياري ويعمّق النتائج.</em>' +
-      '</div>';
-    }).catch(function () {});
   }
 
   // ---- boot ---------------------------------------------------------------------
@@ -882,7 +869,6 @@
     installToolbar('pinterest');
     wrapCallbacks();
     installSessionCard();
-    updateSocialHub();
   }
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') boot();
