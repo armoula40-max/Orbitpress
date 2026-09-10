@@ -611,7 +611,67 @@ function normalizeSameSite(value) {
   const v = String(value || '').toLowerCase();
   if (v.includes('none') || v.includes('no_restriction')) return 'None';
   if (v.includes('strict')) return 'Strict';
+  if (v.includes('lax')) return 'Lax';
   return 'Lax';
+}
+
+function platformCookieRoots(platform) {
+  if (platform === 'pinterest') return { rootDomain: '.pinterest.com', rootUrl: 'https://www.pinterest.com/' };
+  return { rootDomain: '.facebook.com', rootUrl: 'https://www.facebook.com/' };
+}
+
+/**
+ * Turn one parsed cookie into the exact shape Playwright/CDP accepts. CDP
+ * Storage.setCookies rejects the WHOLE batch with "Invalid cookie fields" on
+ * a single bad entry, so every rule is enforced here:
+ *  - domain must look like a domain (fallback to the platform root);
+ *  - path must start with "/" (fallback "/");
+ *  - sameSite None forces secure;
+ *  - expires must be a future unix second or omitted (session cookie);
+ *  - "__Host-" prefixed cookies forbid a Domain attribute and require path
+ *    "/" + secure, so they are expressed via `url` instead of `domain`;
+ *  - "__Secure-" prefixed cookies require secure.
+ * Returns null for entries that cannot be salvaged.
+ */
+function normalizePlaywrightCookie(cookie, platform) {
+  if (!cookie || !cookie.name || cookie.value === undefined || cookie.value === null) return null;
+  const name = String(cookie.name).trim();
+  if (!name || /[\s;=]/.test(name)) return null;
+  const { rootDomain, rootUrl } = platformCookieRoots(platform);
+  const rawDomain = String(cookie.domain || '').trim().toLowerCase();
+  const domain = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(rawDomain) ? rawDomain : rootDomain;
+  const path = /^\//.test(String(cookie.path || '')) ? String(cookie.path) : '/';
+  let secure = cookie.secure !== false;
+  const sameSite = ['Strict', 'Lax', 'None'].includes(cookie.sameSite)
+    ? cookie.sameSite
+    : normalizeSameSite(cookie.sameSite);
+  if (/^__secure-/i.test(name)) secure = true;
+  const hostPrefix = /^__host-/i.test(name);
+  if (hostPrefix) secure = true;
+  if (sameSite === 'None') secure = true;
+
+  const entry = {
+    name,
+    value: String(cookie.value),
+    path: hostPrefix ? '/' : path,
+    httpOnly: !!cookie.httpOnly,
+    secure,
+    sameSite,
+  };
+  if (hostPrefix) {
+    // __Host- cookies must be host-only: pass an origin URL, never a domain.
+    entry.url = rootUrl;
+    delete entry.path;
+  } else {
+    entry.domain = domain;
+  }
+  const expires = Number(cookie.expires != null ? cookie.expires : cookie.expirationDate);
+  if (Number.isFinite(expires)) {
+    const when = Math.floor(expires);
+    if (when > Math.floor(Date.now() / 1000)) entry.expires = when;
+    // past/zero/negative expiry → leave it as a session cookie
+  }
+  return entry;
 }
 
 /**
@@ -624,23 +684,11 @@ function normalizeSameSite(value) {
 function parseCookieImport(platform, raw) {
   const text = String(raw || '').trim();
   if (!text) throw new Error('الصق الكوكيز أولاً.');
-  const rootDomain = platform === 'pinterest' ? '.pinterest.com' : '.facebook.com';
+  const { rootDomain } = platformCookieRoots(platform);
   const out = [];
   const push = (cookie) => {
-    if (!cookie || !cookie.name || cookie.value === undefined || cookie.value === null) return;
-    const entry = {
-      name: String(cookie.name),
-      value: String(cookie.value),
-      domain: cookie.domain || rootDomain,
-      path: cookie.path || '/',
-      httpOnly: !!cookie.httpOnly,
-      secure: cookie.secure !== false,
-      sameSite: normalizeSameSite(cookie.sameSite),
-    };
-    const expires = Number(cookie.expires != null ? cookie.expires : cookie.expirationDate);
-    if (Number.isFinite(expires) && expires > 0) entry.expires = Math.floor(expires);
-    if (entry.sameSite === 'None') entry.secure = true;
-    out.push(entry);
+    const entry = normalizePlaywrightCookie(cookie, platform);
+    if (entry) out.push(entry);
   };
 
   if (text[0] === '[' || text[0] === '{') {
@@ -692,9 +740,27 @@ async function importCookies(platform, raw) {
     // Establish the origin before adding domain cookies.
     await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
     await context.clearCookies().catch(() => {});
-    const valid = cookies.filter((c) => c.domain && /(pinterest|facebook)\./.test(c.domain));
-    if (!valid.length) throw new Error('لا توجد كوكيز تخص Pinterest/Facebook في النص الملصوق. تأكد أنك صدّرت الكوكيز من صفحة المنصة نفسها.');
-    await context.addCookies(valid);
+    const suffix = platform === 'pinterest' ? 'pinterest.' : 'facebook.';
+    const belongs = (c) => (c.url && c.url.includes(suffix)) || (c.domain && c.domain.includes(suffix));
+    const valid = cookies.filter(belongs);
+    if (!valid.length) {
+      throw new Error('لا توجد كوكيز تخص المنصة في النص الملصوق. تأكد أنك صدّرت الكوكيز من صفحة المنصة نفسها (وليس من موقع آخر).');
+    }
+    // CDP rejects the entire batch on one malformed entry: seed each cookie
+    // individually and keep going, naming the ones that fail.
+    const failures = [];
+    let imported = 0;
+    for (const cookie of valid) {
+      try {
+        await context.addCookies([cookie]);
+        imported += 1;
+      } catch (error) {
+        failures.push(`${cookie.name}: ${String(error && error.message || error).slice(0, 120)}`);
+      }
+    }
+    if (!imported) {
+      throw new Error(`رفض متصفح السيرفر كل الكوكيز (${cookies.length}) — سبب أول رفض: ${failures[0] || 'Invalid cookie fields'}. أعد التصدير من Cookie-Editor بصيغة JSON وأنت على صفحة المنصة.`);
+    }
 
     let authenticated = false;
     for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -787,6 +853,7 @@ module.exports = {
   verifyConnected,
   importCookies,
   parseCookieImport,
+  normalizePlaywrightCookie,
   isAuthenticated,
   submitVerification,
   verificationState,
