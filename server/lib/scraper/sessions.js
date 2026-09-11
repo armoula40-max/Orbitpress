@@ -43,46 +43,76 @@ const PLATFORMS = {
   },
 };
 
-const liveContexts = new Map();
+const liveContexts = new Map(); // `${tenant}:${platform}:${mode}` -> BrowserContext
+const launchingContexts = new Map(); // same keys -> in-flight launch promise
+
+function tenantId() {
+  return reqContext.getUserId() || reqContext.OWNER_ID;
+}
+
+function contextKey(platform, headless) {
+  return `${tenantId()}:${platform}:${headless ? 'headless' : 'headed'}`;
+}
+
+/** Per-tenant folder for the login/scan diagnostic snapshots. */
+function debugDir() {
+  const dir = path.join(reqContext.getDataDir(), 'debug');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Path relative to the data root, for user-facing messages. */
+function debugDirLabel() {
+  return path.relative(reqContext.ROOT_DATA_DIR, debugDir()) || 'debug';
+}
 
 /**
  * A login that hit a verification challenge keeps its page alive here so the
  * user can finish it from the Settings card (code entry / phone approval).
+ * Keys include the tenant so two access-code users cannot share or steal a
+ * pending verification page.
  */
 const PENDING_TTL_MS = 10 * 60 * 1000;
-const pendingLogins = new Map(); // platform -> { page, context, challenge, createdAt }
+const pendingLogins = new Map(); // `${tenant}:${platform}` -> { page, context, challenge, createdAt }
+
+function pendingKey(platform) {
+  return `${tenantId()}:${platform}`;
+}
 
 setInterval(() => {
   const now = Date.now();
-  for (const [platform, pending] of pendingLogins) {
+  for (const [key, pending] of pendingLogins) {
     if (now - pending.createdAt > PENDING_TTL_MS) {
       pending.page.close().catch(() => {});
-      pendingLogins.delete(platform);
+      pendingLogins.delete(key);
     }
   }
 }, 60 * 1000).unref();
 
 function rememberPending(platform, page, context, challenge) {
-  const old = pendingLogins.get(platform);
+  const key = pendingKey(platform);
+  const old = pendingLogins.get(key);
   if (old) old.page.close().catch(() => {});
-  pendingLogins.set(platform, { page, context, challenge, createdAt: Date.now() });
+  pendingLogins.set(key, { page, context, challenge, createdAt: Date.now() });
 }
 
 function getPending(platform) {
-  const pending = pendingLogins.get(platform);
+  const key = pendingKey(platform);
+  const pending = pendingLogins.get(key);
   if (!pending) return null;
   if (Date.now() - pending.createdAt > PENDING_TTL_MS) {
     pending.page.close().catch(() => {});
-    pendingLogins.delete(platform);
+    pendingLogins.delete(key);
     return null;
   }
   return pending;
 }
 
 function clearPending(platform) {
-  const pending = pendingLogins.get(platform);
+  const key = pendingKey(platform);
+  const pending = pendingLogins.get(key);
   if (pending) pending.page.close().catch(() => {});
-  pendingLogins.delete(platform);
+  pendingLogins.delete(key);
 }
 
 function playwright() {
@@ -127,19 +157,37 @@ function statuses() {
 
 async function getContext(platform, { headless = true } = {}) {
   const pw = playwright();
-  const key = `${platform}:${headless ? 'headless' : 'headed'}`;
-  if (liveContexts.has(key)) return liveContexts.get(key);
-  const context = await pw.chromium.launchPersistentContext(profileDir(platform), {
-    headless,
-    viewport: { width: 1280, height: 900 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    locale: 'en-US',
-    ignoreHTTPSErrors: false,
-    args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--no-sandbox'],
-  });
-  liveContexts.set(key, context);
-  context.on('close', () => liveContexts.delete(key));
-  return context;
+  const key = contextKey(platform, headless);
+  const existing = liveContexts.get(key);
+  if (existing) return existing;
+  const inFlight = launchingContexts.get(key);
+  if (inFlight) return inFlight;
+  // Serialize concurrent first launches: opening the same persistent profile
+  // twice throws "Failed to lock profile directory", which used to happen when
+  // a login and a scan (or two tenants sharing one old global key) raced.
+  const launch = (async () => {
+    const context = await pw.chromium.launchPersistentContext(profileDir(platform), {
+      headless,
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      locale: 'en-US',
+      ignoreHTTPSErrors: false,
+      args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--no-sandbox'],
+    });
+    launchingContexts.delete(key);
+    liveContexts.set(key, context);
+    context.on('close', () => liveContexts.delete(key));
+    // Reduce headless-automation fingerprints that make Pinterest/Facebook
+    // serve a non-login layout (challenge page) to brand-new tenant profiles.
+    await context.addInitScript(() => {
+      try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch { /* noop */ }
+      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch { /* noop */ }
+      try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch { /* noop */ }
+    });
+    return context;
+  })();
+  launchingContexts.set(key, launch);
+  return launch;
 }
 
 async function closeAllContexts() {
@@ -159,26 +207,73 @@ async function login(platform, credentials) {
   const context = await getContext(platform);
   const page = await context.newPage();
   try {
-    await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(2500);
-    await dismissConsentWalls(page);
-    await page.waitForTimeout(500);
+    // A brand-new tenant profile landing directly on /login looks like a
+    // datacenter bot and is more often shown a challenge layout. One normal
+    // home-page visit first seeds ordinary guest cookies, then we open login.
+    await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await dismissConsentWalls(page, platform);
+    await page.waitForTimeout(1500);
 
-    const userInput = await findFirst(page, [
+    await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(3000);
+    await dismissConsentWalls(page, platform);
+    await page.waitForTimeout(800);
+
+    // A profile that already holds a valid session is redirected AWAY from
+    // /login to the feed (guests stay on the login card). Detect that instead
+    // of reporting a missing form — and never force a re-login (the lenient
+    // URL rule avoids false positives from Pinterest's guest _pinterest_sess).
+    const landedUrl = page.url();
+    const preCookies = await context.cookies();
+    const alreadyHasSession = config.sessionCookies.some(
+      (name) => preCookies.some((cookie) => cookie.name === name && cookie.value),
+    );
+    if (alreadyHasSession && !/(login|signup|sign-up|authorization|auth)/i.test(landedUrl)) {
+      return finishLogin(platform, context, username);
+    }
+
+    const userInput = await waitForAny(page, [
       ...config.usernameCandidates,
       'input[name="email"]', 'input#email', 'input[type="email"]', 'input[autocomplete="username"]',
-    ]);
-    const passInput = await findFirst(page, [
+      'form input[type="text"]',
+    ], 12000);
+    let passInput = userInput ? await waitForAny(page, [
       ...config.passwordCandidates,
       'input[name="pass"]', 'input[type="password"]', 'input[autocomplete="current-password"]',
-    ]);
+    ], 10000) : null;
+
+    // Combined signup/login pages sometimes open on the "sign up" tab: switch
+    // to the Log in tab once and look for the credentials again.
     if (!userInput || !passInput) {
-      await saveLoginDebug(platform, page, 'form-not-found');
-      throw new Error('The login form could not be found on the served page (the platform shows a different layout to this server). A debug screenshot+HTML snapshot was saved on the server under data/debug/ — send it for analysis, or try again in a minute.');
+      for (const tabSelector of ['div[role="tab"]:has-text("Log in")', 'button:has-text("Log in")', 'a:has-text("Log in")']) {
+        try {
+          const tab = await page.$(tabSelector);
+          if (tab && await tab.isVisible().catch(() => false)) {
+            await tab.click({ timeout: 3000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            break;
+          }
+        } catch { /* try the next tab shape */ }
+      }
     }
-    await userInput.fill(username);
+    const finalUser = userInput || await waitForAny(page, [
+      ...config.usernameCandidates,
+      'input[name="email"]', 'input#email', 'input[type="email"]', 'input[autocomplete="username"]',
+    ], 8000);
+    passInput = passInput || (finalUser ? await waitForAny(page, [
+      ...config.passwordCandidates,
+      'input[name="pass"]', 'input[type="password"]', 'input[autocomplete="current-password"]',
+    ], 8000) : null);
+
+    if (!finalUser || !passInput) {
+      await saveLoginDebug(platform, page, 'form-not-found');
+      const where = debugDirLabel();
+      throw new Error(`تعذّر العثور على نموذج الدخول في الصفحة التي عرضها Pinterest لهذا الخادم (تخطيط مختلف، أو جدار موافقة/تحقق، أو الحساب مسجّل مسبقًا). حُفظت لقطة تشخيصية على الخادم في ${where}/ — استعرضها من شاشة المدير (عرض المحتوى ← لقطات التشخيص) وأرسلها للتحليل، أو الصق كوكيز جلستك الحالية في بطاقة Pinterest كحل بديل، ثم أعد المحاولة بعد دقيقة.`);
+    }
+    const userInputFinal = finalUser;
+    await userInputFinal.fill(username);
     await passInput.fill(password);
-    await dismissConsentWalls(page);
+    await dismissConsentWalls(page, platform);
 
     // Submit: dedicated button first, Enter as the universal fallback.
     let submitted = false;
@@ -223,14 +318,14 @@ async function login(platform, credentials) {
       throw new Error('المنصة عرضت CAPTCHA لا يمكن للسيرفر حلّها. سجّل دخول نفس الحساب من متصفحك العادي أكمل التحقق ثم أعد المحاولة.');
     }
     await saveLoginDebug(platform, page, 'no-session-cookie');
-    throw new Error('لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة). حُفظت لقطة تشخيص في data/debug/ على السيرفر.');
+    throw new Error(`لم يُؤكَّد الدخول. تحقق من البيانات وأعد المحاولة (كلمات المرور الخاطئة لا تُنشئ جلسة)، أو الصق كوكيز جلستك الحالية في بطاقة Pinterest (الطريقة الأكثر ثباتًا عندما يعرض الخادم جدار تحقق). حُفظت لقطة تشخيصية في ${debugDirLabel()}/.`);
   } catch (error) {
-    if (!/data\/debug\//.test(String(error.message))) {
+    if (!/[\\w/-]*debug\//.test(String(error.message)) && !error.__loginSnapshotSaved) {
       await saveLoginDebug(platform, page, 'error').catch(() => {});
     }
     throw normalizeLoginError(error);
   } finally {
-    if (!pendingLogins.has(platform)) {
+    if (!pendingLogins.has(pendingKey(platform))) {
       await page.close().catch(() => {});
     }
   }
@@ -248,7 +343,7 @@ const CONSENT_SELECTORS = [
   'button#__btnAcceptAll',
 ];
 
-async function dismissConsentWalls(page) {
+async function dismissConsentWalls(page, platform) {
   for (const selector of CONSENT_SELECTORS) {
     try {
       const button = await page.$(selector);
@@ -258,8 +353,11 @@ async function dismissConsentWalls(page) {
       }
     } catch { /* not present */ }
   }
-  // text-based fallbacks (English + the common localized variants)
-  for (const label of ['Allow all cookies', 'Accept all', 'Allow essential and optional cookies', 'Accepter tout', 'قبول الكل']) {
+  // text-based fallbacks (English + the common localized variants). Pinterest
+  // cookie walls label the confirm button just "Accept"/"Got it".
+  const labels = ['Allow all cookies', 'Accept all', 'Allow essential and optional cookies',
+    'Accepter tout', 'قبول الكل', ...(platform === 'pinterest' ? ['Accept', 'Got it', 'I agree'] : [])];
+  for (const label of labels) {
     try {
       const button = page.getByRole('button', { name: label, exact: false });
       if (await button.count() > 0) {
@@ -281,18 +379,43 @@ async function findFirst(page, selectors) {
   return null;
 }
 
+/**
+ * Race several selectors and resolve with the first visible handle.
+ * Sequential waitForSelector calls could take minutes on a slow platform
+ * page; racing them keeps the login responsive and catches a form that only
+ * matches one of several known layouts.
+ */
+async function waitForAny(page, selectors, timeout) {
+  let settled = false;
+  return await new Promise((resolve) => {
+    const finish = (handle) => {
+      if (settled) return;
+      settled = true;
+      resolve(handle);
+    };
+    for (const selector of selectors) {
+      page
+        .waitForSelector(selector, { timeout, state: 'visible' })
+        .then((handle) => finish(handle))
+        .catch(() => {});
+    }
+    setTimeout(() => finish(null), timeout + 250);
+  });
+}
+
 async function saveLoginDebug(platform, page, tag) {
   try {
-    const dir = path.join(getDataDir(), 'debug');
-    fs.mkdirSync(dir, { recursive: true });
+    const dir = debugDir();
     const stamp = `${platform}-${tag}-${Date.now()}`;
     await page.screenshot({ path: path.join(dir, `${stamp}.png`), fullPage: false }).catch(() => {});
     fs.writeFileSync(path.join(dir, `${stamp}.html`), await page.content().catch(() => ''));
     fs.writeFileSync(path.join(dir, `${stamp}.url.txt`), page.url());
+    return { stamp, dir };
   } catch { /* never break login over debugging */ }
+  return null;
 }
 
-/** Same snapshot bundle used for scans: data/debug/<platform>-scan-<tag>-<ts>.{png,html,url.txt} */
+/** Same snapshot bundle used for scans: <data>/debug/<platform>-scan-<tag>-<ts>.{png,html,url.txt} */
 async function captureDebug(platform, page, tag) {
   return saveLoginDebug(platform, page, `scan-${tag}`);
 }
@@ -300,7 +423,7 @@ async function captureDebug(platform, page, tag) {
 function normalizeLoginError(error) {
   const message = String(error && error.message || 'Login failed.');
   if (/Timeout.*exceeded/i.test(message)) {
-    return new Error('The login page did not respond in time (the platform may be showing a verification or consent wall to this server). Try again, and if it persists open the snapshot in data/debug/ on the server or send it for analysis.');
+    return new Error(`صفحة الدخول لم تستجب في الوقت المحدد (قد تكون المنصة تعرض جدار موافقة أو تحقق لهذا الخادم). أعد المحاولة، وإن تكرر الأمر افتح اللقطة في ${debugDirLabel()}/ عبر شاشة المدير أو أرسلها للتحليل.`);
   }
   return error instanceof Error ? error : new Error(message);
 }
@@ -419,10 +542,13 @@ async function cookieHeader(platform) {
 
 async function logout(platform) {
   platformConfig(platform);
-  const keyPrefix = `${platform}:`;
+  const keyPrefix = `${tenantId()}:${platform}:`;
   await Promise.all([...liveContexts.entries()]
     .filter(([key]) => key.startsWith(keyPrefix))
     .map(([key, context]) => context.close().catch(() => {}).then(() => liveContexts.delete(key))));
+  for (const key of [...launchingContexts.keys()]) {
+    if (key.startsWith(keyPrefix)) launchingContexts.delete(key);
+  }
   fs.rmSync(profileDir(platform), { recursive: true, force: true });
   const meta = metaStore();
   delete meta.platforms[platform];
@@ -612,7 +738,7 @@ async function verifyConnected(platform) {
   const page = await context.newPage();
   try {
     await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await dismissConsentWalls(page);
+    await dismissConsentWalls(page, platform);
     await page.waitForTimeout(4000);
     const cookies = await context.cookies();
     const ok = hasSessionCookies(platform, cookies);

@@ -130,8 +130,9 @@ router.get('/admin/users/:id/workspace', requireOwner, asyncRoute(async (req, re
     const sessions = scraper.sessions.statuses();
     return { workspace, settings, sessions };
   });
+  const debug = tenantDebugFiles(target.id);
   users.audit('admin.workspace_viewed', { id: target.id, name: target.name });
-  res.json({ ok: true, user: target, ...result });
+  res.json({ ok: true, user: target, ...result, debug });
 }));
 
 // Owner-only view of a tenant's stored images so draft previews render
@@ -155,6 +156,49 @@ router.get('/admin/users/:id/images/:filename', requireOwner, (req, res) => {
   const extension = filename.split('.').pop().toLowerCase();
   res.setHeader('Content-Type', extension === 'jpg' ? 'image/jpeg' : `image/${extension}`);
   res.setHeader('Cache-Control', 'private, max-age=600');
+  fs.createReadStream(file).pipe(res);
+});
+
+// Diagnostic snapshots (Pinterest/Facebook login + scans) saved inside the
+// tenant's data/debug folder: the owner can list and open them when a user
+// reports a login wall or a different platform layout.
+function tenantDebugFiles(userId) {
+  return reqContext.runAs(userId, () => {
+    const dir = path.join(reqContext.getDataDir(), 'debug');
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter((name) => fs.statSync(path.join(dir, name)).isFile())
+      .map((name) => {
+        const stat = fs.statSync(path.join(dir, name));
+        return { name, size: stat.size, mtime: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.mtime.localeCompare(a.mtime))
+      .slice(0, 60);
+  });
+}
+
+router.get('/admin/users/:id/debug', requireOwner, (req, res) => {
+  const target = users.listUsers().find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ ok: false, message: 'المستخدم غير موجود.' });
+  res.json({ ok: true, files: tenantDebugFiles(target.id) });
+});
+
+router.get('/admin/users/:id/debug/:filename', requireOwner, (req, res) => {
+  const target = users.listUsers().find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ ok: false, message: 'المستخدم غير موجود.' });
+  // Only flat debug snapshot files; never allow path traversal.
+  const filename = path.basename(String(req.params.filename || ''));
+  if (!/^[A-Za-z0-9._-]+\.(png|html|txt)$/.test(filename)) {
+    return res.status(404).json({ ok: false, message: 'اللقطة غير موجودة.' });
+  }
+  const file = reqContext.runAs(target.id, () => path.join(reqContext.getDataDir(), 'debug', filename));
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    return res.status(404).json({ ok: false, message: 'اللقطة لم تعد موجودة على الخادم.' });
+  }
+  if (filename.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
+  else if (filename.endsWith('.html')) res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  else res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'private, max-age=60');
   fs.createReadStream(file).pipe(res);
 });
 

@@ -136,6 +136,10 @@
     .oversight-draft .draft-stats{font-size:11.5px;color:var(--muted);font-weight:400}
     .audit-row{font-size:12.5px;padding:8px 10px;border-bottom:1px solid var(--line,rgba(148,163,184,.15));display:flex;gap:10px;flex-wrap:wrap}
     .audit-row .audit-at{color:var(--muted);direction:ltr;white-space:nowrap}
+    .debug-shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px}
+    .debug-shots a{display:flex;flex-direction:column;gap:4px;text-decoration:none;color:var(--muted)}
+    .debug-shots img{width:100%;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:#0b1220}
+    .debug-shots small{font-size:10px;direction:ltr;text-align:center;word-break:break-all}
   </style>
 </head>
 <body>
@@ -877,6 +881,15 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
           +(queue.length?queue.map(function(d){return draftBlock(d,id);}).join(''):'<div class="empty">لا شيء.</div>')
           +'<h3 style="margin:14px 0 4px">الكلمات المفتاحية/طابور النشر ('+kwText.length+')</h3>'
           +(kwText.length?'<div class="oversight-summary">'+kwText.slice(0,80).map(function(k){return '<span class="oversight-chip">'+esc(k)+'</span>';}).join('')+'</div>':'<div class="empty">لا كلمات.</div>');
+        var debug=(j.debug||[]);
+        var shots=debug.filter(function(f){return /\.png$/.test(f.name);});
+        var docs=debug.filter(function(f){return !/\.png$/.test(f.name);});
+        html+='<h3 style="margin:14px 0 4px">لقطات التشخيص ('+debug.length+')</h3>'
+          +(debug.length
+            ? '<p class="helper">لقطة تُؤخذ تلقائياً عند تعذّر دخول Pinterest أو فشل مسح: صورة للصفحة التي عرضها الخادم + نسخة HTML. هذه هي التي تُرسل للتحليل.</p>'
+              +(shots.length?'<div class="debug-shots">'+shots.slice(0,12).map(function(f){var u='/api/admin/users/'+id+'/debug/'+encodeURIComponent(f.name);return '<a href="'+u+'" target="_blank" rel="noopener"><img loading="lazy" src="'+u+'" alt="'+esc(f.name)+'"><small>'+esc(f.name.replace(/^[a-z]+-?(scan-)?/,'').slice(0,28))+'</small></a>';}).join('')+'</div>':'')
+              +(docs.length?'<div class="oversight-summary">'+docs.slice(0,24).map(function(f){return '<a class="oversight-chip" href="/api/admin/users/'+id+'/debug/'+encodeURIComponent(f.name)+'" target="_blank" rel="noopener">'+esc(f.name)+'</a>';}).join('')+'</div>':'')
+            : '<div class="empty">لا لقطات تشخيصية.</div>');
         body.innerHTML=html;
       }).catch(function(e){body.innerHTML='<div class="empty">تعذّر الفتح: '+esc(e.message||'')+'</div>';});
     }

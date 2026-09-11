@@ -209,6 +209,24 @@ test('multi-tenant: issued codes, data isolation, oversight, blocking and reset'
   });
   assert.equal(newLogin.res.status, 200);
   assert.equal(newLogin.json.role, 'user');
+  const freshUserCookie = cookieOf(newLogin.res);
+
+  // 13b) Owner can open the tenant's diagnostic snapshots (Pinterest login
+  // debug), listings are scoped, traversal is rejected, and users are blocked.
+  const debugDir = path.join(dataDir, 'users', userId, 'debug');
+  fs.mkdirSync(debugDir, { recursive: true });
+  fs.writeFileSync(path.join(debugDir, 'pinterest-form-not-found-1.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  fs.writeFileSync(path.join(debugDir, 'pinterest-form-not-found-1.html'), '<html>wall</html>');
+  let debugList = await json(base + `/api/admin/users/${userId}/debug`, { headers: { Cookie: ownerCook } });
+  assert.equal(debugList.res.status, 200);
+  assert.equal(debugList.json.files.length, 2);
+  let shot = await fetch(base + `/api/admin/users/${userId}/debug/pinterest-form-not-found-1.png`, { headers: { Cookie: ownerCook } });
+  assert.equal(shot.status, 200);
+  assert.equal(shot.headers.get('content-type'), 'image/png');
+  const traversal = await json(base + `/api/admin/users/${userId}/debug/..%2f..%2fusers.json`, { headers: { Cookie: ownerCook } });
+  assert.equal(traversal.res.status, 404);
+  const userDebug = await json(base + `/api/admin/users/${userId}/debug`, { headers: { Cookie: freshUserCookie } });
+  assert.equal(userDebug.res.status, 403);
 
   // 14) Served UI carries the role: the user gets role:"user", owner "owner"
   const userPage = await fetch(base + '/', { headers: { Cookie: cookieOf(newLogin.res) } });
