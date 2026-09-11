@@ -839,6 +839,70 @@ test('pin defaults carry the recipe facts and the site domain', () => {
   assert.ok(text.description.length <= 800);
 });
 
+test('pro pin templates compose photo slots, palettes and Arabic defaults', () => {
+  const pin = require('../public/app/pinStudio.js');
+  assert.deepEqual(pin.CLASSIC_TEMPLATES, ['scrim', 'card', 'top']);
+  assert.deepEqual(pin.PRO_TEMPLATES, ['ways', 'checklist', 'banner', 'duo']);
+  assert.ok(pin.PALETTES.pumpkin && pin.PALETTES.terracotta, 'curated palettes ship with the studio');
+
+  const context = {
+    title: '4 وصفات باليقطين', metaDescription: 'وصفات خريفية', contentType: 'recipe',
+    recipes: [
+      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين'] },
+      { title: 'كعكة', ingredients: ['دقيق', 'سكر'] },
+      { title: 'حساء' },
+      { title: 'فطيرة' },
+    ],
+  };
+  const ways = pin.defaultDesign(context, 'ways');
+  assert.equal(ways.photos.length, 4, 'one slot per roundup recipe');
+  assert.equal(ways.photos[0].label, 'قهوة اليقطين');
+  assert.equal(ways.photos[0].ingredients.length, 3);
+  assert.equal(ways.cta, 'احفظي الوصفة', 'Arabic articles get Arabic CTA');
+  assert.equal(ways.palette, 'pumpkin');
+
+  const layout4 = pin.proLayout('ways', pin.PIN_SIZE, 4);
+  assert.equal(layout4.cards.length, 4);
+  assert.equal(layout4.cards.filter((c) => c.width > 400).length, 4, '2x2 grid cards are large enough for readability');
+  layout4.cards.forEach((c) => {
+    assert.ok(c.x >= 0 && c.y >= 0 && c.x + c.width <= 1000 && c.y + c.height <= 1500, 'ways cards stay on canvas');
+  });
+  assert.equal(pin.proLayout('ways', pin.PIN_SIZE, 3).cards.length, 3);
+  assert.equal(pin.proLayout('ways', pin.PIN_SIZE, 2).cards.length, 2, 'a two-recipe roundup uses two full rows');
+
+  const checklist = pin.defaultDesign({
+    title: 'Chicken Tikka Patties', contentType: 'recipe',
+    recipe: { ingredients: ['chicken', 'spices', 'yogurt', 'onions'] },
+  }, 'checklist');
+  assert.equal(checklist.photos.length, 1);
+  assert.equal(checklist.photos[0].ingredients.length, 4);
+  const checkLayout = pin.proLayout('checklist', pin.PIN_SIZE, 1);
+  assert.ok(checkLayout.paper.width <= 1000 && checkLayout.paper.y + checkLayout.paper.height <= 1500);
+
+  assert.equal(pin.defaultDesign(context, 'duo').photos.length, 2);
+  assert.equal(pin.defaultDesign(context, 'banner').photos.length, 1);
+
+  // unknown template stored on an old draft falls back instead of crashing
+  assert.equal(pin.normalizeDesign({ template: 'mystery' }).template, 'scrim');
+  assert.equal(pin.isRtl('وصفة عربية'), true);
+  assert.equal(pin.isRtl('English headline'), false);
+});
+
+test('pin studio can be toggled off per tenant while defaulting to enabled', () => {
+  const store = require('../lib/store');
+  const { SettingsPersistenceContract } = require('../lib/contracts');
+  store.saveSiteSettings({ pinStudioEnabled: false }, 'site-toggle');
+  assert.equal(store.getSettingsSummary('site-toggle').pinStudioEnabled, false);
+  // an unrelated save must not silently re-enable the studio
+  store.saveSiteSettings({ wordpressBaseUrl: 'https://example.com' }, 'site-toggle');
+  assert.equal(store.getSettingsSummary('site-toggle').pinStudioEnabled, false);
+  store.saveSiteSettings({ pinStudioEnabled: true }, 'site-toggle');
+  assert.equal(store.getSettingsSummary('site-toggle').pinStudioEnabled, true);
+  assert.equal(store.getSettingsSummary('site-never-touched').pinStudioEnabled, true, 'on by default');
+  const merged = SettingsPersistenceContract.merge({ pinStudioEnabled: false }, { wordpressBaseUrl: 'x' });
+  assert.equal(merged.pinStudioEnabled, false);
+});
+
 test('the composed pin is stored as a 2:3 image and published instead of the raw upload', async (t) => {
   const mock = await mocks.startPinterestPublishMock();
   t.after(() => mock.server.close());

@@ -698,6 +698,11 @@ const SettingsPersistenceContract = {
       }))
       .filter((item) => item.prompt)
       .slice(0, 8);
+    // Feature toggles (per tenant). Pin Studio defaults ON; an explicit
+    // false hides the Canva-style pin designer from the draft review screen.
+    if (incoming.pinStudioEnabled === true || incoming.pinStudioEnabled === false) {
+      merged.pinStudioEnabled = incoming.pinStudioEnabled;
+    }
     const rolePrompts = incoming.articleImageRolePrompts;
     if (Array.isArray(rolePrompts)) {
       const rows = sanitizeShotRows(rolePrompts);

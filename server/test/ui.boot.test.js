@@ -218,7 +218,7 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   assert.equal(document.getElementById('pinCta').value, 'Full recipe');
   assert.equal(document.getElementById('pinPublish').disabled, false, 'a published URL unlocks publishing');
   assert.ok(card.textContent.includes('https://www.pinterest.com/askinz/bread/'), 'the board is shown so the destination is never a guess');
-  assert.equal(document.querySelectorAll('[data-pin-template]').length, 3, 'three templates are offered');
+  assert.equal(document.querySelectorAll('[data-pin-template]').length, 7, 'three classic plus four pro templates are offered');
   const bgTemplates = document.getElementById('pinPromptTemplate');
   assert.ok(bgTemplates, 'the studio offers a background prompt template picker');
   assert.ok(bgTemplates.options.length >= 5, 'all saved Pinterest prompt templates are selectable');
@@ -253,6 +253,93 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   assert.equal(document.getElementById('lightbox').hidden, true, 'Escape closes it again');
   assert.deepEqual(fatalErrors(errors), []);
   close();
+});
+
+test('pro pin templates compose AI photo slots and the settings toggle hides the studio', async () => {
+  const draft = {
+    id: 'd2', siteId: 'site-default', keywordId: 'k2',
+    title: 'أربع وصفات خريفية باليقطين', metaDescription: 'وصفات سريعة', contentType: 'recipe',
+    recipes: [
+      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين', 'قرفة'], instructions: ['a'] },
+      { title: 'كعكة اليقطين', ingredients: ['دقيق', 'سكر', 'يقطين'], instructions: ['b'] },
+    ],
+    slug: 'pumpkin-recipes', htmlContent: '<p>Hello</p>', outline: [], internalLinks: [],
+    images: { featured: 'local://featured.png', pinterest: 'local://pinterest.png' },
+    generationStatus: 'generated', publishedUrl: 'https://www.askinz.com/pumpkin/',
+    createdAt: Date.now(),
+  };
+  const { window, errors, close } = await startUi({
+    workspace: {
+      keywords: [{ id: 'k2', siteId: 'site-default', keyword: 'وصفات اليقطين', status: 'drafted', draftId: 'd2', categoryId: '3', categoryName: 'وصفات', priority: 'high', contentType: 'recipe', createdAt: Date.now() }],
+      drafts: [draft], draftVersions: [],
+      logs: [], categories: [{ id: '3', siteId: 'site-default', name: 'وصفات' }], theme: 'day', activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
+    settings: { 'site-default': { ...EMPTY_SETTINGS['site-default'], imageConfigured: true, pinterestBoardId: 'https://www.pinterest.com/askinz/food/' } },
+  }, (request) => {
+    if (request.type === 'loadImage' || request.type === 'generateImage') {
+      return { ok: true, dataUrl: 'data:image/png;base64,' + require('./mockServers').tinyPng(64, 64).toString('base64') };
+    }
+    return { ok: true };
+  });
+  const { document } = window;
+  // jsdom has no 2d canvas backend: give the studio a permissive drawing stub
+  // so AI photos can be cover-fitted and composed in the test environment.
+  const noopCtx = new Proxy({}, {
+    get: (t, prop) => {
+      if (prop === 'measureText') return () => ({ width: 40 });
+      if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+      if (typeof t[prop] !== 'undefined') return t[prop];
+      return () => {};
+    },
+    set: () => true,
+  });
+  window.HTMLCanvasElement.prototype.getContext = function getContext() { return noopCtx; };
+  window.HTMLCanvasElement.prototype.toDataURL = function toDataURL() { return 'data:image/png;base64,' + require('./mockServers').tinyPng(8, 8).toString('base64'); };
+
+  window.openDraft('d2');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(document.getElementById('pinStudioCard'), 'the studio is on by default');
+
+  document.querySelector('[data-pin-template="ways"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const slots = document.querySelectorAll('#pinSlotsGrid .pin-slot');
+  assert.equal(slots.length, 2, 'one editable photo slot per recipe in the roundup');
+  assert.equal(document.querySelectorAll('[data-pin-palette]').length, 6, 'six curated color palettes are offered');
+  const firstLabel = document.querySelector('#pinSlotsGrid [data-slot-label]');
+  assert.match(firstLabel.value, /قهوة اليقطين/, 'slot labels come from the recipe titles');
+  assert.match(document.querySelector('#pinSlotsGrid [data-slot-ingredients]').value, /قرفة/, 'ingredients travel into the slot checklist');
+
+  // AI generation fills the first slot and marks it ready
+  document.querySelector('#pinSlotsGrid [data-slot-ai]').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.match(document.querySelector('#pinSlotsGrid .pin-slot').textContent, /جاهزة/, 'AI photo is composed into the slot');
+
+  // checklist template exposes the ingredient checklist editor
+  document.querySelector('[data-pin-template="checklist"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(document.querySelectorAll('#pinSlotsGrid .pin-slot').length, 1, 'the checklist template uses one hero photo');
+  assert.ok(document.getElementById('pinHeadline'), 'common headline controls remain for pro templates');
+
+  // disabled studio disappears from the review screen
+  close();
+  const off = await startUi({
+    workspace: {
+      keywords: [{ id: 'k2', siteId: 'site-default', keyword: 'وصفات اليقطين', status: 'drafted', draftId: 'd2', categoryId: '3', categoryName: 'وصفات', priority: 'high', contentType: 'recipe', createdAt: Date.now() }],
+      drafts: [{ ...draft }], draftVersions: [],
+      logs: [], categories: [{ id: '3', siteId: 'site-default', name: 'وصفات' }], theme: 'day', activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
+    settings: { 'site-default': { ...EMPTY_SETTINGS['site-default'], pinStudioEnabled: false } },
+  }, () => ({ ok: true }));
+  off.window.openDraft('d2');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(off.window.document.getElementById('pinStudioCard'), null, 'pin studio is hidden when the tenant disabled it');
+  assert.ok(off.window.document.getElementById('pinStudioEnabled'), 'the settings screen still carries the on/off switch');
+  assert.deepEqual(fatalErrors(errors), []);
+  off.close();
 });
 
 test('admin console is owner-only and renders users, oversight and audit', async () => {

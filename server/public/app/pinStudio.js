@@ -15,13 +15,39 @@
   if (root) root.OrbitPressPin = api;
 }(typeof globalThis !== 'undefined' ? globalThis : null, function () {
   const PIN_SIZE = { width: 1000, height: 1500 };
-  const TEMPLATES = ['scrim', 'card', 'top'];
+  // Classic three layouts + four Canva-style "pro" compositions that arrange
+  // several AI photos, headline blocks, ingredient lists and CTAs.
+  const CLASSIC_TEMPLATES = ['scrim', 'card', 'top'];
+  const PRO_TEMPLATES = ['ways', 'checklist', 'banner', 'duo'];
+  const TEMPLATES = [...CLASSIC_TEMPLATES, ...PRO_TEMPLATES];
   const FONTS = {
-    sans: '"Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif',
-    serif: 'Georgia, "Times New Roman", serif',
+    sans: '"Segoe UI", Tahoma, "Noto Sans Arabic", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif',
+    serif: 'Georgia, "Times New Roman", "Noto Naskh Arabic", serif',
+    display: '"Trebuchet MS", "Segoe UI", Tahoma, "Noto Kufi Arabic", system-ui, sans-serif',
   };
   const ACCENT = '#f07f68';
   const INK = '#20242f';
+
+  // Curated Canva-like palettes. Each carries paper background, ink, a bold
+  // accent (buttons/underlines), a ribbon fill behind photo labels and the
+  // light card tone used for paper notes.
+  const PALETTES = {
+    pumpkin: { name: 'Pumpkin spice', paper: '#f3e7d3', ink: '#4a2f17', accent: '#c9681f', ribbon: '#b45a1c', card: '#fbf5ea', soft: '#e9d3b2', white: '#fffdf8' },
+    terracotta: { name: 'Terracotta', paper: '#f6ece5', ink: '#5b241d', accent: '#c0492f', ribbon: '#9c3b27', card: '#fdf7f1', soft: '#e8c9bb', white: '#fffaf7' },
+    olive: { name: 'Olive cream', paper: '#f2f1e4', ink: '#33402a', accent: '#7d8b4f', ribbon: '#5f6f3b', card: '#fbfaf0', soft: '#d9dfc4', white: '#fefef9' },
+    charcoal: { name: 'Charcoal pop', paper: '#f4f1ec', ink: '#1f2328', accent: '#e0533d', ribbon: '#2c3138', card: '#ffffff', soft: '#d9d4cb', white: '#ffffff' },
+    berry: { name: 'Berry blush', paper: '#fbeef0', ink: '#57213a', accent: '#c8386b', ribbon: '#a32a55', card: '#fff8fa', soft: '#f3cfd9', white: '#fff' },
+    ocean: { name: 'Ocean fresh', paper: '#eef4f6', ink: '#16394a', accent: '#1f8aa8', ribbon: '#155e75', card: '#fbfdfe', soft: '#cfe4ea', white: '#ffffff' },
+  };
+  const DEFAULT_PALETTE = 'pumpkin';
+
+  const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+  function isRtl(text) {
+    const sample = String(text || '').trim();
+    if (!sample) return false;
+    const first = Array.from(sample).find((ch) => ARABIC_RE.test(ch) || /[A-Za-z]/.test(ch));
+    return !!first && ARABIC_RE.test(first);
+  };
 
   function clamp(value, min, max) {
     const number = Number(value);
@@ -39,16 +65,34 @@
     }
   }
 
+  function normalizeSlot(raw, index) {
+    const slot = raw && typeof raw === 'object' ? raw : {};
+    return {
+      id: String(slot.id || `slot-${index + 1}`),
+      label: String(slot.label || '').trim().slice(0, 80),
+      ingredients: Array.isArray(slot.ingredients)
+        ? slot.ingredients.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8)
+        : [],
+      ref: slot.ref ? String(slot.ref) : null,
+    };
+  }
+
   function normalizeDesign(input) {
     const raw = input && typeof input === 'object' ? input : {};
     const template = TEMPLATES.includes(raw.template) ? raw.template : 'scrim';
+    const palette = PALETTES[raw.palette] ? raw.palette : DEFAULT_PALETTE;
+    const photos = PRO_TEMPLATES.includes(template)
+      ? (Array.isArray(raw.photos) ? raw.photos : []).map(normalizeSlot).slice(0, 6)
+      : [];
     return {
       template,
-      headline: String(raw.headline || '').trim().slice(0, 120),
-      subline: String(raw.subline || '').trim().slice(0, 200),
+      palette,
+      headline: String(raw.headline || '').trim().slice(0, 140),
+      subline: String(raw.subline || '').trim().slice(0, 240),
       brand: String(raw.brand || '').trim().slice(0, 60),
       cta: String(raw.cta || '').trim().slice(0, 40),
       chips: Array.isArray(raw.chips) ? raw.chips.map((chip) => String(chip || '').trim()).filter(Boolean).slice(0, 3) : [],
+      photos,
       overlay: clamp(raw.overlay == null ? 0.74 : raw.overlay, 0, 1),
       textScale: clamp(raw.textScale == null ? 1 : raw.textScale, 0.6, 1.4),
       focusY: clamp(raw.focusY == null ? 0.5 : raw.focusY, 0, 1),
@@ -229,30 +273,79 @@
 
   // --- defaults derived from the article ------------------------------------
 
-  function recipeChips(recipe, recipeCount) {
+  function recipeChips(recipe, recipeCount, rtl) {
     const chips = [];
     if (recipe) {
-      if (recipe.prepTime) chips.push(`${recipe.prepTime} prep`);
-      if (recipe.cookTime) chips.push(`${recipe.cookTime} cook`);
-      if (recipe.recipeYield) chips.push(`Serves ${recipe.recipeYield}`);
+      if (recipe.prepTime) chips.push(rtl ? `تحضير ${recipe.prepTime}` : `${recipe.prepTime} prep`);
+      if (recipe.cookTime) chips.push(rtl ? `طهي ${recipe.cookTime}` : `${recipe.cookTime} cook`);
+      if (recipe.recipeYield) chips.push(rtl ? `الكمية ${recipe.recipeYield}` : `Serves ${recipe.recipeYield}`);
     }
-    if (!chips.length && recipeCount > 1) chips.push(`${recipeCount} recipes`);
+    if (!chips.length && recipeCount > 1) chips.push(rtl ? `${recipeCount} وصفات` : `${recipeCount} recipes`);
     return chips.slice(0, 3);
   }
 
-  function defaultDesign(context) {
+  // How many photo slots a pro template composes.
+  function slotCountFor(template, recipesLength) {
+    if (template === 'ways') return clamp(recipesLength || 4, 1, 4);
+    if (template === 'duo') return 2;
+    return 1; // checklist / banner
+  }
+
+  function recipeLabel(recipe, index, fallbackTitle) {
+    const name = String((recipe && (recipe.title || recipe.name)) || '').trim();
+    if (name) return name.split(/\||–|—/)[0].trim().slice(0, 60);
+    return fallbackTitle ? `${fallbackTitle} ${index + 1}` : `Recipe ${index + 1}`;
+  }
+
+  /** Build editable photo slots from the article's recipe data. */
+  function defaultSlots(template, context) {
+    const data = context || {};
+    const recipes = Array.isArray(data.recipes) ? data.recipes : [];
+    const single = data.recipe || (data.contentType === 'recipe' ? recipes[0] : null);
+    const count = slotCountFor(template, recipes.length || (single ? 1 : 0));
+    const title = String(data.title || '').split(/\||–|—/)[0].trim();
+    const slots = [];
+    for (let i = 0; i < count; i += 1) {
+      const recipe = recipes[i] || (i === 0 ? single : null);
+      const ingredients = Array.isArray(recipe && recipe.ingredients)
+        ? recipe.ingredients.map((item) => String(item || '').replace(/^[\s•\-✓✔]+/, '').trim()).filter(Boolean).slice(0, 6)
+        : [];
+      slots.push({
+        id: `slot-${i + 1}`,
+        label: PRO_TEMPLATES.includes(template) && template !== 'ways'
+          ? title.slice(0, 60)
+          : recipeLabel(recipe, i, title),
+        ingredients,
+        ref: null,
+      });
+    }
+    return slots;
+  }
+
+  function defaultDesign(context, template) {
     const data = context || {};
     const recipes = Array.isArray(data.recipes) ? data.recipes : [];
     const recipe = data.recipe || (data.contentType === 'recipe' ? recipes[0] : null);
     const title = String(data.title || '').split(/\||–|—/)[0].trim();
-    return normalizeDesign({
-      template: 'scrim',
-      headline: title.slice(0, 90),
+    const wantsArabic = isRtl(`${title} ${data.metaDescription || ''}`);
+    const chosen = TEMPLATES.includes(template) ? template : 'scrim';
+    const design = {
+      template: chosen,
+      headline: title.slice(0, chosen === 'duo' ? 70 : 90),
       subline: String(data.metaDescription || '').trim().slice(0, 150),
       brand: String(data.siteName || domainOf(data.publishedUrl || data.wordpressBaseUrl || '') || '').slice(0, 60),
-      cta: data.contentType === 'recipe' ? 'Full recipe' : 'Read more',
-      chips: recipeChips(recipe, recipes.length || (recipe ? 1 : 0)),
-    });
+      cta: wantsArabic
+        ? (data.contentType === 'recipe' ? 'احفظي الوصفة' : 'اقرئي المزيد')
+        : (data.contentType === 'recipe' ? 'Full recipe' : 'Read more'),
+      chips: recipeChips(recipe, recipes.length || (recipe ? 1 : 0), wantsArabic),
+    };
+    if (PRO_TEMPLATES.includes(chosen)) {
+      design.palette = DEFAULT_PALETTE;
+      design.photos = defaultSlots(chosen, data);
+      design.overlay = 0.6;
+      if (wantsArabic) design.uppercase = false;
+    }
+    return normalizeDesign(design);
   }
 
   /** The text that travels with the pin: title, description, alt text. */
@@ -370,11 +463,394 @@
     ctx.fillText(plan.brand, cursor, rowY + Math.round(size * 0.85) + 1);
   }
 
+  // --------------------------------------------------------------------------
+  // Pro "Canva-style" template engine: multiple AI photos composed with bold
+  // headlines, ingredient lists, brush ribbons and CTA pills. All geometry is
+  // computed from PIN_SIZE so it is unit-testable in Node without a canvas.
+  // --------------------------------------------------------------------------
+
+  function proLayout(template, size, photoCount) {
+    const target = size && size.width > 0 ? size : PIN_SIZE;
+    const { width, height } = target;
+    const pad = Math.round(width * 0.058);
+    const count = clamp(photoCount || 1, 1, 4);
+    const plans = {
+      ways: { pad, header: { x: pad, y: Math.round(height * 0.045), width: width - pad * 2, height: Math.round(height * 0.19) }, cards: [] },
+      checklist: {
+        pad,
+        band: { x: 0, y: 0, width, height: Math.round(height * 0.26) },
+        photo: { x: pad, y: Math.round(height * 0.17), width: width - pad * 2, height: Math.round(height * 0.37) },
+        paper: { x: pad, y: Math.round(height * 0.575), width: width - pad * 2, height: Math.round(height * 0.3) },
+        cta: { x: 0, y: Math.round(height * 0.9), width, height: Math.round(height * 0.1) },
+      },
+      banner: {
+        pad,
+        photo: { x: 0, y: 0, width, height: Math.round(height * 0.72) },
+        panel: { x: 0, y: Math.round(height * 0.72), width, height: Math.round(height * 0.28) },
+      },
+      duo: {
+        pad,
+        top: { x: 0, y: 0, width, height: Math.round(height * 0.4) },
+        band: { x: 0, y: Math.round(height * 0.4), width, height: Math.round(height * 0.2) },
+        bottom: { x: 0, y: Math.round(height * 0.6), width, height: Math.round(height * 0.4) },
+      },
+    };
+    const plan = plans[template] || plans.banner;
+    if (template === 'ways') {
+      const gap = Math.round(width * 0.03);
+      const top = Math.round(height * 0.255);
+      const bottom = Math.round(height * 0.945);
+      if (count === 4) {
+        const cardW = (width - pad * 2 - gap) / 2;
+        const cardH = (bottom - top - gap) / 2;
+        for (let row = 0; row < 2; row += 1) {
+          for (let col = 0; col < 2; col += 1) {
+            plan.cards.push({ x: pad + col * (cardW + gap), y: top + row * (cardH + gap), width: cardW, height: cardH, radius: Math.round(width * 0.03) });
+          }
+        }
+      } else if (count === 3) {
+        const leftW = (width - pad * 2 - gap) * 0.52;
+        const rightW = (width - pad * 2 - gap) - leftW;
+        const rightH = (bottom - top - gap) / 2;
+        plan.cards.push({ x: pad, y: top, width: leftW, height: bottom - top, radius: Math.round(width * 0.03) });
+        plan.cards.push({ x: pad + leftW + gap, y: top, width: rightW, height: rightH, radius: Math.round(width * 0.03) });
+        plan.cards.push({ x: pad + leftW + gap, y: top + rightH + gap, width: rightW, height: rightH, radius: Math.round(width * 0.03) });
+      } else {
+        const rows = count;
+        const cardH = (bottom - top - gap * (rows - 1)) / rows;
+        for (let i = 0; i < rows; i += 1) {
+          plan.cards.push({ x: pad, y: top + i * (cardH + gap), width: width - pad * 2, height: cardH, radius: Math.round(width * 0.03) });
+        }
+      }
+    }
+    plan.size = target;
+    return plan;
+  }
+
+  // --- canvas drawing helpers (browser only; never called from Node tests) --
+
+  function roundRectPath(ctx, x, y, width, height, radius) {
+    const r = Math.min(radius || 0, width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  /** Organic brush blob behind labels: a lumpy closed curve. */
+  function drawBlob(ctx, cx, cy, rx, ry, color, rotation = 0, seed = 1) {
+    const bumps = 9;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rotation);
+    ctx.beginPath();
+    for (let i = 0; i <= bumps; i += 1) {
+      const angle = (i / bumps) * Math.PI * 2;
+      const wobble = 1 + 0.09 * Math.sin(i * 2.7 + seed * 3.1) + 0.05 * Math.cos(i * 1.9 + seed);
+      const x = Math.cos(angle) * rx * wobble;
+      const y = Math.sin(angle) * ry * wobble;
+      if (i === 0) ctx.moveTo(x, y);
+      else {
+        const prevAngle = ((i - 0.5) / bumps) * Math.PI * 2;
+        const prevWobble = 1 + 0.09 * Math.sin((i - 0.5) * 2.7 + seed * 3.1);
+        ctx.quadraticCurveTo(
+          Math.cos(prevAngle) * rx * prevWobble,
+          Math.sin(prevAngle) * ry * prevWobble,
+          x, y,
+        );
+      }
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPhoto(ctx, image, box, radius = 0, focusY = 0.5) {
+    ctx.save();
+    roundRectPath(ctx, box.x, box.y, box.width, box.height, radius);
+    ctx.clip();
+    if (image) {
+      const rect = coverRect(image.width || image.naturalWidth, image.height || image.naturalHeight, box.width, box.height, focusY);
+      ctx.drawImage(image, rect.x + box.x, rect.y + box.y, rect.width, rect.height);
+    } else {
+      ctx.fillStyle = '#e7e2d6';
+      ctx.fillRect(box.x, box.y, box.width, box.height);
+      ctx.strokeStyle = 'rgba(90,80,60,.28)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([14, 12]);
+      roundRectPath(ctx, box.x + 10, box.y + 10, box.width - 20, box.height - 20, Math.max(4, radius - 6));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  function drawBlock(ctx, text, box, options) {
+    const opts = options || {};
+    const rtl = opts.rtl || false;
+    const fitted = fitText(ctx, text, {
+      maxWidth: box.width,
+      maxHeight: box.height,
+      max: Math.round(opts.max || box.height * 0.5),
+      min: Math.round(opts.min || box.height * 0.08),
+      weight: opts.weight || 800,
+      family: opts.family || 'sans',
+      lineHeightRatio: opts.lineHeightRatio || 1.12,
+      maxLines: opts.maxLines || 4,
+    });
+    ctx.font = fontSpec(opts.weight || 800, fitted.size, opts.family || 'sans');
+    ctx.fillStyle = opts.color || INK;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = rtl ? 'right' : 'left';
+    const x = rtl ? box.x + box.width : box.x;
+    fitted.lines.forEach((line, index) => {
+      ctx.fillText(line, x, box.y + index * fitted.lineHeight);
+    });
+    return { ...fitted, x, endY: box.y + fitted.lines.length * fitted.lineHeight };
+  }
+
+  function pillWidth(ctx, label, height) {
+    const size = Math.round(height * 0.42);
+    ctx.font = fontSpec(800, size, 'sans');
+    return Math.ceil(ctx.measureText(label).width) + height * 0.9;
+  }
+
+  function drawPill(ctx, label, cx, cy, height, color, textColor) {
+    const width = pillWidth(ctx, label, height);
+    const x = cx - width / 2;
+    const y = cy - height / 2;
+    ctx.save();
+    ctx.shadowColor = 'rgba(20,12,4,.25)';
+    ctx.shadowBlur = Math.round(height * 0.25);
+    ctx.shadowOffsetY = Math.round(height * 0.06);
+    roundRectPath(ctx, x, y, width, height, height / 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = textColor || '#fff';
+    ctx.font = fontSpec(800, Math.round(height * 0.4), 'sans');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, cy + 1);
+    return { x, y, width, height };
+  }
+
+  /** Photo card for the "ways" template: photo + brush ribbon with label. */
+  function drawWaysCard(ctx, slot, image, box, palette, index, rtl) {
+    drawPhoto(ctx, image, box, box.radius, 0.5);
+    ctx.save();
+    roundRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
+    ctx.clip();
+    const gradient = ctx.createLinearGradient(0, box.y + box.height * 0.45, 0, box.y + box.height);
+    gradient.addColorStop(0, 'rgba(0,0,0,0)');
+    gradient.addColorStop(1, 'rgba(20,12,4,.62)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(box.x, box.y, box.width, box.height);
+    ctx.restore();
+
+    const items = (slot.ingredients || []).slice(0, box.width > box.height + 60 ? 4 : 3);
+    const label = slot.label || `Recipe ${index + 1}`;
+    const ribbonH = Math.round(box.height * (items.length ? 0.42 : 0.2));
+    const ribbonW = box.width * 0.92;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height - ribbonH * 0.62;
+    drawBlob(ctx, cx, cy, ribbonW / 2, ribbonH / 2, palette.ribbon, (index % 2 ? 1 : -1) * 0.05, index + 2);
+    const textBox = { x: box.x + box.width * 0.1, y: cy - ribbonH * 0.34, width: box.width * 0.8, height: ribbonH * 0.68 };
+    drawBlock(ctx, label, textBox, { color: '#fff', max: Math.round(box.width * 0.075), min: Math.round(box.width * 0.045), maxLines: 2, rtl, lineHeightRatio: 1.05 });
+    if (items.length) {
+      const size = Math.round(box.width * 0.032);
+      ctx.font = fontSpec(600, size, 'sans');
+      ctx.fillStyle = 'rgba(255,255,255,.94)';
+      ctx.textBaseline = 'top';
+      ctx.textAlign = rtl ? 'right' : 'left';
+      let y = textBox.y + Math.round(box.width * 0.11) + 6;
+      items.forEach((item) => {
+        const line = `• ${item.length > 26 ? `${item.slice(0, 25)}…` : item}`;
+        ctx.fillText(line, rtl ? box.x + box.width * 0.88 : box.x + box.width * 0.12, y);
+        y += size * 1.35;
+      });
+    }
+  }
+
+  function drawChecklist(ctx, slot, box, palette, rtl) {
+    const items = (slot.ingredients || []).slice(0, 9);
+    ctx.save();
+    ctx.shadowColor = 'rgba(60,40,20,.18)';
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 8;
+    roundRectPath(ctx, box.x, box.y, box.width, box.height, 26);
+    ctx.fillStyle = palette.card;
+    ctx.fill();
+    ctx.restore();
+    const pad = Math.round(box.width * 0.07);
+    ctx.font = fontSpec(800, Math.round(box.width * 0.062), 'sans');
+    ctx.fillStyle = palette.accent;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = rtl ? 'right' : 'left';
+    const heading = rtl ? '✓ المكوّنات' : '✓ INGREDIENTS';
+    ctx.fillText(heading, rtl ? box.x + box.width - pad : box.x + pad, box.y + pad);
+    if (!items.length) {
+      ctx.font = fontSpec(500, Math.round(box.width * 0.04), 'sans');
+      ctx.fillStyle = 'rgba(60,50,40,.55)';
+      const msg = rtl ? 'أضف المكوّنات من خانات القالب.' : 'Add ingredients in the template fields.';
+      ctx.fillText(msg, rtl ? box.x + box.width - pad : box.x + pad, box.y + pad * 2.4);
+      return;
+    }
+    const size = Math.round(box.width * 0.043);
+    const rowH = (box.height - pad * 2.4) / Math.min(items.length, 9);
+    const fontSize = Math.min(size, Math.round(rowH * 0.62));
+    ctx.font = fontSpec(650, fontSize, 'sans');
+    items.forEach((item, i) => {
+      const y = box.y + pad * 2.1 + i * rowH;
+      const markerR = Math.round(fontSize * 0.62);
+      const markerCy = y + fontSize * 0.52;
+      const markerX = rtl ? box.x + box.width - pad - markerR : box.x + pad + markerR;
+      ctx.beginPath();
+      ctx.arc(markerX, markerCy, markerR, 0, Math.PI * 2);
+      ctx.fillStyle = palette.accent;
+      ctx.fill();
+      ctx.strokeStyle = palette.card;
+      ctx.lineWidth = Math.max(2, markerR * 0.28);
+      ctx.beginPath();
+      ctx.moveTo(markerX - markerR * 0.45, markerCy);
+      ctx.lineTo(markerX - markerR * 0.05, markerCy + markerR * 0.45);
+      ctx.lineTo(markerX + markerR * 0.55, markerCy - markerR * 0.45);
+      ctx.stroke();
+      ctx.fillStyle = palette.ink;
+      ctx.textAlign = rtl ? 'right' : 'left';
+      const textX = rtl ? box.x + box.width - pad - markerR * 2 - 12 : box.x + pad + markerR * 2 + 12;
+      ctx.fillText(item.length > 46 ? `${item.slice(0, 45)}…` : item, textX, y, box.width - pad * 2 - markerR * 2 - 12);
+    });
+  }
+
+  function renderPro(canvas, images, plan) {
+    const ctx = canvas.getContext('2d');
+    const palette = PALETTES[plan.palette] || PALETTES[DEFAULT_PALETTE];
+    const size = { width: canvas.width, height: canvas.height };
+    const rtl = isRtl(plan.headline + plan.subline + (plan.photos[0] && plan.photos[0].label ? plan.photos[0].label : ''));
+    const slots = plan.photos || [];
+    const slotImage = (index) => {
+      const slot = slots[index];
+      if (!slot || !images || !images.slots) return null;
+      return images.slots[slot.id] || images.slots[index] || null;
+    };
+    const layout = proLayout(plan.template, size, slots.length);
+
+    ctx.clearRect(0, 0, size.width, size.height);
+    ctx.fillStyle = palette.paper;
+    ctx.fillRect(0, 0, size.width, size.height);
+
+    if (plan.template === 'ways') {
+      // Header
+      const head = layout.header;
+      drawBlock(ctx, plan.headline || 'Recipes', head, { color: palette.ink, max: Math.round(size.width * 0.09 * plan.textScale), min: 38, maxLines: 2, rtl, weight: 900, family: 'display' });
+      const accentY = head.y + Math.round(size.height * 0.135);
+      ctx.fillStyle = palette.accent;
+      roundRectPath(ctx, rtl ? head.x + head.width - Math.round(head.width * 0.34) : head.x, accentY, Math.round(head.width * 0.34), 12, 6);
+      ctx.fill();
+      if (plan.subline) {
+        drawBlock(ctx, plan.subline, { x: head.x, y: accentY + 20, width: head.width, height: 54 }, { color: palette.ink, max: 26, min: 16, maxLines: 2, weight: 600, rtl });
+      }
+      layout.cards.forEach((box, i) => drawWaysCard(ctx, slots[i] || {}, slotImage(i), box, palette, i, rtl));
+      const cy = size.height - Math.round(size.height * 0.028);
+      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, cy - 6, Math.round(size.height * 0.047), palette.accent, '#fff');
+    }
+
+    if (plan.template === 'checklist') {
+      const { band, photo, paper, cta } = layout;
+      ctx.fillStyle = palette.ribbon;
+      roundRectPath(ctx, band.x, band.y, band.width, band.height + 40, 40);
+      ctx.fill();
+      drawBlock(ctx, plan.headline || '', { x: band.x + layout.pad * 1.4, y: band.y + layout.pad, width: band.width - layout.pad * 2.8, height: band.height * 0.72 }, { color: '#fff', max: Math.round(size.width * 0.085 * plan.textScale), min: 36, maxLines: 3, rtl, weight: 900, family: 'display' });
+      if (plan.subline) drawBlock(ctx, plan.subline, { x: band.x + layout.pad * 1.4, y: band.y + band.height * 0.72, width: band.width - layout.pad * 2.8, height: band.height * 0.24 }, { color: 'rgba(255,255,255,.9)', max: 24, min: 15, maxLines: 2, weight: 600, rtl });
+      ctx.save();
+      ctx.shadowColor = 'rgba(40,25,10,.3)';
+      ctx.shadowBlur = 30;
+      ctx.shadowOffsetY = 10;
+      drawPhoto(ctx, slotImage(0), photo, 28, 0.4);
+      ctx.restore();
+      drawChecklist(ctx, slots[0] || {}, paper, palette, rtl);
+      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, cta.y + cta.height / 2, Math.round(size.height * 0.052), palette.accent, '#fff');
+    }
+
+    if (plan.template === 'banner') {
+      const { photo, panel, pad } = layout;
+      drawPhoto(ctx, slotImage(0), photo, 0, 0.5);
+      const gradient = ctx.createLinearGradient(0, photo.y + photo.height * 0.55, 0, photo.y + photo.height);
+      gradient.addColorStop(0, 'rgba(0,0,0,0)');
+      gradient.addColorStop(1, 'rgba(0,0,0,.34)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(photo.x, photo.y, photo.width, photo.height);
+      if (plan.brand) {
+        const h = 44;
+        const labelW = ctx.measureText ? null : null;
+        ctx.font = fontSpec(700, 24, 'sans');
+        const w = Math.ceil(ctx.measureText(plan.brand).width) + 40;
+        roundRectPath(ctx, pad, pad, w, h, h / 2);
+        ctx.fillStyle = 'rgba(0,0,0,.4)';
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(plan.brand, pad + 20, pad + h / 2 + 1);
+      }
+      ctx.fillStyle = panel.color || palette.card;
+      ctx.fillRect(panel.x, panel.y, panel.width, panel.height);
+      const inner = { x: pad * 1.4, width: size.width - pad * 2.8 };
+      drawBlock(ctx, plan.headline || '', { ...inner, y: panel.y + 34, height: Math.round(panel.height * 0.42) }, { color: palette.accent, max: Math.round(size.width * 0.078 * plan.textScale), min: 34, maxLines: 2, rtl, weight: 900, family: 'display' });
+      const firstItems = (slots[0] && slots[0].ingredients || []).slice(0, 3);
+      if (firstItems.length) {
+        ctx.font = fontSpec(600, 26, 'sans');
+        ctx.fillStyle = palette.ink;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = rtl ? 'right' : 'left';
+        const joined = firstItems.map((item) => `✓ ${item}`).join('   ·   ');
+        ctx.fillText(joined.length > 78 ? `${joined.slice(0, 77)}…` : joined, rtl ? inner.x + inner.width : inner.x, panel.y + Math.round(panel.height * 0.52), inner.width);
+      }
+      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, panel.y + panel.height - Math.round(panel.height * 0.2), Math.round(size.height * 0.05), palette.accent, '#fff');
+    }
+
+    if (plan.template === 'duo') {
+      const { top, band, bottom, pad } = layout;
+      drawPhoto(ctx, slotImage(0), top, 0, 0.5);
+      drawPhoto(ctx, slotImage(1), bottom, 0, 0.5);
+      ctx.fillStyle = palette.card;
+      ctx.fillRect(band.x, band.y, band.width, band.height);
+      drawBlock(ctx, plan.headline || '', { x: pad * 1.3, y: band.y + Math.round(band.height * 0.12), width: size.width - pad * 2.6, height: Math.round(band.height * 0.5) }, { color: palette.ink, max: Math.round(size.width * 0.082 * plan.textScale), min: 32, maxLines: 2, rtl, weight: 900, family: 'display' });
+      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, band.y + band.height - Math.round(band.height * 0.2), Math.round(size.height * 0.046), palette.accent, '#fff');
+      if (slots[0] && slots[0].label) {
+        const h = 48;
+        ctx.font = fontSpec(800, 24, 'sans');
+        const w = Math.ceil(ctx.measureText(slots[0].label).width) + 44;
+        roundRectPath(ctx, pad, top.y + top.height - h - 24, w, h, h / 2);
+        ctx.fillStyle = 'rgba(0,0,0,.45)';
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(slots[0].label, pad + 22, top.y + top.height - h / 2 - 24 + 1);
+      }
+    }
+    return layout;
+  }
+
   /** Draw the pin. `image` may be null: the pin then renders as text only. */
   function render(canvas, image, design) {
     const ctx = canvas.getContext('2d');
     const plan = normalizeDesign(design);
     const size = { width: canvas.width, height: canvas.height };
+    if (PRO_TEMPLATES.includes(plan.template)) {
+      const images = image && typeof image === 'object' && !image.naturalWidth && !image.nodeName ? image : { background: image, slots: {} };
+      return renderPro(canvas, images, plan);
+    }
     const box = layout(plan, size);
     const onDark = plan.template !== 'card';
     const transform = plan.uppercase ? (value) => value.toUpperCase() : (value) => value;
@@ -436,14 +912,22 @@
   return {
     PIN_SIZE,
     TEMPLATES,
+    CLASSIC_TEMPLATES,
+    PRO_TEMPLATES,
+    PALETTES,
     FONTS,
     clamp,
     domainOf,
+    isRtl,
     normalizeDesign,
+    normalizeSlot,
     defaultDesign,
+    defaultSlots,
+    slotCountFor,
     recipeChips,
     pinText,
     layout,
+    proLayout,
     coverRect,
     fitRect,
     fitImage,

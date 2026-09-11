@@ -155,6 +155,7 @@ function getSettingsSummary(siteId) {
         .slice(0, 20)
       : [],
     articleImageCount: Number(saved.articleImageCount) || 0,
+    pinStudioEnabled: saved.pinStudioEnabled !== false,
     scraperApiBaseUrl: saved.scraperApiBaseUrl || '',
     scraperApiConfigured: !!saved.scraperApiKey,
   };
