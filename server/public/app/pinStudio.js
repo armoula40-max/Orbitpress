@@ -18,7 +18,7 @@
   // Classic three layouts + four Canva-style "pro" compositions that arrange
   // several AI photos, headline blocks, ingredient lists and CTAs.
   const CLASSIC_TEMPLATES = ['scrim', 'card', 'top'];
-  const PRO_TEMPLATES = ['ways', 'checklist', 'banner', 'duo'];
+  const PRO_TEMPLATES = ['ways', 'checklist', 'banner', 'duo', 'listicle', 'steps', 'quote', 'circle'];
   const TEMPLATES = [...CLASSIC_TEMPLATES, ...PRO_TEMPLATES];
   const FONTS = {
     sans: '"Segoe UI", Tahoma, "Noto Sans Arabic", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif',
@@ -73,7 +73,24 @@
       ingredients: Array.isArray(slot.ingredients)
         ? slot.ingredients.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8)
         : [],
+      steps: Array.isArray(slot.steps)
+        ? slot.steps.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4)
+        : [],
+      focusY: clamp(slot.focusY == null ? 0.5 : slot.focusY, 0, 1),
       ref: slot.ref ? String(slot.ref) : null,
+    };
+  }
+
+  function normalizeLayout(raw, template) {
+    const align = (value, fallback) => (['start', 'center', 'end'].includes(value) ? value : fallback);
+    // Classic templates always had the CTA at the start; pro templates center it.
+    const defaultCtaAlign = PRO_TEMPLATES.includes(template) ? 'center' : 'start';
+    return {
+      headlineAlign: align(raw.headlineAlign, 'start'),
+      headlineShiftY: clamp(raw.headlineShiftY == null ? 0 : Number(raw.headlineShiftY), -30, 30),
+      ctaAlign: align(raw.ctaAlign, defaultCtaAlign),
+      ctaShiftX: clamp(raw.ctaShiftX == null ? 0 : Number(raw.ctaShiftX), -35, 35),
+      ctaShiftY: clamp(raw.ctaShiftY == null ? 0 : Number(raw.ctaShiftY), -15, 15),
     };
   }
 
@@ -93,6 +110,7 @@
       cta: String(raw.cta || '').trim().slice(0, 40),
       chips: Array.isArray(raw.chips) ? raw.chips.map((chip) => String(chip || '').trim()).filter(Boolean).slice(0, 3) : [],
       photos,
+      layout: normalizeLayout(raw.layout || {}, template),
       overlay: clamp(raw.overlay == null ? 0.74 : raw.overlay, 0, 1),
       textScale: clamp(raw.textScale == null ? 1 : raw.textScale, 0.6, 1.4),
       focusY: clamp(raw.focusY == null ? 0.5 : raw.focusY, 0, 1),
@@ -287,8 +305,16 @@
   // How many photo slots a pro template composes.
   function slotCountFor(template, recipesLength) {
     if (template === 'ways') return clamp(recipesLength || 4, 1, 4);
+    if (template === 'listicle') return clamp(recipesLength || 3, 2, 4);
     if (template === 'duo') return 2;
-    return 1; // checklist / banner
+    return 1; // checklist / banner / steps / quote / circle
+  }
+
+  function recipeSteps(recipe) {
+    return (Array.isArray(recipe && recipe.instructions) ? recipe.instructions : [])
+      .map((step) => String((step && typeof step === 'object') ? (step.text || step.name) : step || '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
   }
 
   function recipeLabel(recipe, index, fallbackTitle) {
@@ -310,12 +336,15 @@
       const ingredients = Array.isArray(recipe && recipe.ingredients)
         ? recipe.ingredients.map((item) => String(item || '').replace(/^[\s•\-✓✔]+/, '').trim()).filter(Boolean).slice(0, 6)
         : [];
+      const steps = template === 'steps' ? recipeSteps(recipe) : [];
       slots.push({
         id: `slot-${i + 1}`,
-        label: PRO_TEMPLATES.includes(template) && template !== 'ways'
-          ? title.slice(0, 60)
-          : recipeLabel(recipe, i, title),
+        label: ['ways', 'listicle'].includes(template)
+          ? recipeLabel(recipe, i, title)
+          : title.slice(0, 60),
         ingredients,
+        steps,
+        focusY: 0.5,
         ref: null,
       });
     }
@@ -441,26 +470,47 @@
   function drawFooter(ctx, plan, box) {
     const onDark = plan.template !== 'card';
     const size = Math.round(box.footer.height * 0.62);
-    const rowY = box.footer.y + Math.round((box.footer.height - size * 1.7) / 2);
-    let cursor = box.footer.x;
+    const l = plan.layout || {};
+    let rowY = box.footer.y + Math.round((box.footer.height - size * 1.7) / 2);
+    rowY += Math.round((l.ctaShiftY || 0) * box.size.height / 100);
+    const width = box.size.width;
+    const padX = box.footer.x;
+    let cursor = padX;
+    let ctaWidth = 0;
     if (plan.cta) {
       ctx.font = fontSpec(800, size, plan.font);
       const label = plan.uppercase ? plan.cta.toUpperCase() : plan.cta;
-      const width = Math.ceil(ctx.measureText(label).width) + Math.round(size * 1.6);
+      ctaWidth = Math.ceil(ctx.measureText(label).width) + Math.round(size * 1.6);
       const height = Math.round(size * 1.7);
+      const align = l.ctaAlign || 'start';
+      let x = align === 'center' ? (width - ctaWidth) / 2
+        : align === 'end' ? width - padX - ctaWidth
+          : padX;
+      x += Math.round((l.ctaShiftX || 0) * width / 100);
+      x = clamp(x, padX, width - padX - ctaWidth);
       ctx.fillStyle = ACCENT;
-      roundRect(ctx, cursor, rowY, width, height, height / 2);
+      roundRect(ctx, x, rowY, ctaWidth, height, height / 2);
       ctx.fill();
       ctx.fillStyle = '#fff';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, cursor + Math.round(size * 0.8), rowY + height / 2 + 1);
-      cursor += width + Math.round(size * 0.9);
+      ctx.fillText(label, x + Math.round(size * 0.8), rowY + height / 2 + 1);
+      cursor = x + ctaWidth + Math.round(size * 0.9);
     }
     if (!plan.brand) return;
     ctx.font = fontSpec(700, size, plan.font);
     ctx.fillStyle = onDark ? 'rgba(255,255,255,.86)' : 'rgba(32,36,47,.66)';
     ctx.textBaseline = 'middle';
-    ctx.fillText(plan.brand, cursor, rowY + Math.round(size * 0.85) + 1);
+    let brandX = cursor;
+    if (l.ctaAlign === 'center' || l.ctaAlign === 'end') {
+      // Keep the site name readable when the button moves to the middle/right.
+      brandX = padX;
+    }
+    if (brandX + ctx.measureText(plan.brand).width > width - padX) {
+      ctx.textAlign = 'right';
+      brandX = width - padX;
+    }
+    ctx.fillText(plan.brand, brandX, rowY + Math.round(size * 0.85) + 1);
+    ctx.textAlign = 'left';
   }
 
   // --------------------------------------------------------------------------
@@ -494,8 +544,57 @@
         band: { x: 0, y: Math.round(height * 0.4), width, height: Math.round(height * 0.2) },
         bottom: { x: 0, y: Math.round(height * 0.6), width, height: Math.round(height * 0.4) },
       },
+      listicle: {
+        pad,
+        header: { x: pad, y: Math.round(height * 0.045), width: width - pad * 2, height: Math.round(height * 0.15) },
+        rows: [],
+      },
+      steps: {
+        pad,
+        photo: { x: 0, y: 0, width, height: Math.round(height * 0.42) },
+        panel: { x: 0, y: Math.round(height * 0.42), width, height: Math.round(height * 0.58) },
+        title: { x: pad * 1.3, y: Math.round(height * 0.445), width: width - pad * 2.6, height: Math.round(height * 0.1) },
+        stepRows: [],
+        cta: { y: Math.round(height * 0.925), height: Math.round(height * 0.05) },
+      },
+      quote: {
+        pad,
+        photo: { x: 0, y: 0, width, height },
+        card: { x: Math.round(pad * 1.2), y: Math.round(height * 0.27), width: width - pad * 2.4, height: Math.round(height * 0.44) },
+      },
+      circle: {
+        pad,
+        circle: { cx: Math.round(width / 2), cy: Math.round(height * 0.31), r: Math.round(width * 0.365) },
+        title: { x: pad * 1.2, y: Math.round(height * 0.62), width: width - pad * 2.4, height: Math.round(height * 0.18) },
+        cta: { y: Math.round(height * 0.91), height: Math.round(height * 0.05) },
+      },
     };
     const plan = plans[template] || plans.banner;
+    if (template === 'listicle') {
+      const gap = Math.round(height * 0.018);
+      const topY = Math.round(height * 0.21);
+      const bottomY = Math.round(height * 0.875);
+      const rowH = (bottomY - topY - gap * (count - 1)) / count;
+      for (let i = 0; i < count; i += 1) {
+        const y = topY + i * (rowH + gap);
+        const thumb = Math.round(rowH * 0.92);
+        plan.rows.push({
+          x: pad,
+          y: Math.round(y),
+          width: width - pad * 2,
+          height: Math.round(rowH),
+          thumb: { x: pad, y: Math.round(y + (rowH - thumb) / 2), width: thumb, height: thumb, radius: Math.round(width * 0.028) },
+        });
+      }
+    }
+    if (template === 'steps') {
+      const startY = Math.round(height * 0.555);
+      const endY = Math.round(height * 0.89);
+      const stepH = (endY - startY) / 4;
+      for (let i = 0; i < 4; i += 1) {
+        plan.stepRows.push({ x: pad * 1.3, y: Math.round(startY + i * stepH), width: width - pad * 2.6, height: Math.round(stepH) });
+      }
+    }
     if (template === 'ways') {
       const gap = Math.round(width * 0.03);
       const top = Math.round(height * 0.255);
@@ -609,12 +708,39 @@
     ctx.font = fontSpec(opts.weight || 800, fitted.size, opts.family || 'sans');
     ctx.fillStyle = opts.color || INK;
     ctx.textBaseline = 'top';
-    ctx.textAlign = rtl ? 'right' : 'left';
-    const x = rtl ? box.x + box.width : box.x;
+    const align = opts.align || 'start';
+    ctx.textAlign = align === 'center' ? 'center' : (align === 'end' ? (rtl ? 'left' : 'right') : (rtl ? 'right' : 'left'));
+    const x = align === 'center'
+      ? box.x + box.width / 2
+      : align === 'end'
+        ? (rtl ? box.x : box.x + box.width)
+        : (rtl ? box.x + box.width : box.x);
     fitted.lines.forEach((line, index) => {
       ctx.fillText(line, x, box.y + index * fitted.lineHeight);
     });
     return { ...fitted, x, endY: box.y + fitted.lines.length * fitted.lineHeight };
+  }
+
+  // Apply the editor's headline nudges (vertical percent of canvas height).
+  function laidHeadBox(box, plan, size) {
+    const dy = Math.round(((plan.layout && plan.layout.headlineShiftY) || 0) * size.height / 100);
+    return { ...box, y: box.y + dy };
+  }
+
+  // Place the CTA pill honoring the editor's alignment + x/y nudges.
+  function drawPillLaid(ctx, label, baseCx, baseCy, height, color, textColor, plan, size, pad) {
+    const l = plan.layout || {};
+    const width = pillWidth(ctx, label, height);
+    const align = l.ctaAlign || 'center';
+    let cx = align === 'start'
+      ? pad + width / 2
+      : align === 'end'
+        ? size.width - pad - width / 2
+        : size.width / 2;
+    cx += (l.ctaShiftX || 0) * size.width / 100;
+    cx = clamp(cx, pad + width / 2, size.width - pad - width / 2);
+    const cy = clamp(baseCy + (l.ctaShiftY || 0) * size.height / 100, height, size.height - height / 2);
+    return drawPill(ctx, label, cx, cy, height, color, textColor);
   }
 
   function pillWidth(ctx, label, height) {
@@ -645,7 +771,7 @@
 
   /** Photo card for the "ways" template: photo + brush ribbon with label. */
   function drawWaysCard(ctx, slot, image, box, palette, index, rtl) {
-    drawPhoto(ctx, image, box, box.radius, 0.5);
+    drawPhoto(ctx, image, box, box.radius, (slot && slot.focusY) || 0.5);
     ctx.save();
     roundRectPath(ctx, box.x, box.y, box.width, box.height, box.radius);
     ctx.clip();
@@ -731,12 +857,106 @@
     });
   }
 
+  // Numbered horizontal rows for the "listicle" template.
+  function drawListRow(ctx, slot, image, row, index, palette, rtl, plan, size) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(60,40,20,.14)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 6;
+    roundRectPath(ctx, row.x, row.y, row.width, row.height, 18);
+    ctx.fillStyle = palette.card;
+    ctx.fill();
+    ctx.restore();
+    drawPhoto(ctx, image, row.thumb, row.thumb.radius, (slot && slot.focusY) || 0.5);
+    const badgeR = Math.round(row.height * 0.21);
+    const bcx = row.thumb.x + row.thumb.width - badgeR * 0.2;
+    const bcy = row.thumb.y + badgeR * 0.9;
+    ctx.beginPath();
+    ctx.arc(bcx, bcy, badgeR, 0, Math.PI * 2);
+    ctx.fillStyle = palette.accent;
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = fontSpec(900, Math.round(badgeR * 1.15), 'display');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(index + 1), bcx, bcy + 1);
+    const textX = rtl ? row.x + row.width - row.thumb.width - badgeR - 22 : row.x + row.thumb.width + badgeR + 22;
+    const textBox = { x: rtl ? row.x + 14 : textX, y: row.y + row.height * 0.16, width: row.width - row.thumb.width - badgeR * 2 - 42, height: row.height * 0.72 };
+    drawBlock(ctx, slot.label || `Recipe ${index + 1}`, textBox, { color: palette.ink, max: Math.round(row.height * 0.24), min: 18, maxLines: 2, rtl, weight: 900, family: 'display', align: plan.layout.headlineAlign });
+    const items = (slot.ingredients || []).slice(0, 2);
+    if (items.length) {
+      ctx.font = fontSpec(600, Math.round(row.height * 0.1), 'sans');
+      ctx.fillStyle = 'rgba(60,50,40,.66)';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = rtl ? 'right' : 'left';
+      const line = items.join('  ·  ');
+      ctx.fillText(line.length > 42 ? `${line.slice(0, 41)}…` : line, textBox.x, textBox.y + textBox.height - 6, textBox.width);
+    }
+  }
+
+  // Numbered preparation steps for the "steps" template.
+  function drawStepsPanel(ctx, slot, rows, palette, rtl) {
+    const steps = (slot && slot.steps || []).slice(0, 4);
+    rows.forEach((row, i) => {
+      const step = steps[i];
+      const numberR = Math.round(row.height * 0.26);
+      const numberCy = row.y + Math.min(numberR + 4, row.height * 0.4);
+      const numberX = rtl ? row.x + row.width - numberR : row.x + numberR;
+      ctx.beginPath();
+      ctx.arc(numberX, numberCy, numberR, 0, Math.PI * 2);
+      ctx.fillStyle = step ? palette.accent : palette.soft;
+      ctx.fill();
+      ctx.fillStyle = step ? '#fff' : 'rgba(80,70,60,.55)';
+      ctx.font = fontSpec(900, Math.round(numberR), 'display');
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), numberX, numberCy + 1);
+      if (step) {
+        ctx.font = fontSpec(650, Math.round(row.height * 0.24), 'sans');
+        ctx.fillStyle = palette.ink;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = rtl ? 'right' : 'left';
+        const textX = rtl ? row.x + row.width - numberR * 2 - 16 : row.x + numberR * 2 + 16;
+        const width = row.width - numberR * 2 - 32;
+        const fitted = fitText(ctx, step, { maxWidth: width, maxHeight: row.height * 0.8, max: Math.round(row.height * 0.26), min: 15, weight: 650, family: 'sans', lineHeightRatio: 1.2, maxLines: 2 });
+        ctx.font = fontSpec(650, fitted.size, 'sans');
+        fitted.lines.forEach((line, k) => {
+          ctx.fillText(line, textX, numberCy - (fitted.lines.length - 1) * fitted.lineHeight / 2 + k * fitted.lineHeight, width);
+        });
+      }
+    });
+  }
+
+  function drawCirclePhoto(ctx, image, circle, focusY = 0.5) {
+    const { cx, cy, r } = circle;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    if (image) {
+      const rect = coverRect(image.width || image.naturalWidth, image.height || image.naturalHeight, r * 2, r * 2, focusY);
+      ctx.drawImage(image, cx - r + rect.x, cy - r + rect.y, rect.width, rect.height);
+    } else {
+      ctx.fillStyle = '#e7e2d6';
+      ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    }
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.lineWidth = Math.round(r * 0.07);
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function renderPro(canvas, images, plan) {
     const ctx = canvas.getContext('2d');
     const palette = PALETTES[plan.palette] || PALETTES[DEFAULT_PALETTE];
     const size = { width: canvas.width, height: canvas.height };
     const rtl = isRtl(plan.headline + plan.subline + (plan.photos[0] && plan.photos[0].label ? plan.photos[0].label : ''));
     const slots = plan.photos || [];
+    const headAlign = (plan.layout && plan.layout.headlineAlign) || 'start';
     const slotImage = (index) => {
       const slot = slots[index];
       if (!slot || !images || !images.slots) return null;
@@ -749,19 +969,18 @@
     ctx.fillRect(0, 0, size.width, size.height);
 
     if (plan.template === 'ways') {
-      // Header
-      const head = layout.header;
-      drawBlock(ctx, plan.headline || 'Recipes', head, { color: palette.ink, max: Math.round(size.width * 0.09 * plan.textScale), min: 38, maxLines: 2, rtl, weight: 900, family: 'display' });
-      const accentY = head.y + Math.round(size.height * 0.135);
+      const head = laidHeadBox(layout.header, plan, size);
+      drawBlock(ctx, plan.headline || 'Recipes', head, { color: palette.ink, max: Math.round(size.width * 0.09 * plan.textScale), min: 38, maxLines: 2, rtl, weight: 900, family: 'display', align: headAlign });
+      const accentW = Math.round(head.width * 0.34);
+      const accentX = headAlign === 'center' ? head.x + (head.width - accentW) / 2 : headAlign === 'end' ? head.x + head.width - accentW : (rtl ? head.x + head.width - accentW : head.x);
       ctx.fillStyle = palette.accent;
-      roundRectPath(ctx, rtl ? head.x + head.width - Math.round(head.width * 0.34) : head.x, accentY, Math.round(head.width * 0.34), 12, 6);
+      roundRectPath(ctx, accentX, head.y + Math.round(size.height * 0.135), accentW, 12, 6);
       ctx.fill();
       if (plan.subline) {
-        drawBlock(ctx, plan.subline, { x: head.x, y: accentY + 20, width: head.width, height: 54 }, { color: palette.ink, max: 26, min: 16, maxLines: 2, weight: 600, rtl });
+        drawBlock(ctx, plan.subline, laidHeadBox({ x: head.x, y: head.y + Math.round(size.height * 0.15), width: head.width, height: 54 }, plan, size), { color: palette.ink, max: 26, min: 16, maxLines: 2, weight: 600, rtl, align: headAlign });
       }
       layout.cards.forEach((box, i) => drawWaysCard(ctx, slots[i] || {}, slotImage(i), box, palette, i, rtl));
-      const cy = size.height - Math.round(size.height * 0.028);
-      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, cy - 6, Math.round(size.height * 0.047), palette.accent, '#fff');
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, size.height - Math.round(size.height * 0.032), Math.round(size.height * 0.047), palette.accent, '#fff', plan, size, layout.pad);
     }
 
     if (plan.template === 'checklist') {
@@ -769,21 +988,22 @@
       ctx.fillStyle = palette.ribbon;
       roundRectPath(ctx, band.x, band.y, band.width, band.height + 40, 40);
       ctx.fill();
-      drawBlock(ctx, plan.headline || '', { x: band.x + layout.pad * 1.4, y: band.y + layout.pad, width: band.width - layout.pad * 2.8, height: band.height * 0.72 }, { color: '#fff', max: Math.round(size.width * 0.085 * plan.textScale), min: 36, maxLines: 3, rtl, weight: 900, family: 'display' });
-      if (plan.subline) drawBlock(ctx, plan.subline, { x: band.x + layout.pad * 1.4, y: band.y + band.height * 0.72, width: band.width - layout.pad * 2.8, height: band.height * 0.24 }, { color: 'rgba(255,255,255,.9)', max: 24, min: 15, maxLines: 2, weight: 600, rtl });
+      const headBox = laidHeadBox({ x: band.x + layout.pad * 1.4, y: band.y + layout.pad, width: band.width - layout.pad * 2.8, height: band.height * 0.72 }, plan, size);
+      drawBlock(ctx, plan.headline || '', headBox, { color: '#fff', max: Math.round(size.width * 0.085 * plan.textScale), min: 36, maxLines: 3, rtl, weight: 900, family: 'display', align: headAlign });
+      if (plan.subline) drawBlock(ctx, plan.subline, { x: band.x + layout.pad * 1.4, y: band.y + band.height * 0.72, width: band.width - layout.pad * 2.8, height: band.height * 0.24 }, { color: 'rgba(255,255,255,.9)', max: 24, min: 15, maxLines: 2, weight: 600, rtl, align: headAlign });
       ctx.save();
       ctx.shadowColor = 'rgba(40,25,10,.3)';
       ctx.shadowBlur = 30;
       ctx.shadowOffsetY = 10;
-      drawPhoto(ctx, slotImage(0), photo, 28, 0.4);
+      drawPhoto(ctx, slotImage(0), photo, 28, (slots[0] && slots[0].focusY) || 0.5);
       ctx.restore();
       drawChecklist(ctx, slots[0] || {}, paper, palette, rtl);
-      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, cta.y + cta.height / 2, Math.round(size.height * 0.052), palette.accent, '#fff');
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, cta.y + cta.height / 2, Math.round(size.height * 0.052), palette.accent, '#fff', plan, size, layout.pad);
     }
 
     if (plan.template === 'banner') {
       const { photo, panel, pad } = layout;
-      drawPhoto(ctx, slotImage(0), photo, 0, 0.5);
+      drawPhoto(ctx, slotImage(0), photo, 0, (slots[0] && slots[0].focusY) || 0.5);
       const gradient = ctx.createLinearGradient(0, photo.y + photo.height * 0.55, 0, photo.y + photo.height);
       gradient.addColorStop(0, 'rgba(0,0,0,0)');
       gradient.addColorStop(1, 'rgba(0,0,0,.34)');
@@ -791,7 +1011,6 @@
       ctx.fillRect(photo.x, photo.y, photo.width, photo.height);
       if (plan.brand) {
         const h = 44;
-        const labelW = ctx.measureText ? null : null;
         ctx.font = fontSpec(700, 24, 'sans');
         const w = Math.ceil(ctx.measureText(plan.brand).width) + 40;
         roundRectPath(ctx, pad, pad, w, h, h / 2);
@@ -805,7 +1024,7 @@
       ctx.fillStyle = panel.color || palette.card;
       ctx.fillRect(panel.x, panel.y, panel.width, panel.height);
       const inner = { x: pad * 1.4, width: size.width - pad * 2.8 };
-      drawBlock(ctx, plan.headline || '', { ...inner, y: panel.y + 34, height: Math.round(panel.height * 0.42) }, { color: palette.accent, max: Math.round(size.width * 0.078 * plan.textScale), min: 34, maxLines: 2, rtl, weight: 900, family: 'display' });
+      drawBlock(ctx, plan.headline || '', laidHeadBox({ ...inner, y: panel.y + 34, height: Math.round(panel.height * 0.42) }, plan, size), { color: palette.accent, max: Math.round(size.width * 0.078 * plan.textScale), min: 34, maxLines: 2, rtl, weight: 900, family: 'display', align: headAlign });
       const firstItems = (slots[0] && slots[0].ingredients || []).slice(0, 3);
       if (firstItems.length) {
         ctx.font = fontSpec(600, 26, 'sans');
@@ -815,17 +1034,17 @@
         const joined = firstItems.map((item) => `✓ ${item}`).join('   ·   ');
         ctx.fillText(joined.length > 78 ? `${joined.slice(0, 77)}…` : joined, rtl ? inner.x + inner.width : inner.x, panel.y + Math.round(panel.height * 0.52), inner.width);
       }
-      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, panel.y + panel.height - Math.round(panel.height * 0.2), Math.round(size.height * 0.05), palette.accent, '#fff');
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, panel.y + panel.height - Math.round(panel.height * 0.2), Math.round(size.height * 0.05), palette.accent, '#fff', plan, size, pad);
     }
 
     if (plan.template === 'duo') {
       const { top, band, bottom, pad } = layout;
-      drawPhoto(ctx, slotImage(0), top, 0, 0.5);
-      drawPhoto(ctx, slotImage(1), bottom, 0, 0.5);
+      drawPhoto(ctx, slotImage(0), top, 0, (slots[0] && slots[0].focusY) || 0.5);
+      drawPhoto(ctx, slotImage(1), bottom, 0, (slots[1] && slots[1].focusY) || 0.5);
       ctx.fillStyle = palette.card;
       ctx.fillRect(band.x, band.y, band.width, band.height);
-      drawBlock(ctx, plan.headline || '', { x: pad * 1.3, y: band.y + Math.round(band.height * 0.12), width: size.width - pad * 2.6, height: Math.round(band.height * 0.5) }, { color: palette.ink, max: Math.round(size.width * 0.082 * plan.textScale), min: 32, maxLines: 2, rtl, weight: 900, family: 'display' });
-      if (plan.cta) drawPill(ctx, plan.cta, size.width / 2, band.y + band.height - Math.round(band.height * 0.2), Math.round(size.height * 0.046), palette.accent, '#fff');
+      drawBlock(ctx, plan.headline || '', laidHeadBox({ x: pad * 1.3, y: band.y + Math.round(band.height * 0.12), width: size.width - pad * 2.6, height: Math.round(band.height * 0.5) }, plan, size), { color: palette.ink, max: Math.round(size.width * 0.082 * plan.textScale), min: 32, maxLines: 2, rtl, weight: 900, family: 'display', align: headAlign });
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, band.y + band.height - Math.round(band.height * 0.2), Math.round(size.height * 0.046), palette.accent, '#fff', plan, size, pad);
       if (slots[0] && slots[0].label) {
         const h = 48;
         ctx.font = fontSpec(800, 24, 'sans');
@@ -838,6 +1057,91 @@
         ctx.textBaseline = 'middle';
         ctx.fillText(slots[0].label, pad + 22, top.y + top.height - h / 2 - 24 + 1);
       }
+    }
+
+    if (plan.template === 'listicle') {
+      const head = laidHeadBox(layout.header, plan, size);
+      drawBlock(ctx, plan.headline || '', head, { color: palette.ink, max: Math.round(size.width * 0.088 * plan.textScale), min: 36, maxLines: 2, rtl, weight: 900, family: 'display', align: headAlign });
+      if (plan.subline) {
+        drawBlock(ctx, plan.subline, { x: head.x, y: head.y + Math.round(size.height * 0.115), width: head.width, height: 44 }, { color: palette.ink, max: 24, min: 15, maxLines: 1, weight: 600, rtl, align: headAlign });
+      }
+      layout.rows.forEach((row, i) => drawListRow(ctx, slots[i] || {}, slotImage(i), row, i, palette, rtl, plan, size));
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, size.height - Math.round(size.height * 0.03), Math.round(size.height * 0.046), palette.accent, '#fff', plan, size, layout.pad);
+    }
+
+    if (plan.template === 'steps') {
+      const { photo, panel, title, stepRows, cta } = layout;
+      drawPhoto(ctx, slotImage(0), photo, 0, (slots[0] && slots[0].focusY) || 0.5);
+      const gradient = ctx.createLinearGradient(0, photo.y, 0, photo.y + photo.height);
+      gradient.addColorStop(0, 'rgba(0,0,0,.12)');
+      gradient.addColorStop(1, 'rgba(0,0,0,.66)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(photo.x, photo.y, photo.width, photo.height);
+      const photoTitleBox = { x: title.x, y: Math.round(photo.y + photo.height * 0.62), width: title.width, height: Math.round(photo.height * 0.32) };
+      drawBlock(ctx, plan.headline || '', photoTitleBox, { color: '#fff', max: Math.round(size.width * 0.085 * plan.textScale), min: 34, maxLines: 2, rtl, weight: 900, family: 'display', align: headAlign });
+      ctx.fillStyle = palette.card;
+      ctx.fillRect(panel.x, panel.y, panel.width, panel.height);
+      const heading = rtl ? 'طريقة التحضير' : 'HOW TO MAKE IT';
+      ctx.font = fontSpec(800, Math.round(size.width * 0.042), 'display');
+      ctx.fillStyle = palette.accent;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = rtl ? 'right' : 'left';
+      ctx.fillText(heading, rtl ? title.x + title.width : title.x, title.y - 6);
+      drawStepsPanel(ctx, slots[0] || {}, stepRows, palette, rtl);
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, cta.y, Math.round(size.height * 0.05), palette.accent, '#fff', plan, size, layout.pad);
+    }
+
+    if (plan.template === 'quote') {
+      const { card, pad } = layout;
+      drawPhoto(ctx, slotImage(0), layout.photo, 0, (slots[0] && slots[0].focusY) || 0.5);
+      ctx.fillStyle = 'rgba(10,10,12,.28)';
+      ctx.fillRect(0, 0, size.width, size.height);
+      ctx.save();
+      ctx.shadowColor = 'rgba(20,14,6,.3)';
+      ctx.shadowBlur = 34;
+      ctx.shadowOffsetY = 12;
+      roundRectPath(ctx, card.x, card.y, card.width, card.height, 26);
+      ctx.fillStyle = 'rgba(255,252,246,.96)';
+      ctx.fill();
+      ctx.restore();
+      const markRtl = isRtl(plan.headline);
+      ctx.font = fontSpec(900, Math.round(card.width * 0.16), 'serif');
+      ctx.fillStyle = palette.accent;
+      ctx.textAlign = markRtl ? 'right' : 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(markRtl ? '”' : '“', markRtl ? card.x + card.width - 28 : card.x + 28, card.y + 4);
+      drawBlock(ctx, plan.headline || '', { x: card.x + pad, y: card.y + pad * 1.4, width: card.width - pad * 2, height: card.height * 0.56 }, { color: palette.ink, max: Math.round(size.width * 0.078 * plan.textScale), min: 32, maxLines: 4, rtl, weight: 900, family: 'display', align: headAlign });
+      if (plan.subline) {
+        drawBlock(ctx, plan.subline, { x: card.x + pad, y: card.y + card.height * 0.66, width: card.width - pad * 2, height: card.height * 0.18 }, { color: palette.ink, max: 25, min: 16, maxLines: 2, weight: 600, rtl, align: headAlign });
+      }
+      if (plan.brand) {
+        ctx.fillStyle = palette.accent;
+        const lineW = 46;
+        ctx.fillRect(markRtl ? card.x + card.width - pad - lineW : card.x + pad, card.y + card.height - pad, lineW, 4);
+        ctx.font = fontSpec(800, 24, 'sans');
+        ctx.fillStyle = palette.ink;
+        ctx.textAlign = markRtl ? 'right' : 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(plan.brand, markRtl ? card.x + card.width - pad - lineW - 14 : card.x + pad + lineW + 14, card.y + card.height - pad + 2);
+      }
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, size.height - Math.round(size.height * 0.05), Math.round(size.height * 0.052), '#ffffff', palette.accent, plan, size, pad);
+    }
+
+    if (plan.template === 'circle') {
+      const { circle, title, cta } = layout;
+      drawBlob(ctx, circle.cx, circle.cy, circle.r * 1.12, circle.r * 1.12, palette.soft, 0.1, 4);
+      drawCirclePhoto(ctx, slotImage(0), circle, (slots[0] && slots[0].focusY) || 0.5);
+      drawBlock(ctx, plan.headline || '', laidHeadBox(title, plan, size), { color: palette.ink, max: Math.round(size.width * 0.085 * plan.textScale), min: 32, maxLines: 3, rtl, weight: 900, family: 'display', align: headAlign });
+      const items = (slots[0] && slots[0].ingredients || []).slice(0, 3);
+      if (items.length) {
+        ctx.font = fontSpec(650, 26, 'sans');
+        ctx.fillStyle = 'rgba(60,50,40,.72)';
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'center';
+        const joined = items.join('  ·  ');
+        ctx.fillText(joined.length > 64 ? `${joined.slice(0, 63)}…` : joined, size.width / 2, title.y + title.height - 6, title.width);
+      }
+      if (plan.cta) drawPillLaid(ctx, plan.cta, size.width / 2, cta.y, Math.round(size.height * 0.052), palette.accent, '#fff', plan, size, layout.pad);
     }
     return layout;
   }
@@ -868,9 +1172,19 @@
 
     drawChips(ctx, plan, box);
 
+    const classicRtl = isRtl(plan.headline + plan.subline);
+    const hAlign = (plan.layout && plan.layout.headlineAlign) || 'start';
+    const stackShift = Math.round(((plan.layout && plan.layout.headlineShiftY) || 0) * size.height / 100);
+    const anchorFor = (rect) => {
+      if (hAlign === 'center') return { x: rect.x + rect.width / 2, align: 'center' };
+      if (hAlign === 'end') return { x: classicRtl ? rect.x : rect.x + rect.width, align: classicRtl ? 'right' : 'left' };
+      return { x: classicRtl ? rect.x + rect.width : rect.x, align: classicRtl ? 'right' : 'left' };
+    };
+
+    const headlineBox = { ...box.headline, y: box.headline.y + stackShift };
     const headline = fitText(ctx, plan.headline, {
-      maxWidth: box.headline.width,
-      maxHeight: box.headline.height,
+      maxWidth: headlineBox.width,
+      maxHeight: headlineBox.height,
       max: Math.round(size.width * 0.105 * plan.textScale),
       min: Math.round(size.width * 0.05),
       weight: 800,
@@ -881,15 +1195,18 @@
     });
     ctx.font = fontSpec(800, headline.size, plan.font);
     ctx.fillStyle = onDark ? '#fff' : INK;
+    const headAnchor = anchorFor(headlineBox);
     withShadow(ctx, onDark, size.width, () => {
+      ctx.textAlign = headAnchor.align;
       headline.lines.forEach((line, index) => {
-        ctx.fillText(line, box.headline.x, box.headline.y + index * headline.lineHeight);
+        ctx.fillText(line, headAnchor.x, headlineBox.y + index * headline.lineHeight);
       });
     });
 
+    const sublineBox = { ...box.subline, y: box.subline.y + stackShift };
     const subline = fitText(ctx, plan.subline, {
-      maxWidth: box.subline.width,
-      maxHeight: box.subline.height,
+      maxWidth: sublineBox.width,
+      maxHeight: sublineBox.height,
       max: Math.round(size.width * 0.045 * plan.textScale),
       min: Math.round(size.width * 0.026),
       weight: 500,
@@ -899,11 +1216,14 @@
     });
     ctx.font = fontSpec(500, subline.size, plan.font);
     ctx.fillStyle = onDark ? 'rgba(255,255,255,.92)' : 'rgba(32,36,47,.8)';
+    const subAnchor = anchorFor(sublineBox);
     withShadow(ctx, onDark, size.width, () => {
+      ctx.textAlign = subAnchor.align;
       subline.lines.forEach((line, index) => {
-        ctx.fillText(line, box.subline.x, box.subline.y + index * subline.lineHeight);
+        ctx.fillText(line, subAnchor.x, sublineBox.y + index * subline.lineHeight);
       });
     });
+    ctx.textAlign = 'left';
 
     drawFooter(ctx, plan, box);
     return box;

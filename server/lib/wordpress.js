@@ -141,6 +141,11 @@ async function testConnection(request) {
     await verifyMediaUpload(root, settings);
     const result = { ok: true, accountName, uploadsVerified: true };
     if (usersEndpointBlocked) result.usersEndpointBlocked = true;
+    const plain = await siteUsesPlainPermalinks(root, settings);
+    if (plain) {
+      result.plainPermalinks = true;
+      result.permalinkSettingsUrl = `${root}/wp-admin/options-permalink.php`;
+    }
     return result;
   }));
 }
@@ -643,6 +648,69 @@ async function previewArticle(request) {
   };
 }
 
+/**
+ * A site with "Plain" permalinks exposes every post as /?p=123, even though
+ * the post was created with a proper slug. Core WordPress does not expose
+ * permalink_structure through the REST settings endpoint (it is registered
+ * admin-only), so a fully automatic fix is impossible with an Application
+ * Password alone. We (1) detect the condition, (2) switch the structure when a
+ * plugin exposes it, (3) verify the pretty URL resolves, and (4) otherwise hand
+ * the UI a one-tap link to Settings > Permalinks.
+ */
+async function siteUsesPlainPermalinks(root, settings) {
+  try {
+    const rows = await requestJson(`${root}/wp-json/wp/v2/posts?context=edit&per_page=1&orderby=date&order=desc`, 'GET', wordpressHeaders(settings));
+    const link = Array.isArray(rows) && rows[0] ? String(rows[0].link || '') : '';
+    return /[?&]p=\d+/.test(link);
+  } catch {
+    return null; // unknown: never block a publish on a failed probe
+  }
+}
+
+async function tryEnablePrettyPermalinks(root, settings) {
+  // Stock core rejects unknown settings fields, but some sites expose
+  // permalink_structure via a plugin; the attempt is cheap and non-destructive.
+  try {
+    const current = await requestJson(`${root}/wp-json/wp/v2/settings`, 'GET', wordpressHeaders(settings));
+    if (current && Object.prototype.hasOwnProperty.call(current, 'permalink_structure') && !current.permalink_structure) {
+      await requestJson(`${root}/wp-json/wp/v2/settings`, 'POST', wordpressHeaders(settings), { permalink_structure: '/%postname%/' });
+      return true;
+    }
+  } catch { /* the field is not exposed: the user must use Settings > Permalinks once */ }
+  return false;
+}
+
+async function urlResolvesPublicly(url) {
+  // Some servers reject HEAD; fall back to a small GET before giving up.
+  for (const method of ['HEAD', 'GET']) {
+    try {
+      await request(url, method, { 'User-Agent': 'OrbitPress' }, null, { timeoutMs: 20000 });
+      return true;
+    } catch { /* try the next method / report unresolved */ }
+  }
+  return false;
+}
+
+async function resolvePublishedLink(root, settings, createdPost, slug) {
+  const prettyUrl = `${root}/${slug}/`;
+  const settingsUrl = `${root}/wp-admin/options-permalink.php`;
+  const plain = (link) => /[?&]p=\d+/.test(String(link || ''));
+  if (!plain(createdPost.link)) return { url: createdPost.link, plainPermalinks: false };
+  await tryEnablePrettyPermalinks(root, settings);
+  let fresh = createdPost;
+  try {
+    fresh = await requestJson(`${root}/wp-json/wp/v2/posts/${createdPost.id}?context=edit`, 'GET', wordpressHeaders(settings));
+  } catch { /* keep the creation response */ }
+  if (!plain(fresh.link)) return { url: fresh.link, plainPermalinks: false };
+  if (await urlResolvesPublicly(prettyUrl)) return { url: prettyUrl, plainPermalinks: false };
+  return {
+    url: fresh.link,
+    plainPermalinks: true,
+    prettyUrl,
+    permalinkSettingsUrl: settingsUrl,
+  };
+}
+
 async function publish(request) {
   const settings = requireWordPressSettings(request);
   const draft = request.draft || {};
@@ -695,7 +763,19 @@ async function publish(request) {
     orbitpress_og_description: SeoContract.text(draft.ogDescription, 200),
   };
   const published = await requestJson(`${root}/wp-json/wp/v2/posts`, 'POST', wordpressHeaders(settings), post);
-  return { ok: true, url: published.link, postId: published.id };
+  const resolution = await resolvePublishedLink(root, settings, published, slug);
+  if (resolution.plainPermalinks) {
+    // The pretty /slug/ URL would 404: re-point canonical/share/JSON-LD URLs
+    // baked into the body at the real ?p=ID link so pins and SEO never point
+    // at a missing page until the site enables post-name permalinks once.
+    const fixedContent = content.split(`${root}/${slug}/`).join(resolution.url);
+    if (fixedContent !== content) {
+      try {
+        await requestJson(`${root}/wp-json/wp/v2/posts/${published.id}`, 'POST', wordpressHeaders(settings), { content: fixedContent });
+      } catch { /* cosmetic fallback: the post itself is already published */ }
+    }
+  }
+  return { ok: true, url: resolution.url, postId: published.id, plainPermalinks: !!resolution.plainPermalinks, prettyUrl: resolution.prettyUrl || '', permalinkSettingsUrl: resolution.permalinkSettingsUrl || '' };
 }
 
 async function publishPinterest(request) {

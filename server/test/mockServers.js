@@ -194,9 +194,10 @@ function startWordPressMock(state = {}) {
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         const input = JSON.parse(body);
+        const postId = data.nextPostId++;
         const post = {
-          id: data.nextPostId++,
-          link: `https://wp.test/${input.slug}/`,
+          id: postId,
+          link: data.plainPermalinks ? `https://wp.test/?p=${postId}` : `https://wp.test/${input.slug}/`,
           slug: input.slug,
           status: input.status,
           modified: new Date().toISOString(),

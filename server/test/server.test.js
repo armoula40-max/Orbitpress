@@ -842,13 +842,13 @@ test('pin defaults carry the recipe facts and the site domain', () => {
 test('pro pin templates compose photo slots, palettes and Arabic defaults', () => {
   const pin = require('../public/app/pinStudio.js');
   assert.deepEqual(pin.CLASSIC_TEMPLATES, ['scrim', 'card', 'top']);
-  assert.deepEqual(pin.PRO_TEMPLATES, ['ways', 'checklist', 'banner', 'duo']);
+  assert.ok(pin.PRO_TEMPLATES.includes('ways') && pin.PRO_TEMPLATES.includes('listicle'));
   assert.ok(pin.PALETTES.pumpkin && pin.PALETTES.terracotta, 'curated palettes ship with the studio');
 
   const context = {
     title: '4 وصفات باليقطين', metaDescription: 'وصفات خريفية', contentType: 'recipe',
     recipes: [
-      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين'] },
+      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين'], instructions: [{ text: 'اخلطي القهوة مع اليقطين' }, { text: 'سخّني الحليب' }, { text: 'اجمعي المكونات' }, { text: 'قدّميها ساخنة' }] },
       { title: 'كعكة', ingredients: ['دقيق', 'سكر'] },
       { title: 'حساء' },
       { title: 'فطيرة' },
@@ -882,6 +882,43 @@ test('pro pin templates compose photo slots, palettes and Arabic defaults', () =
   assert.equal(pin.defaultDesign(context, 'duo').photos.length, 2);
   assert.equal(pin.defaultDesign(context, 'banner').photos.length, 1);
 
+  // four extra pro templates: listicle, steps, quote, circle
+  assert.deepEqual(pin.PRO_TEMPLATES, ['ways', 'checklist', 'banner', 'duo', 'listicle', 'steps', 'quote', 'circle']);
+  const listicle = pin.defaultDesign(context, 'listicle');
+  assert.equal(listicle.photos.length, 4, 'listicle offers one row per recipe');
+  const listLayout = pin.proLayout('listicle', pin.PIN_SIZE, 4);
+  assert.equal(listLayout.rows.length, 4);
+  listLayout.rows.forEach((row) => {
+    assert.ok(row.y >= 0 && row.y + row.height <= 1500, 'listicle row on canvas');
+    assert.ok(row.thumb.width === row.thumb.height, 'the thumbnail is square');
+  });
+  assert.equal(pin.proLayout('listicle', pin.PIN_SIZE, 2).rows.length, 2);
+
+  const steps = pin.defaultDesign(context, 'steps');
+  assert.equal(steps.photos[0].steps.length, 4, 'instructions flow into the steps template');
+  const stepsLayout = pin.proLayout('steps', pin.PIN_SIZE, 1);
+  assert.equal(stepsLayout.stepRows.length, 4);
+  assert.ok(stepsLayout.stepRows[3].y + stepsLayout.stepRows[3].height <= 1450);
+  const quoteLayout = pin.proLayout('quote', pin.PIN_SIZE, 1);
+  assert.ok(quoteLayout.card.x >= 0 && quoteLayout.card.y + quoteLayout.card.height <= 1500);
+  const circleLayout = pin.proLayout('circle', pin.PIN_SIZE, 1);
+  assert.ok(circleLayout.circle.cx - circleLayout.circle.r > 0 && circleLayout.circle.cx + circleLayout.circle.r < 1000);
+
+  // layout position editor: nudges normalize and stay within bounds
+  const nudged = pin.normalizeDesign({
+    template: 'checklist',
+    layout: { headlineAlign: 'center', headlineShiftY: -9, ctaAlign: 'end', ctaShiftX: 12, ctaShiftY: 40 },
+  });
+  assert.equal(nudged.layout.ctaShiftY, 15, 'vertical CTA nudge is clamped');
+  assert.equal(nudged.layout.headlineAlign, 'center');
+  const classicNudge = pin.normalizeDesign({ template: 'scrim' });
+  assert.equal(classicNudge.layout.ctaAlign, 'start', 'classic CTAs keep their original spot by default');
+  const proDefault = pin.normalizeDesign({ template: 'banner' });
+  assert.equal(proDefault.layout.ctaAlign, 'center', 'pro CTAs are centered by default');
+  const slot = pin.normalizeSlot({ focusY: 3, steps: ['a', '', 'b'] }, 0);
+  assert.equal(slot.focusY, 1, 'slot focus is clamped');
+  assert.deepEqual(slot.steps, ['a', 'b']);
+
   // unknown template stored on an old draft falls back instead of crashing
   assert.equal(pin.normalizeDesign({ template: 'mystery' }).template, 'scrim');
   assert.equal(pin.isRtl('وصفة عربية'), true);
@@ -901,6 +938,101 @@ test('pin studio can be toggled off per tenant while defaulting to enabled', () 
   assert.equal(store.getSettingsSummary('site-never-touched').pinStudioEnabled, true, 'on by default');
   const merged = SettingsPersistenceContract.merge({ pinStudioEnabled: false }, { wordpressBaseUrl: 'x' });
   assert.equal(merged.pinStudioEnabled, false);
+});
+
+test('the published recipe card is self-styled, kses-safe and bilingual', () => {
+  const { DraftContract } = contracts;
+  const ar = DraftContract.normalize({
+    title: 'طريقة عمل كريب الدجاج',
+    slug: 'chicken-crepe-recipe',
+    contentType: 'recipe',
+    metaDescription: 'وصفة سريعة',
+    htmlContent: '<h2>المقدمة</h2><p>نص المقال</p>',
+    recipe: {
+      description: 'وصفة لذيذة وسريعة',
+      prepTime: '15 دقيقة', cookTime: '20 دقيقة', recipeYield: '4 أشخاص', cuisine: 'عربي',
+      ingredients: ['دجاج', 'جبن', 'خبز التورتيلا'],
+      instructions: [
+        { name: 'التقطيع', text: 'قطّعي الدجاج شرائح' },
+        { name: '', text: 'اطبخيه على نار هادئة' },
+        { name: '', text: 'أضيفي الجبن' },
+        { name: '', text: 'لُفّي الكريب وقدّميه' },
+      ],
+      notes: ['يقدّم ساخنًا'],
+    },
+  }, 'وصفات');
+  const card = ar.htmlContent.slice(ar.htmlContent.indexOf('askinz-recipe-card') - 30);
+  assert.ok(ar.htmlContent.includes('data-recipe-card="true"'));
+  assert.ok(!/^<section/.test(card) && !ar.htmlContent.includes('<section'), 'uses kses-safe div, not <section>');
+  assert.ok(ar.htmlContent.includes('style="'), 'styles are inline so any theme renders the card');
+  for (const label of ['المكوّنات', 'طريقة التحضير', 'تحضير:', 'الكمية:', 'ملاحظات مفيدة']) {
+    assert.ok(ar.htmlContent.includes(label), `Arabic label present: ${label}`);
+  }
+  assert.ok(ar.htmlContent.includes('direction:rtl'));
+  // no disallowed tag names travel inside the card
+  const cardHtml = ar.htmlContent.slice(ar.htmlContent.indexOf('<div class="askinz-recipe-card"'));
+  assert.doesNotMatch(cardHtml, /<(section|script|style|iframe|object|embed)\b/i);
+  assert.ok(cardHtml.includes('قطّعي الدجاج شرائح'));
+
+  const en = DraftContract.normalize({
+    title: 'Chicken Crepes',
+    slug: 'chicken-crepes-recipe',
+    contentType: 'recipe',
+    metaDescription: 'Quick dinner',
+    htmlContent: '<p>Intro</p>',
+    recipe: {
+      prepTime: '15 min', cookTime: '20 min', recipeYield: '4 servings',
+      ingredients: ['chicken', 'cheese'],
+      instructions: [{ text: 'Cut the chicken.' }, { text: 'Cook it.' }, { text: 'Add cheese.' }, { text: 'Serve.' }],
+    },
+  }, 'Dinner');
+  assert.ok(en.htmlContent.includes('Ingredients</h3>'));
+  assert.ok(en.htmlContent.includes('Instructions</h3>'));
+  assert.ok(en.htmlContent.includes('Prep:'));
+  assert.ok(en.htmlContent.includes('Yield:'));
+  assert.ok(en.htmlContent.includes('direction:ltr'));
+});
+
+test('plain permalinks are detected and canonical URLs fall back to the real post link', async (t) => {
+  const wp = await mocks.startWordPressMock({ plainPermalinks: true });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({
+    wordpressBaseUrl: wp.url, wordpressUsername: 'a', wordpressAppPassword: 'p', categoryId: '3',
+  }, 'site-plain');
+  const draft = contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken');
+  const result = await wordpress.publish({
+    siteId: 'site-plain',
+    draft,
+    images: {
+      featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)),
+      pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+    },
+  });
+  assert.equal(result.plainPermalinks, true);
+  assert.match(result.url, /\?p=\d+/);
+  assert.match(result.permalinkSettingsUrl, /options-permalink\.php$/);
+  // the body must not pin SEO/Pinterest links at a 404 /slug/ address
+  const stored = wp.data.posts[0];
+  assert.match(stored.content.raw, /\?p=\d+/, 'canonical/share URLs were re-pointed to the real link');
+  assert.ok(!stored.content.raw.includes(`/${stored.slug}/`), 'no pretty slug links remain while plain permalinks rule');
+
+  const connection = await wordpress.testConnection({ siteId: 'site-plain' });
+  assert.equal(connection.plainPermalinks, true, 'the connection check warns before the next publish');
+
+  // a normal site keeps pretty links and no flag
+  const wp2 = await mocks.startWordPressMock();
+  t.after(() => wp2.server.close());
+  store.saveSiteSettings({ wordpressBaseUrl: wp2.url, wordpressUsername: 'a', wordpressAppPassword: 'p', categoryId: '3' }, 'site-pretty');
+  const pretty = await wordpress.publish({
+    siteId: 'site-pretty',
+    draft: contracts.DraftContract.normalize(mocks.sampleArticleJson(), 'Chicken'),
+    images: {
+      featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)),
+      pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+    },
+  });
+  assert.equal(pretty.plainPermalinks, false);
+  assert.ok(pretty.url.includes('crispy-air-fryer-chicken-wings'));
 });
 
 test('the composed pin is stored as a 2:3 image and published instead of the raw upload', async (t) => {

@@ -218,7 +218,7 @@ test('the pin studio offers a composed pin for a draft that has a Pinterest imag
   assert.equal(document.getElementById('pinCta').value, 'Full recipe');
   assert.equal(document.getElementById('pinPublish').disabled, false, 'a published URL unlocks publishing');
   assert.ok(card.textContent.includes('https://www.pinterest.com/askinz/bread/'), 'the board is shown so the destination is never a guess');
-  assert.equal(document.querySelectorAll('[data-pin-template]').length, 7, 'three classic plus four pro templates are offered');
+  assert.equal(document.querySelectorAll('[data-pin-template]').length, 11, 'three classic plus eight pro templates are offered');
   const bgTemplates = document.getElementById('pinPromptTemplate');
   assert.ok(bgTemplates, 'the studio offers a background prompt template picker');
   assert.ok(bgTemplates.options.length >= 5, 'all saved Pinterest prompt templates are selectable');
@@ -260,8 +260,8 @@ test('pro pin templates compose AI photo slots and the settings toggle hides the
     id: 'd2', siteId: 'site-default', keywordId: 'k2',
     title: 'أربع وصفات خريفية باليقطين', metaDescription: 'وصفات سريعة', contentType: 'recipe',
     recipes: [
-      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين', 'قرفة'], instructions: ['a'] },
-      { title: 'كعكة اليقطين', ingredients: ['دقيق', 'سكر', 'يقطين'], instructions: ['b'] },
+      { title: 'قهوة اليقطين', ingredients: ['قهوة', 'حليب', 'يقطين', 'قرفة'], instructions: [{ text: 'اخلطي القهوة مع اليقطين' }, { text: 'سخّني الحليب' }, { text: 'اجمعي المكونات' }, { text: 'قدّميها ساخنة' }] },
+      { title: 'كعكة اليقطين', ingredients: ['دقيق', 'سكر', 'يقطين'], instructions: [{ text: 'حضّري العجينة' }, { text: 'اخلطي الحشو' }, { text: 'اخبزي الكعكة' }, { text: 'برّديها وقدّميها' }] },
     ],
     slug: 'pumpkin-recipes', htmlContent: '<p>Hello</p>', outline: [], internalLinks: [],
     images: { featured: 'local://featured.png', pinterest: 'local://pinterest.png' },
@@ -321,6 +321,44 @@ test('pro pin templates compose AI photo slots and the settings toggle hides the
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(document.querySelectorAll('#pinSlotsGrid .pin-slot').length, 1, 'the checklist template uses one hero photo');
   assert.ok(document.getElementById('pinHeadline'), 'common headline controls remain for pro templates');
+
+  // steps template surfaces the four-step editor pulled from recipe instructions
+  document.querySelector('[data-pin-template="steps"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const stepsArea = document.querySelector('#pinSlotsGrid [data-slot-steps]');
+  assert.ok(stepsArea, 'steps template offers a steps editor');
+  assert.ok(stepsArea.value.split('\n').length >= 4, 'recipe instructions prefill the steps');
+
+  // the layout position editor moves the CTA and persists on the draft
+  assert.ok(document.getElementById('pinHeadShift'), 'layout nudges are offered');
+  const endCta = document.querySelector('[data-pin-align-btn="cta:end"]');
+  assert.ok(endCta, 'CTA alignment choices are offered');
+  endCta.click();
+  const ctaY = document.getElementById('pinCtaShiftY');
+  ctaY.value = '8';
+  ctaY.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const laidOut = JSON.parse(window.Native.loadWorkspace()).drafts.find((item) => item.id === 'd2');
+  assert.equal(laidOut.pinDesign.layout.ctaAlign, 'end', 'CTA alignment travels with the draft');
+  assert.equal(laidOut.pinDesign.layout.ctaShiftY, 8, 'CTA vertical nudge travels with the draft');
+  document.getElementById('pinResetLayout').click();
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  assert.equal(JSON.parse(window.Native.loadWorkspace()).drafts.find((item) => item.id === 'd2').pinDesign.layout.ctaShiftY, 0, 'reset restores default positions');
+
+  // listicle reorders slots with the up/down controls (images follow by id)
+  document.querySelector('[data-pin-template="listicle"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const rows = document.querySelectorAll('#pinSlotsGrid .pin-slot');
+  assert.equal(rows.length, 2, 'listicle builds one row per available recipe');
+  assert.ok(document.querySelector('[data-slot-down]'), 'reorder controls are offered');
+  const firstLabelBefore = document.querySelector('#pinSlotsGrid [data-slot-label]').value;
+  document.querySelector('[data-slot-down]').click();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const labelsAfter = Array.from(document.querySelectorAll('#pinSlotsGrid [data-slot-label]')).map((el) => el.value);
+  assert.notEqual(labelsAfter[0], firstLabelBefore, 'slot order swapped');
+
+  // per-slot crop focus control exists
+  assert.ok(document.querySelector('[data-slot-focus]'), 'each photo has a vertical focus control');
 
   // disabled studio disappears from the review screen
   close();

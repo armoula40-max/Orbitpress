@@ -43,7 +43,7 @@ function sanitizeHtml(value) {
 function removeDuplicateRecipeSections(htmlContent) {
   const html = String(htmlContent || '');
   const recipeSection = /<h2\b[^>]*>\s*(?:ingredients|instructions|directions|method|how\s+to\s+(?:make|cook)[^<]*)\s*<\/h2>[\s\S]*?(?=<h2\b|$)/gi;
-  const cardMatch = html.match(/<section\b[^>]*data-recipe-card\s*=\s*["']true["']/i);
+  const cardMatch = html.match(/<(?:section|div)\b[^>]*(?:data-recipe-card\s*=\s*["']true["']|class\s*=\s*["'][^"']*askinz-recipe-card)/i);
   const cardStart = cardMatch ? html.indexOf(cardMatch[0]) : -1;
   const beforeCard = cardStart >= 0 ? html.slice(0, cardStart) : html;
   const cardAndAfter = cardStart >= 0 ? html.slice(cardStart) : '';
@@ -273,16 +273,61 @@ function esc(s) {
   return optStr(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function textLooksArabic(value) {
+  return /[\u0600-\u06FF]/.test(String(value || ''));
+}
+
+/**
+ * Recipe card rendered with FULLY INLINE styles and kses-safe tags (div, h2,
+ * h3, p, ul, ol, li, span). The old <section class="askinz-recipe-card">
+ * depended on CSS that only exists inside the app, so on WordPress it showed
+ * up as unstyled text and, for roles without unfiltered_html, the <section>
+ * wrapper was stripped entirely. Inline styles make the card render identically
+ * on every theme and survive wp_kses_post. Labels follow the content language.
+ */
 function renderRecipeCard(title, recipe) {
-  const ingredients = optArr(recipe.ingredients).map((item) => `<li>${esc(item)}</li>`).join('');
-  const steps = optArr(recipe.instructions)
-    .map((step) => `<li><strong>${esc(step.name)}.</strong> ${esc(step.text)}</li>`)
-    .join('');
+  const ingredients = optArr(recipe.ingredients);
+  const instructions = optArr(recipe.instructions);
   const notes = optArr(recipe.notes);
-  const notesBlock = notes.length
-    ? `<div class="askinz-recipe-notes"><h3>Helpful notes</h3><ul>${notes.map((note) => `<li>${esc(note)}</li>`).join('')}</ul></div>`
+  const languageSample = [title, recipe.description, ingredients.join(' '), notes.join(' '),
+    instructions.map((s) => `${s && s.name || ''} ${s && s.text || ''}`).join(' ')].join(' ');
+  const ar = textLooksArabic(languageSample);
+  const labels = ar
+    ? { prep: 'تحضير', cook: 'طهي', total: 'الإجمالي', yield: 'الكمية', cuisine: 'المطبخ', ingredients: 'المكوّنات', instructions: 'طريقة التحضير', notes: 'ملاحظات مفيدة' }
+    : { prep: 'Prep', cook: 'Cook', total: 'Total', yield: 'Yield', cuisine: 'Cuisine', ingredients: 'Ingredients', instructions: 'Instructions', notes: 'Helpful notes' };
+  const GREEN = '#2f6b4f';
+  const CREAM = '#fffaf2';
+  const chips = [
+    [labels.prep, recipe.prepTime],
+    [labels.cook, recipe.cookTime],
+    [labels.total, recipe.totalTime],
+    [labels.yield, recipe.recipeYield],
+    [labels.cuisine, recipe.cuisine],
+  ].filter(([, value]) => String(value || '').trim());
+  const chipHtml = chips.map(([label, value]) =>
+    `<span style="display:inline-block;background:#eef4ea;color:${GREEN};border-radius:999px;padding:5px 13px;margin:3px 6px 3px 0;font-size:13px;font-weight:700;">${esc(label)}: ${esc(value)}</span>`).join('');
+  const ingredientsHtml = ingredients.map((item) =>
+    `<li style="margin:0 0 7px;line-height:1.6;">${esc(item)}</li>`).join('');
+  const stepsHtml = instructions.map((step) => {
+    const generatedName = /^step\s*\d+$/i.test(String(step.name || '').trim());
+    const name = step.name && !generatedName ? `<strong style="color:${GREEN};">${esc(step.name)}: </strong>` : '';
+    return `<li style="margin:0 0 9px;line-height:1.65;">${name}${esc(step.text)}</li>`;
+  }).join('');
+  const notesHtml = notes.length
+    ? `<div style="margin-top:16px;background:#f6efdf;border:1px solid #eadfc4;border-radius:12px;padding:12px 16px;"><strong style="display:block;margin-bottom:6px;color:#7a5a1d;">${esc(labels.notes)}</strong><ul style="margin:0;padding-left:22px;">${notes.map((note) => `<li style="margin:0 0 6px;line-height:1.6;">${esc(note)}</li>`).join('')}</ul></div>`
     : '';
-  return `<section class="askinz-recipe-card" data-recipe-card="true"><h2>${esc(title)}</h2><p>${esc(recipe.description)}</p><div class="askinz-recipe-tools"><span>Prep: ${esc(recipe.prepTime)}</span><span>Cook: ${esc(recipe.cookTime)}</span><span>Total: ${esc(recipe.totalTime)}</span><span>Yield: ${esc(recipe.recipeYield)}</span><span>Cuisine: ${esc(recipe.cuisine)}</span></div><h3>Ingredients</h3><ul>${ingredients}</ul><h3>Instructions</h3><ol>${steps}</ol>${notesBlock}</section>`;
+  return `<div class="askinz-recipe-card" data-recipe-card="true" style="direction:${ar ? 'rtl' : 'ltr'};text-align:${ar ? 'right' : 'left'};margin:34px 0;border:2px solid #e4d5bd;border-radius:18px;overflow:hidden;background:${CREAM};color:#2c2a26;">
+<div style="background:${GREEN};padding:18px 22px;">
+<h2 style="margin:0;color:#ffffff;font-size:24px;line-height:1.35;">${esc(title)}</h2>
+${recipe.description ? `<p style="margin:7px 0 0;color:#e6f1ea;font-size:14px;line-height:1.6;">${esc(recipe.description)}</p>` : ''}
+</div>
+<div style="padding:18px 22px 20px;">
+${chipHtml ? `<p style="margin:0 0 6px;">${chipHtml}</p>` : ''}
+${ingredientsHtml ? `<h3 style="margin:16px 0 9px;color:${GREEN};font-size:19px;">${esc(labels.ingredients)}</h3><ul style="margin:0;padding-${ar ? 'right' : 'left'}:24px;">${ingredientsHtml}</ul>` : ''}
+${stepsHtml ? `<h3 style="margin:18px 0 9px;color:${GREEN};font-size:19px;">${esc(labels.instructions)}</h3><ol style="margin:0;padding-${ar ? 'right' : 'left'}:24px;">${stepsHtml}</ol>` : ''}
+${notesHtml}
+</div>
+</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +503,7 @@ const WordPressMarkup = {
     while ((match = headingRe.exec(content)) !== null) {
       headings.push({ index: match.index, end: match.index + match[0].length, level: Number(match[1]), text: headingStripText(match[2]) });
     }
-    const cardMatch = content.match(/<section\b[^>]*data-recipe-card\s*=\s*["']true["']/i);
+    const cardMatch = content.match(/<(?:section|div)\b[^>]*(?:data-recipe-card\s*=\s*["']true["']|class\s*=\s*["'][^"']*askinz-recipe-card)/i);
     const cardStart = cardMatch ? cardMatch.index : content.length;
     const claimed = new Set();
     const insertions = [];
