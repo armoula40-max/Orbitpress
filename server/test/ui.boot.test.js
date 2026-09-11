@@ -333,6 +333,37 @@ test('admin console is owner-only and renders users, oversight and audit', async
   userView.close();
 });
 
+test('unpublished drafts show prominent Arabic AI image buttons for tenants', async () => {
+  const { window, close } = await startUi({
+    auth: { role: 'user', user: { id: 'u9', name: 'مستخدم' } },
+    workspace: {
+      keywords: [],
+      drafts: [{
+        id: 'd1', title: 'كسكس سهل', slug: 'easy-couscous', contentType: 'article',
+        htmlContent: '<p>مقدمة</p>', generationStatus: 'ready',
+        images: { featured: null, pinterest: null },
+      }],
+      draftVersions: [], logs: [], categories: [], theme: 'day',
+      activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
+    settings: { 'site-default': { ...EMPTY_SETTINGS['site-default'], imageConfigured: true } },
+  }, () => ({ ok: true }));
+  const { document } = window;
+  window.openDraft('d1');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const featured = document.getElementById('generateFeatured');
+  const pin = document.getElementById('generatePinterest');
+  assert.ok(featured, 'featured AI button is present');
+  assert.ok(pin, 'pinterest AI button is present');
+  assert.match(featured.textContent, /توليد الصورة الرئيسية/, 'featured button carries an Arabic AI label');
+  assert.match(pin.textContent, /توليد صورة Pinterest/, 'pinterest button carries an Arabic AI label');
+  // a tenant must never see the admin entry point
+  assert.equal(document.getElementById('navAdmin'), null);
+  close();
+});
+
 test('large workspace saves avoid the 64 KB keepalive request cap', async () => {
   const workspaceSaves = [];
   const { window, close } = await startUi({}, (request, options, url) => {
