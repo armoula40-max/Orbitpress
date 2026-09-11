@@ -25,9 +25,12 @@ const EVENT_HANDLERS = /\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
 const JAVASCRIPT_URLS = /\s(?:href|src)\s*=\s*(?:"\s*javascript:[^"]*|'\s*javascript:[^']*'|javascript:[^\s>]+)/gi;
 
 function cleanSlug(value) {
+  // Latin letters/digits plus Arabic (and common Arabic-script) letters are
+  // valid slug characters: WordPress percent-encodes them in the URL and
+  // Rank Math's "keyphrase in slug" check needs the Arabic keyword present.
   return String(value || '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^a-z0-9؀-ۿݐ-ݿ]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 220);
 }
@@ -89,10 +92,22 @@ const DraftContract = {
     let pinterestAltText = (pinterestSource ? optStr(pinterestSource.altText).trim().slice(0, 320) : '') || title.slice(0, 320);
     const category = (String(selectedCategory || '').trim() || optStr(raw.categoryName).trim()).slice(0, 120);
 
+    const seoDescription = optStr(raw.seoDescription || raw.metaDescription).trim().slice(0, 200);
+    const secondaryKeywords = optArr(raw.secondaryKeywords).map((k) => optStr(k).trim()).filter(Boolean).slice(0, 8);
+    const externalReferences = optArr(raw.externalReferences).map((item) => ({
+      anchor: optStr(item && item.anchor).trim().slice(0, 160),
+      topic: optStr(item && item.topic).trim().slice(0, 200),
+    })).filter((item) => item.anchor && item.topic).slice(0, 3);
     const draft = {
       id: `draft-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
       title,
       metaDescription: optStr(raw.metaDescription).trim().slice(0, 160),
+      focusKeyphrase: optStr(raw.focusKeyphrase).trim().slice(0, 160),
+      secondaryKeywords,
+      seoTitle: optStr(raw.seoTitle).trim().slice(0, 70),
+      seoDescription,
+      paaQuestions: optArr(raw.paaQuestions).map((q) => optStr(q).trim()).filter(Boolean).slice(0, 6),
+      externalReferences,
       slug,
       contentType,
       categoryName: category,
@@ -112,51 +127,80 @@ const DraftContract = {
   },
 
   buildSchema(draft, canonicalUrl, imageUrls) {
-    const result = {
+    const images = (Array.isArray(imageUrls) ? imageUrls : []).filter(Boolean);
+    const keywords = [optStr(draft.focusKeyphrase), ...optArr(draft.secondaryKeywords)]
+      .filter(Boolean).join(', ');
+    const base = () => ({
       '@context': 'https://schema.org',
       name: optStr(draft.title),
+      headline: optStr(draft.title),
       description: optStr(draft.metaDescription),
       author: { '@type': 'Organization', name: 'Askinz', url: 'https://askinz.com' },
-    };
-    if (canonicalUrl && String(canonicalUrl).trim()) {
-      result.mainEntityOfPage = { '@type': 'WebPage', '@id': canonicalUrl };
-    }
-    if (imageUrls && imageUrls.length) result.image = imageUrls;
+      ...(keywords ? { keywords } : {}),
+      ...(images.length ? { image: images } : {}),
+      ...(canonicalUrl && String(canonicalUrl).trim()
+        ? { mainEntityOfPage: { '@type': 'WebPage', '@id': canonicalUrl }, '@id': canonicalUrl }
+        : {}),
+    });
     const recipes = optArr(draft.recipes);
     if (recipes.length > 0) {
-      result.hasPart = recipes.map((r) => recipeSchema(r));
-      result['@type'] = 'Article';
-      result.headline = optStr(draft.title);
-      return result;
+      // Roundup: an ItemList whose items are full Recipe nodes, all in @graph
+      // so Google renders the carousel and Pinterest finds Recipe entities
+      // (a plain Article with hasPart does not qualify as a recipe pin).
+      const nodes = recipes.map((recipe, index) => {
+        const node = recipeSchema(recipe, images[index] || images[0]);
+        if (canonicalUrl && String(canonicalUrl).trim()) node['@id'] = `${canonicalUrl}#recipe-${index + 1}`;
+        if (!node.keywords && keywords) node.keywords = keywords;
+        return node;
+      });
+      return {
+        '@context': 'https://schema.org',
+        '@graph': [
+          {
+            ...base(),
+            '@type': 'ItemList',
+            itemListOrder: 'https://schema.org/ItemListOrderAscending',
+            numberOfItems: nodes.length,
+            itemListElement: nodes.map((node, index) => ({
+              '@type': 'ListItem',
+              position: index + 1,
+              item: node,
+            })),
+          },
+          ...nodes,
+        ],
+      };
     }
     if (optStr(draft.contentType) === 'recipe') {
       const recipe = optObj(draft.recipe) || {};
-      result['@type'] = 'Recipe';
-      result.recipeCategory = optStr(draft.categoryName);
-      result.recipeCuisine = optStr(recipe.cuisine);
-      result.prepTime = optStr(recipe.prepTime);
-      result.cookTime = optStr(recipe.cookTime);
-      result.totalTime = optStr(recipe.totalTime);
-      result.recipeYield = optStr(recipe.recipeYield);
-      result.recipeIngredient = optArr(recipe.ingredients);
-      result.recipeInstructions = optArr(recipe.instructions).map((step) => ({
-        '@type': 'HowToStep',
-        name: optStr(step && step.name),
-        text: optStr(step && step.text),
-      }));
-    } else {
-      result['@type'] = 'Article';
-      result.headline = optStr(draft.title);
+      return {
+        ...base(),
+        '@type': 'Recipe',
+        recipeCategory: optStr(draft.categoryName),
+        recipeCuisine: optStr(recipe.cuisine),
+        prepTime: optStr(recipe.prepTime),
+        cookTime: optStr(recipe.cookTime),
+        totalTime: optStr(recipe.totalTime),
+        recipeYield: optStr(recipe.recipeYield),
+        recipeIngredient: optArr(recipe.ingredients),
+        recipeInstructions: optArr(recipe.instructions).map((step) => ({
+          '@type': 'HowToStep',
+          ...(optStr(step && step.name) && !/^step\s*\d+$/i.test(optStr(step && step.name).trim()) ? { name: optStr(step && step.name) } : {}),
+          text: optStr(step && step.text),
+        })),
+      };
     }
-    return result;
+    return { ...base(), '@type': 'Article' };
   },
 };
 
-function recipeSchema(recipe) {
+function recipeSchema(recipe, fallbackImage) {
+  const images = fallbackImage ? [fallbackImage] : [];
   return {
     '@type': 'Recipe',
     name: optStr(recipe.title),
     description: optStr(recipe.description),
+    ...(images.length ? { image: images } : {}),
     prepTime: optStr(recipe.prepTime),
     cookTime: optStr(recipe.cookTime),
     totalTime: optStr(recipe.totalTime),
@@ -165,7 +209,7 @@ function recipeSchema(recipe) {
     recipeIngredient: optArr(recipe.ingredients),
     recipeInstructions: optArr(recipe.instructions).map((step) => ({
       '@type': 'HowToStep',
-      name: optStr(step && step.name),
+      ...(optStr(step && step.name) && !/^step\s*\d+$/i.test(optStr(step && step.name).trim()) ? { name: optStr(step && step.name) } : {}),
       text: optStr(step && step.text),
     })),
   };
@@ -275,6 +319,15 @@ function esc(s) {
 
 function textLooksArabic(value) {
   return /[\u0600-\u06FF]/.test(String(value || ''));
+}
+
+/** Includes() tolerant of Arabic hamza forms, diacritics and case. */
+function includesNorm(text, phrase) {
+  const n = (s) => String(s || '')
+    .replace(/[\u0610-\u061A\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه')
+    .toLowerCase();
+  return n(text).includes(n(phrase));
 }
 
 /**
@@ -402,12 +455,20 @@ const PublishingContracts = {
     return KeywordContract.deduplicate(tags).slice(0, 20);
   },
 
-  featuredImageAltText(title, contentType) {
-    return contentType === 'recipe' ? `${title} recipe featured image` : `${title} featured image`;
+  featuredImageAltText(title, contentType, keyphrase) {
+    // Rank Math's "focus keyphrase in an image alt" needs the exact phrase in
+    // at least one alt; prepend it when the title does not already carry it.
+    const base = contentType === 'recipe' ? `${title} recipe` : `${title}`;
+    const kp = String(keyphrase || '').trim();
+    const text = kp && !includesNorm(base, kp) ? `${kp} - ${base}` : base;
+    return `${text} featured image`.slice(0, 180);
   },
 
-  pinterestImageAltText(pinterestTitle, fallbackTitle) {
-    return `${(pinterestTitle || fallbackTitle || '').trim()} Pinterest image`;
+  pinterestImageAltText(pinterestTitle, fallbackTitle, keyphrase) {
+    const base = (pinterestTitle || fallbackTitle || '').trim();
+    const kp = String(keyphrase || '').trim();
+    const text = kp && !includesNorm(base, kp) ? `${kp} - ${base}` : base;
+    return `${text} Pinterest image`.slice(0, 180);
   },
 };
 
@@ -616,7 +677,7 @@ const LongFormCompletenessContract = {
     if (!Array.isArray(draft.recipes)) return ok('recipes[] is missing');
     if (recipes.length !== expectedCount) return ok(`Expected ${expectedCount} recipes but received ${recipes.length}`);
     const bodyWords = optStr(draft.htmlContent).replace(/<[^>]+>/g, ' ').trim().split(/\s+/).filter(Boolean).length;
-    const minimumWords = Math.max(220, expectedCount * 55);
+    const minimumWords = Math.max(600, expectedCount * 200);
     if (bodyWords < minimumWords) return ok(`The roundup body is too short (${bodyWords} words; minimum ${minimumWords})`);
     for (let index = 0; index < recipes.length; index += 1) {
       const recipe = optObj(recipes[index]);

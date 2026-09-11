@@ -14,6 +14,7 @@ const {
   LongFormCompletenessContract,
 } = require('./contracts');
 const { requireAiSettings } = require('./wordpress');
+const SeoAnalyzer = require('../public/app/seoAnalyzer');
 
 // ---------------------------------------------------------------------------
 // Default prompts, single source of truth (also served at /api/prompt-defaults
@@ -21,7 +22,7 @@ const { requireAiSettings } = require('./wordpress');
 // overridden per website from Settings; an empty override uses the default.
 // ---------------------------------------------------------------------------
 const PROMPT_DEFAULTS = {
-  articleSystem: "You are Askinz's exacting English content editor and SEO strategist. Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the requested niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, provenance, medical advice, or ranking promises. Write natural English, not keyword repetition. Use only semantic HTML allowed in a WordPress post body.",
+  articleSystem: "You are Askinz's exacting content editor and technical SEO strategist optimizing for a guaranteed 100/100 score in both Rank Math and Yoast. You write in the SAME language and script as the primary keyword (Modern Standard Arabic for Arabic keywords, natural English for English ones). Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, calories, provenance, medical advice, or ranking promises. Never invent URLs or statistics. Keyword usage must read naturally — no stuffing. Use only semantic HTML allowed in a WordPress post body (h2, h3, p, ul, ol, li, strong, em, table, figure, img are fine).",
   recipeRepairSystem: 'You are a strict recipe-roundup completion editor. Never summarize requested recipes; return every complete recipe.',
   recipeRepairInstruction: 'CRITICAL COMPLETENESS REPAIR: return exactly {count} fully populated objects in recipes[]. Do not return a summary, names only, or a single recipe. Every object must include a title, description, at least 4 ingredients with quantities, prep time, cook time, yield, 4 to 9 numbered instructions, and at least one useful note. The collection body must be long and detailed. Previous output problem: {issue}',
   analyzer: 'You are a {platform} content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim.',
@@ -50,6 +51,12 @@ function articleResponseFormat() {
     properties: {
       title: { type: 'string' },
       metaDescription: { type: 'string' },
+      focusKeyphrase: { type: 'string' },
+      secondaryKeywords: { type: 'array', items: { type: 'string' }, maxItems: 8 },
+      seoTitle: { type: 'string' },
+      seoDescription: { type: 'string' },
+      paaQuestions: { type: 'array', items: { type: 'string' }, maxItems: 6 },
+      externalReferences: { type: 'array', maxItems: 3, items: { type: 'object', properties: { anchor: { type: 'string' }, topic: { type: 'string' } }, required: ['anchor', 'topic'], additionalProperties: false } },
       slug: { type: 'string' },
       contentType: { type: 'string', enum: ['recipe', 'article'] },
       categoryName: { type: 'string' },
@@ -60,7 +67,7 @@ function articleResponseFormat() {
       recipes: { type: 'array', maxItems: 12, items: { type: 'object', properties: { title: { type: 'string' }, isRecipe: { type: 'boolean' }, description: { type: 'string' }, prepTime: { type: 'string' }, cookTime: { type: 'string' }, totalTime: { type: 'string' }, recipeYield: { type: 'string' }, cuisine: { type: 'string' }, ingredients: { type: 'array', items: { type: 'string' } }, instructions: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, text: { type: 'string' } }, required: ['name', 'text'], additionalProperties: false } }, notes: { type: 'array', items: { type: 'string' } } }, required: ['title', 'isRecipe', 'description', 'prepTime', 'cookTime', 'totalTime', 'recipeYield', 'cuisine', 'ingredients', 'instructions', 'notes'], additionalProperties: false } },
       pinterest: { type: 'object', properties: { title: { type: 'string' }, altText: { type: 'string' } }, required: ['title', 'altText'], additionalProperties: false },
     },
-    required: ['title', 'metaDescription', 'slug', 'contentType', 'categoryName', 'outline', 'htmlContent', 'internalLinks', 'recipe', 'recipes', 'pinterest'],
+    required: ['title', 'metaDescription', 'focusKeyphrase', 'secondaryKeywords', 'seoTitle', 'seoDescription', 'paaQuestions', 'externalReferences', 'slug', 'contentType', 'categoryName', 'outline', 'htmlContent', 'internalLinks', 'recipe', 'recipes', 'pinterest'],
     additionalProperties: false,
   };
   return { type: 'json_schema', json_schema: { name: 'askinz_niche_article', strict: true, schema } };
@@ -143,7 +150,7 @@ async function generate(request) {
   }
   const content = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;
   const json = stripCodeFence(content);
-  let draft = DraftContract.normalize(JSON.parse(json), category);
+  let draft = applySeoDefaults(DraftContract.normalize(JSON.parse(json), category), keyword);
   if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
     const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
     const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
@@ -157,7 +164,7 @@ async function generate(request) {
     };
     const repairedResponse = await requestJson(endpoint, 'POST', headers, repairBody);
     const repairedContent = repairedResponse.choices && repairedResponse.choices[0] && repairedResponse.choices[0].message && repairedResponse.choices[0].message.content;
-    draft = DraftContract.normalize(JSON.parse(stripCodeFence(repairedContent)), category);
+    draft = applySeoDefaults(DraftContract.normalize(JSON.parse(stripCodeFence(repairedContent)), category), keyword);
     const completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
     if (!completeness.valid) {
       throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
@@ -166,29 +173,75 @@ async function generate(request) {
   return { ok: true, draft };
 }
 
+function applySeoDefaults(draft, keyword) {
+  if (!draft) return draft;
+  const rtl = SeoAnalyzer.isRtl(keyword);
+  if (!draft.focusKeyphrase) draft.focusKeyphrase = keyword;
+  if (!draft.seoTitle) draft.seoTitle = SeoAnalyzer.buildSeoTitle({ keyphrase: draft.focusKeyphrase, title: draft.title, rtl });
+  if (!draft.seoDescription) draft.seoDescription = SeoAnalyzer.buildSeoDescription({ keyphrase: draft.focusKeyphrase, metaDescription: draft.metaDescription, title: draft.title, rtl });
+  if (!draft.metaDescription) draft.metaDescription = draft.seoDescription.slice(0, 160);
+  if (!draft.slug) {
+    // Arabic tokens are kept (cleanSlug allows the Arabic block); hyphenated.
+    draft.slug = String(keyword).toLowerCase().replace(/[^a-z0-9؀-ۿݐ-ݿ]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 220)
+      || `post-${Date.now()}`;
+  }
+  const p = draft.pinterest || {};
+  if (!p.altText) {
+    p.altText = draft.focusKeyphrase && !SeoAnalyzer.norm(draft.title).includes(SeoAnalyzer.norm(draft.focusKeyphrase))
+      ? `${draft.focusKeyphrase} - ${draft.title}`.slice(0, 180)
+      : draft.title.slice(0, 180);
+  }
+  draft.pinterest = p;
+  return draft;
+}
+
 function buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt }) {
+  const rtl = SeoAnalyzer.isRtl(keyword);
+  const language = rtl ? 'Modern Standard Arabic (العربية الفصحى), including EVERY field: title, seoTitle, descriptions, headings, body, notes and alt text' : 'natural English';
+  const isRoundup = requestedRecipeCount > 0;
+  const wordTarget = requestedType === 'recipe' || isRoundup ? 900 : 1200;
   return `
-    Write one complete English article draft for the website's "${niche}" niche.
+    You are writing ONE complete, publication-ready article for the website's "${niche}" niche. Write entirely in ${language}.
 
-    Primary keyword: ${keyword}
-    Requested format: ${requestedType}${requestedRecipeCount > 0 ? ` (must deliver exactly ${requestedRecipeCount} full recipes in recipes[])` : ''}
-    Preferred WordPress category: ${category || 'let the editor choose'}
-    Queued related keywords to avoid overlapping: ${keywords.join(', ') || 'None'}
-    Existing site titles to avoid duplicating: ${titleList || 'None supplied'}
+    # ROLE
+    Senior on-page SEO editor whose drafts score 100/100 in Rank Math AND Yoast, while being genuinely useful to real readers.
 
-    Return valid JSON only with this exact structure:
-    {"title":"","metaDescription":"","slug":"","contentType":"recipe|article","categoryName":"","outline":[{"heading":"","keyPoints":[""]}],"htmlContent":"","internalLinks":[{"anchor":"","reason":""}],"recipe":{"isRecipe":false,"description":"","prepTime":"","cookTime":"","totalTime":"","recipeYield":"","cuisine":"","ingredients":[],"instructions":[{"name":"","text":""}],"notes":[]},"recipes":[{"title":"","isRecipe":true,"description":"","prepTime":"","cookTime":"","totalTime":"","recipeYield":"","cuisine":"","ingredients":[""],"instructions":[{"name":"","text":""}],"notes":[""]}],"pinterest":{"title":"","altText":""}}
+    # AUDIENCE AND INTENT
+    Primary keyword (exact focus keyphrase): ${keyword}
+    Requested format: ${requestedType}${isRoundup ? ` (a recipe collection delivering EXACTLY ${requestedRecipeCount} complete, distinct recipes in recipes[])` : ''}
+    Infer the real search intent (learn, compare, or cook) and satisfy it fully.
+    Preferred WordPress category: ${category || 'choose the most fitting one'}
+    Related queued keywords already assigned to other articles (do not overlap, but you may pick 5-8 supporting ones): ${keywords.join(', ') || 'None'}
+    Existing site titles you must not duplicate: ${titleList || 'None supplied'}
 
-    Requirements:
-    - Infer practical search intent, create a distinct title, a concise meta description under 160 characters, and a lower-case canonical-friendly slug.
-    - Provide 3 to 6 outline H2 sections. htmlContent starts with a concise benefit-led introduction, uses H2 sections, and provides useful substitutions, storage, or variations where appropriate.
-    - For food content or an explicit recipe keyword, select recipe only when it is genuinely a cookable dish. Otherwise select article.
-    - For a cookable dish, recipe must contain sensible ingredients, 4 to 9 concrete steps, ISO 8601 durations such as PT15M, yield, cuisine, and 1 to 3 useful notes. Do not put a recipe card inside htmlContent.
-    - For non-food niches such as crochet, pets, nails, furniture, home decor, DIY, beauty, or gardening, select article; recipe.isRecipe must be false, recipes must be empty, and provide practical niche-specific steps, materials, safety notes, maintenance, or buying guidance as appropriate.
-    - Offer 2 to 4 internal-link anchor suggestions but never invent URLs.
-    - Create only a concise natural Pinterest SEO title and image alt text. Do not create a Pinterest description or hashtags.
-    - Do not include Markdown, CSS, scripts, iframes, ratings, reviews, calories, nutrition values, image URLs, medical claims, citations, affiliate claims, ranking promises, or unsupported facts.
-    ${customizedTextPrompt ? `\nCUSTOM EDITOR PROMPT (follow it when compatible with the required JSON contract):\n${customizedTextPrompt}` : ''}
+    # NON-NEGOTIABLE SEO RULES (checked automatically — satisfy every one)
+    - focusKeyphrase: the exact primary keyword above, ${rtl ? 'in Arabic' : '2-4 English words'}. It must appear in: the seoTitle at the START (≤60 characters total), seoDescription (within first 100 chars), slug, the first paragraph of htmlContent, 30-40% of H2/H3 headings (never every heading), and at least one image alt concept.
+    - Keyword density 0.5%-2.5%: count words carefully; for a 1200-word article use the exact focus keyphrase roughly 6-14 times including variations, spread naturally.
+    - secondaryKeywords: 5 to 8 real supporting keywords people actually search, used naturally in headings and body.
+    - seoTitle: max 60 characters, click-worthy, focus keyphrase first.
+    - seoDescription: 120 to 156 characters, includes the focus keyphrase early, ends with a hook or call to action.
+    - paaQuestions: 3 to 5 genuine "people also ask" questions this article answers, each phrased like a real searcher.
+    - Body length: at least ${wordTarget} words of real content in htmlContent. Short paragraphs (2-4 sentences). ${isRoundup ? 'Each recipe in recipes[] is rendered separately as a schema-rich recipe card; the body ties the collection together.' : ''}
+    - 4 to 8 H2 sections (plus H3 sub-steps where useful); the introduction directly promises the answer in 2-3 short paragraphs.
+    - Include an FAQ-style H2 near the end answering 3 paaQuestions briefly in your own words.
+    - internalLinks: 2 to 4 anchor-text suggestions using phrases that could exist in real article titles on this site. Never invent URLs — only anchor text + reason.
+    - externalReferences: 1 or 2 objects {anchor,topic} where topic is a stable, well-known reference topic suitable for Wikipedia or an official organisation page (e.g. an ingredient, technique, standard or organisation). Use that exact anchor phrase once naturally in the body. No fabricated studies, statistics or citations.
+    - Use the focus keyphrase exactly (same word order) at least once; surrounding synonyms elsewhere.
+
+    # CONTENT TYPE RULES
+    - Choose "recipe" ONLY for a genuinely cookable dish (or a collection of them). For crochet, pets, nails, furniture, decor, DIY, beauty, gardening, etc. choose "article": recipe.isRecipe must be false and recipes must be empty, and instead give concrete steps, materials, safety, maintenance or buying guidance.
+    ${isRoundup ? `- recipes[] MUST contain exactly ${requestedRecipeCount} FULLY populated, distinct recipes (never summarize, never merge). Each: unique title (recipe 1 should contain the focus keyphrase), 1-3 sentence description, at least 6 ingredients WITH quantities, prepTime/cookTime/totalTime as ISO 8601 (PT15M, PT1H), recipeYield, cuisine, 5-9 concrete numbered instructions, and 1-3 practical notes (tips, storage, substitutions).\n    - The roundup body is still ≥ ${wordTarget} words: an intro, guidance (how to choose, tips, storage, serving), and transitions BETWEEN recipes with a short paragraph per recipe.` : `- For one cookable dish, populate recipe with sensible ingredients with quantities, 4 to 9 concrete steps, ISO 8601 durations such as PT15M, yield, cuisine, and 1 to 3 useful notes. Do NOT render a recipe card inside htmlContent.\n    - For articles use real, specific, actionable steps instead.`}
+    - Never invent ratings, reviews, stars, calories, nutrition values, prices, brands, medical claims, testing or provenance.
+
+    # PINTEREST FIELD
+    - pinterest.title: a concise scroll-stopping Pin title (max 80 chars); pinterest.altText: one descriptive sentence that includes the focus keyphrase (max 180 chars). No hashtags, no Pin description field.
+
+    # HARD CONSTRAINTS
+    - Return valid JSON ONLY with this exact structure:
+    {"title":"","metaDescription":"","focusKeyphrase":"","secondaryKeywords":[""],"seoTitle":"","seoDescription":"","paaQuestions":[""],"externalReferences":[{"anchor":"","topic":""}],"slug":"","contentType":"recipe|article","categoryName":"","outline":[{"heading":"","keyPoints":[""]}],"htmlContent":"","internalLinks":[{"anchor":"","reason":""}],"recipe":{"isRecipe":false,"description":"","prepTime":"","cookTime":"","totalTime":"","recipeYield":"","cuisine":"","ingredients":[],"instructions":[{"name":"","text":""}],"notes":[]},"recipes":[{"title":"","isRecipe":true,"description":"","prepTime":"","cookTime":"","totalTime":"","recipeYield":"","cuisine":"","ingredients":[""],"instructions":[{"name":"","text":""}],"notes":[""]}],"pinterest":{"title":"","altText":""}}
+    - slug: lowercase, hyphen-separated${rtl ? ', KEEP ARABIC WORDS IN ARABIC SCRIPT (do not transliterate)' : ''}, 2-5 words including the focus keyphrase.
+    - htmlContent is semantic HTML fragments only: h2, h3, p, ul, ol, li, strong, em, table. No Markdown, CSS, scripts, iframes, image URLs or links with invented hrefs.
+    ${customizedTextPrompt ? `\nCUSTOM EDITOR PROMPT (follow when compatible with this contract):\n${customizedTextPrompt}` : ''}
   `.trim();
 }
 

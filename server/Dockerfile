@@ -19,6 +19,9 @@ RUN npm ci --omit=dev
 RUN npx playwright install --with-deps chromium
 
 COPY server/ .
+# Served at runtime via /downloads/seo-bridge-plugin (kept beside /app, like
+# the repo layout where wordpress/ is a sibling of server/).
+COPY wordpress/ /wordpress/
 # build stamp so the UI can always prove WHICH image is live
 RUN date -u '+build %Y-%m-%d %H:%M UTC' > /app/public/build.txt
 

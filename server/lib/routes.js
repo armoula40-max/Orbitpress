@@ -251,6 +251,7 @@ const BRIDGE_OPERATIONS = {
   removeImage: (req) => images.removeImage(req),
   repairPreview: (req) => wordpress.repairPreview(req),
   previewArticle: (req) => wordpress.previewArticle(req),
+  seoScan: (req) => wordpress.seoScan(req),
   repairApply: (req) => wordpress.repairApply(req),
   generateImage: (req) => wordpress.generateImage(req),
   publishPinterest: (req) => wordpress.publishPinterest(req),

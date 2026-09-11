@@ -48,6 +48,7 @@ async function startUi(overrides, bridgeAnswer) {
   const bridgeJs = fs.readFileSync(path.join(PUBLIC, 'app', 'bridge.js'), 'utf8');
   const feedspyJs = fs.readFileSync(path.join(PUBLIC, 'app', 'feedspy.js'), 'utf8');
   const pinStudioJs = fs.readFileSync(path.join(PUBLIC, 'app', 'pinStudio.js'), 'utf8');
+  const seoAnalyzerJs = fs.readFileSync(path.join(PUBLIC, 'app', 'seoAnalyzer.js'), 'utf8');
   const injection = `<script>window.__BOOT__=${JSON.stringify(boot).replace(/</g, '\\u003c')};</script>\n<script>${bridgeJs}</script>`;
   const html = raw.replace('<body>', `<body>\n${injection}`);
 
@@ -76,6 +77,7 @@ async function startUi(overrides, bridgeAnswer) {
   window.addEventListener('error', (event) => errors.push(event.error ? event.error.message : event.message));
   // run the deferred scripts manually (jsdom does not download them here)
   window.eval(pinStudioJs);
+  window.eval(seoAnalyzerJs);
   window.eval(feedspyJs);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -508,5 +510,79 @@ test('large workspace saves avoid the 64 KB keepalive request cap', async () => 
   const save = workspaceSaves.at(-1);
   assert.equal(save.options.keepalive, undefined, 'normal saves must not use keepalive (64 KB browser cap)');
   assert.ok(save.body.length > 64 * 1024, 'the saved payload itself exceeds the keepalive quota');
+  close();
+});
+
+test('the review screen shows the live Arabic SEO panel and enforces the soft 100/100 gate', async () => {
+  const draft = {
+    id: 'd-seo', siteId: 'site-default', keywordId: 'k-seo',
+    title: 'وصفة تشيز كيك الأوريو الباردة بدون فرن',
+    focusKeyphrase: 'تشيز كيك الأوريو',
+    seoTitle: 'تشيز كيك الأوريو: وصفة باردة بدون فرن',
+    seoDescription: 'وصفة تشيز كيك الأوريو الباردة بدون فرن بمكوّنات بسيطة وطعم لا يقاوم مع خطوات ونصائح النجاح.',
+    secondaryKeywords: ['حلى الأوريو'],
+    metaDescription: 'وصفة تشيز كيك الأوريو الباردة بدون فرن.',
+    contentType: 'recipe', slug: 'تشيز-كيك-الاوريو',
+    recipe: { prepTime: 'PT20M', cookTime: 'PT0M', totalTime: 'PT3H', recipeYield: '8 قطع', ingredients: ['a', 'b', 'c', 'd'], instructions: [{ name: 's1', text: 't1' }, { name: 's2', text: 't2' }, { name: 's3', text: 't3' }, { name: 's4', text: 't4' }], notes: ['n'] },
+    htmlContent: '<p>تشيز كيك الأوريو وصفة باردة.</p><h2>المكوّنات</h2><p>تفاصيل.</p>',
+    outline: [], internalLinks: [],
+    images: { featured: 'local://featured.png', pinterest: 'local://pin.png' },
+    generationStatus: 'generated', createdAt: Date.now(),
+  };
+  const calls = [];
+  const { window, errors, close } = await startUi({
+    workspace: {
+      keywords: [{ id: 'k-seo', siteId: 'site-default', keyword: 'تشيز كيك الأوريو', status: 'drafted', draftId: 'd-seo', categoryId: '3', categoryName: 'حلويات', contentType: 'recipe', createdAt: Date.now() }],
+      drafts: [draft], draftVersions: [],
+      logs: [{ id: 'l1', siteId: 'site-default', type: 'boot', message: 'ok', createdAt: Date.now() }],
+      categories: [{ id: '3', siteId: 'site-default', name: 'حلويات' }], theme: 'day', activeSiteId: 'site-default',
+      siteProfiles: [{ id: 'site-default', name: 'Askinz' }],
+      plan: { dailyCount: 5, firstHour: 8, scheduleEnabled: false },
+    },
+    settings: { 'site-default': { ...EMPTY_SETTINGS['site-default'] } },
+  }, (request) => {
+    calls.push(request);
+    if (request.type === 'loadImage') return { ok: true, dataUrl: 'data:image/png;base64,' + require('./mockServers').tinyPng(1000, 1500).toString('base64') };
+    if (request.type === 'publish') {
+      return request.seoOverride
+        ? { ok: true, url: 'https://wp.test/x/', postId: 9, seo: { score: 96, bridge: { ok: true, plugins: { rankmath: true }, fields: { x: 'updated' } } } }
+        : { ok: false, message: 'تحسين SEO غير مكتمل (72/100): راابط داخلية؛ طول المحتوى. أكمل العناصر أو أكّد النشر.' };
+    }
+    return { ok: true };
+  });
+  const { document } = window;
+  window.openDraft('d-seo');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  const panel = document.getElementById('seoPanel');
+  assert.ok(panel, 'SEO panel renders on the review screen');
+  const circle = document.getElementById('seoScoreCircle');
+  assert.match(circle.textContent, /\d+/, 'the panel shows a numeric score');
+  assert.ok(document.querySelectorAll('#seoPanel .seo-check').length >= 10, 'the Arabic Rank Math checks are listed');
+  assert.equal(document.getElementById('editFocusKp').value, 'تشيز كيك الأوريو', 'focus keyphrase field is populated');
+
+  // editing the keyphrase persists with the draft (debounced)
+  const kpInput = document.getElementById('editFocusKp');
+  kpInput.value = 'حلى الأوريو السريع';
+  kpInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const saved = JSON.parse(window.Native.loadWorkspace()).drafts.find((d) => d.id === 'd-seo');
+  assert.equal(saved.focusKeyphrase, 'حلى الأوريو السريع');
+
+  // first publish attempt is blocked by the SEO gate and offers a second press
+  document.getElementById('publishDraft').click();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const gateButton = document.getElementById('seoForcePublish');
+  assert.ok(gateButton, 'the soft gate shows the explicit second-confirmation button');
+  assert.equal(calls.filter((c) => c.type === 'publish').length, 1, 'only one publish attempt before confirmation');
+  gateButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const publishes = calls.filter((c) => c.type === 'publish');
+  assert.equal(publishes.length, 2);
+  assert.ok(!publishes[0].seoOverride, 'the first attempt is not an override');
+  assert.equal(publishes[0].enforceSeoGate, true);
+  assert.equal(publishes[1].seoOverride, true, 'the confirmed retry carries seoOverride');
+
+  assert.deepEqual(fatalErrors(errors), []);
   close();
 });

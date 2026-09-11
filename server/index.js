@@ -70,7 +70,9 @@ app.post('/api/auth', express.json(), (req, res) => {
 });
 
 app.use((req, res, next) => {
-  if (req.path === '/ping') return next();
+  // Public assets: health check and the open-source SEO bridge plugin files
+  // (they contain no secrets; owners may wget them straight onto a server).
+  if (req.path === '/ping' || req.path.startsWith('/downloads/')) return next();
   const verdict = classify(req);
   if (!verdict.ok) {
     if (verdict.reason === 'blocked') {
@@ -116,6 +118,17 @@ app.get(['/', '/index.html'], (req, res) => {
 });
 
 app.get('/ping', (req, res) => res.json({ ok: true, service: 'orbitpress-server' }));
+
+// OrbitPress SEO Bridge plugin download (writes Yoast/Rank Math meta over REST)
+app.get('/downloads/seo-bridge-plugin', (req, res) => {
+  const file = path.join(__dirname, '..', 'wordpress', 'orbitpress-seo-bridge', 'orbitpress-seo-bridge.zip');
+  res.download(file, 'orbitpress-seo-bridge.zip');
+});
+app.get('/downloads/seo-bridge-guide', (req, res) => {
+  const file = path.join(__dirname, '..', 'wordpress', 'orbitpress-seo-bridge', 'README_AR.md');
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.download(file, 'orbitpress-seo-bridge-guide.md');
+});
 
 app.use(express.static(PUBLIC_DIR, { index: false, maxAge: '5m' }));
 

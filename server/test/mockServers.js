@@ -72,6 +72,26 @@ function startWordPressMock(state = {}) {
       const authentication = data.noApplicationPasswords ? {} : { 'application-passwords': { endpoints: { authorization: `${data.baseUrl}/wp-admin/authorize-application.php` } } };
       return json({ name: 'Mock Site', description: 'Just another WordPress site', url: data.baseUrl, namespaces: ['wp/v2'], authentication });
     }
+    // OrbitPress SEO Bridge plugin (public discovery; authed write)
+    if (req.method === 'GET' && url.pathname === '/wp-json/orbitpress/v1/seo/plugins') {
+      if (data.bridge === false) return json({ code: 'rest_no_route', message: 'No route' }, 404);
+      const yoast = data.seoPlugin === 'yoast';
+      const rankmath = data.seoPlugin !== 'yoast';
+      return json({ ok: true, bridge: 'orbitpress-seo-bridge/1.0.0', rankmath, yoast, has_seo: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/wp-json/orbitpress/v1/seo') {
+      if (!req.headers.authorization) return json({ code: 'rest_not_logged_in' }, 401);
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        const input = JSON.parse(body || '{}');
+        data.seoWrites = data.seoWrites || [];
+        data.seoWrites.push(input);
+        const yoast = data.seoPlugin === 'yoast';
+        json({ ok: true, post_id: input.post_id, plugins: { rankmath: !yoast, yoast }, fields: Object.fromEntries(Object.keys(input).map((k) => [k, 'updated'])) });
+      });
+      return;
+    }
     if (!req.headers.authorization && !(data.acceptsAltHeader && req.headers['x-authorization'])) return json({ code: 'rest_not_logged_in' }, 401);
     // credentials are only enforced when a test asks for it
     if (req.method === 'GET' && url.pathname === '/wp-json/wp/v2/users/me') {

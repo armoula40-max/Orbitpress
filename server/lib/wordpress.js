@@ -15,6 +15,8 @@ const {
 const { getSiteSettings, loadNamedStore, saveNamedStore } = require('./store');
 const { parseImage } = require('./images');
 const transcode = require('./imagetranscode');
+const Seo = require('./seo');
+const SeoAnalyzerLib = require('../public/app/seoAnalyzer');
 
 function wpRoot(base) {
   return PublishingContracts.requireHttpsUrl(base, 'WordPress URL').replace(/\/wp-json$/, '');
@@ -432,13 +434,13 @@ async function repairApply(request) {
         if (!reference) throw new Error('Pinterest image is missing locally, so this post cannot be repaired safely.');
         const media = await uploadMedia(root, settings, parseImage(reference, true, request.siteId || 'site-default'), `${DraftContract.cleanSlug(draft.slug)}-pinterest`, PublishingContracts.pinterestImageAltText(draft.pinterestTitle, draft.title));
         pinterestUrl = media.source_url;
-        const canonical = `${root}/${DraftContract.cleanSlug(draft.slug)}/`;
+        const canonical = Seo.canonicalFor(root, DraftContract.cleanSlug(draft.slug));
         const share = 'https://www.pinterest.com/pin/create/button/?url=' + encodeURIComponent(canonical) + '&media=' + encodeURIComponent(pinterestUrl) + '&description=' + encodeURIComponent(draft.pinterestTitle || draft.title || '');
         content += WordPressMarkup.pinterestSaveButton(share);
       }
       if (inspection.missingSchema) {
         const urls = [featured, pinterestUrl].filter(Boolean);
-        const schema = DraftContract.buildSchema(draft, `${root}/${DraftContract.cleanSlug(draft.slug)}/`, urls);
+        const schema = DraftContract.buildSchema(draft, Seo.canonicalFor(root, DraftContract.cleanSlug(draft.slug)), urls);
         content += WordPressMarkup.structuredData(JSON.stringify(schema));
       }
       const updatedPost = await requestJson(`${root}/wp-json/wp/v2/posts/${post.id}`, 'POST', wordpressHeaders(settings), { content });
@@ -604,7 +606,7 @@ function assemblePublishedHtml({ draft, root, slug, featuredUrl, pinterestUrl, a
   // (ingredients shot under the ingredients heading, etc.), not dumped at
   // the end of the post.
   blocks.push(WordPressMarkup.placeInlineImages(String(draft.htmlContent || ''), inlineFigures));
-  const canonical = `${root}/${slug}/`;
+  const canonical = Seo.canonicalFor(root, slug);
   const share = 'https://www.pinterest.com/pin/create/button/?url=' + encodeURIComponent(canonical)
     + '&media=' + encodeURIComponent(pinterestUrl || '')
     + '&description=' + encodeURIComponent(String(draft.pinterestTitle || draft.title || '').trim());
@@ -641,7 +643,7 @@ async function previewArticle(request) {
   return {
     ok: true,
     html,
-    canonical: `${root}/${slug}/`,
+    canonical: Seo.canonicalFor(root, slug),
     placeholderLinks: !configured,
     title: String(draft.title || ''),
     categoryName: String(draft.categoryName || ''),
@@ -692,7 +694,7 @@ async function urlResolvesPublicly(url) {
 }
 
 async function resolvePublishedLink(root, settings, createdPost, slug) {
-  const prettyUrl = `${root}/${slug}/`;
+  const prettyUrl = Seo.canonicalFor(root, slug);
   const settingsUrl = `${root}/wp-admin/options-permalink.php`;
   const plain = (link) => /[?&]p=\d+/.test(String(link || ''));
   if (!plain(createdPost.link)) return { url: createdPost.link, plainPermalinks: false };
@@ -724,13 +726,48 @@ async function publish(request) {
   }
   const featured = parseImage(String(images.featured || ''), false, request.siteId || 'site-default');
   const pinterest = parseImage(String(images.pinterest || ''), true, request.siteId || 'site-default');
-  const featuredAlt = PublishingContracts.featuredImageAltText(draft.title, draft.contentType);
-  const pinterestAlt = PublishingContracts.pinterestImageAltText(draft.pinterestTitle, draft.title);
+  const keyphrase = String(draft.focusKeyphrase || '').trim();
+  const featuredAlt = PublishingContracts.featuredImageAltText(draft.title, draft.contentType, keyphrase);
+  const pinterestAlt = PublishingContracts.pinterestImageAltText(draft.pinterestAltText || draft.pinterestTitle, draft.title, keyphrase);
   const categoryId = Number(request.categoryId || settings.categoryId || 0);
   await requireExistingCategory(root, settings, categoryId);
+
+  // Real internal + verified external links are injected before assembly so
+  // they become part of the published (and analyzed) content. Never fatal:
+  // a link that cannot be verified is simply omitted.
+  const externalEnabled = settings.seoExternalLinks !== false;
+  const enriched = await Seo.enrichDraftLinks(draft, { root, settings, enabledExternal: externalEnabled, selfId: null });
+  const workingDraft = { ...draft, htmlContent: enriched.htmlContent };
+  const normText = (s) => SeoAnalyzerLib.norm(String(s || ''));
+  const keyphraseUsedBefore = !!keyphrase && enriched.posts.some((p) => normText(p.title).includes(normText(keyphrase)));
+  // Gate BEFORE any media upload: run the Rank Math/Yoast checks against an
+  // image-less build from the same serializer so a blocked publish leaves no
+  // orphan media in the WordPress library.
+  const additional = Array.isArray(images.additional) ? images.additional : [];
+  const roleOrder = WordPressMarkup.inlineRoleOrder();
+  const altTexts = [featuredAlt, pinterestAlt,
+    ...Array.from({ length: Math.min(additional.length, 8) }, (_, i) =>
+      WordPressMarkup.inlineRoleAltTitle(draft.title, roleOrder[i % roleOrder.length]))];
+  const gateContent = assemblePublishedHtml({
+    draft: workingDraft, root, slug, featuredUrl: '', pinterestUrl: '', additionalUrls: [],
+  });
+  const gateAnalysis = Seo.analyzeDraft(workingDraft, {
+    slug,
+    contentHtml: gateContent,
+    altTexts,
+    internalLinkCount: enriched.report.internal.length,
+    externalLinkCount: enriched.report.external.length,
+    keyphraseUsedBefore,
+  });
+  const failedChecks = gateAnalysis.checks.filter((c) => c.status === 'bad').map((c) => c.label);
+  if (request.enforceSeoGate && gateAnalysis.score < 100 && !request.seoOverride) {
+    const error = new Error(`تحسين SEO غير مكتمل (${gateAnalysis.score}/100): ${failedChecks.join('؛ ')}. أكمل العناصر الناقصة أو أكّد النشر رغم التحذيرات.`);
+    error.seoReport = { analysis: gateAnalysis, links: enriched.report };
+    throw error;
+  }
+
   const featuredMedia = await uploadMedia(root, settings, featured, `${slug}-featured`, featuredAlt);
   const pinterestMedia = await uploadMedia(root, settings, pinterest, `${slug}-pinterest`, pinterestAlt);
-  const additional = Array.isArray(images.additional) ? images.additional : [];
   const uploadedAdditional = [];
   for (let index = 0; index < Math.min(additional.length, 8); index += 1) {
     const reference = String(additional[index] || '').trim();
@@ -739,12 +776,21 @@ async function publish(request) {
     uploadedAdditional.push(media.source_url);
   }
   const content = assemblePublishedHtml({
-    draft,
+    draft: workingDraft,
     root,
     slug,
     featuredUrl: featuredMedia.source_url,
     pinterestUrl: pinterestMedia.source_url,
     additionalUrls: uploadedAdditional,
+  });
+  // Final score reflects the exact published body (figures + recipe card).
+  const analysis = Seo.analyzeDraft(workingDraft, {
+    slug,
+    contentHtml: content,
+    altTexts,
+    internalLinkCount: enriched.report.internal.length,
+    externalLinkCount: enriched.report.external.length,
+    keyphraseUsedBefore,
   });
   const post = {
     title: String(draft.title || ''),
@@ -757,25 +803,65 @@ async function publish(request) {
   };
   const rawTags = Array.isArray(draft.tags) ? draft.tags : [];
   post.tags = await resolveTagIds(root, settings, PublishingContracts.normalizeTags(rawTags.slice(0, 20)));
+  // Best-effort: sites running the Devora-style meta registration accept a
+  // subset of these through stock REST; unknown keys are ignored by WordPress.
+  // The OrbitPress SEO Bridge (called after creation) writes the full set.
+  const previewCanonical = Seo.canonicalFor(root, slug);
   post.meta = {
-    orbitpress_canonical_url: SeoContract.canonical(draft.canonicalUrl || ''),
-    orbitpress_og_title: SeoContract.text(draft.ogTitle, 100),
-    orbitpress_og_description: SeoContract.text(draft.ogDescription, 200),
+    rank_math_title: workingDraft.seoTitle || '',
+    rank_math_description: workingDraft.seoDescription || workingDraft.metaDescription || '',
+    rank_math_focus_keyword: keyphrase,
+    rank_math_canonical_url: draft.canonicalUrl ? SeoContract.canonical(draft.canonicalUrl) : previewCanonical,
   };
   const published = await requestJson(`${root}/wp-json/wp/v2/posts`, 'POST', wordpressHeaders(settings), post);
   const resolution = await resolvePublishedLink(root, settings, published, slug);
+  const finalCanonical = resolution.plainPermalinks ? resolution.url : Seo.canonicalFor(root, slug);
   if (resolution.plainPermalinks) {
     // The pretty /slug/ URL would 404: re-point canonical/share/JSON-LD URLs
     // baked into the body at the real ?p=ID link so pins and SEO never point
     // at a missing page until the site enables post-name permalinks once.
-    const fixedContent = content.split(`${root}/${slug}/`).join(resolution.url);
+    const prettyCanonical = Seo.canonicalFor(root, slug);
+    const fixedContent = content.split(prettyCanonical).join(resolution.url);
+    let updated = false;
     if (fixedContent !== content) {
       try {
         await requestJson(`${root}/wp-json/wp/v2/posts/${published.id}`, 'POST', wordpressHeaders(settings), { content: fixedContent });
+        updated = true;
       } catch { /* cosmetic fallback: the post itself is already published */ }
     }
+    resolution.bodyRewritten = updated;
   }
-  return { ok: true, url: resolution.url, postId: published.id, plainPermalinks: !!resolution.plainPermalinks, prettyUrl: resolution.prettyUrl || '', permalinkSettingsUrl: resolution.permalinkSettingsUrl || '' };
+
+  // Push Yoast/Rank Math metadata (including the stored green score) through
+  // the OrbitPress SEO Bridge. A missing bridge never fails the publish: the
+  // article and its JSON-LD are already live; the UI shows install guidance.
+  const seoStatus = await Seo.detectSeo(root, settings);
+  const payload = Seo.buildSeoPayload(workingDraft, {
+    canonicalUrl: draft.canonicalUrl ? SeoContract.canonical(draft.canonicalUrl) : finalCanonical,
+    imageUrl: featuredMedia.source_url,
+    score: analysis.score,
+  });
+  let bridge = { ok: false, reason: 'bridge_missing' };
+  if (seoStatus.bridge) {
+    bridge = await Seo.applySeoBridge(root, settings, published.id, payload);
+  }
+  const seoReport = {
+    score: analysis.score,
+    analysis,
+    links: enriched.report,
+    bridge: bridge.ok
+      ? { ok: true, plugins: bridge.result.plugins, fields: bridge.result.fields }
+      : { ok: false, reason: bridge.reason || 'bridge_missing', status: bridge.status || 404, plugins: seoStatus },
+  };
+  return {
+    ok: true,
+    url: resolution.url,
+    postId: published.id,
+    plainPermalinks: !!resolution.plainPermalinks,
+    prettyUrl: resolution.prettyUrl || '',
+    permalinkSettingsUrl: resolution.permalinkSettingsUrl || '',
+    seo: seoReport,
+  };
 }
 
 async function publishPinterest(request) {
@@ -1017,7 +1103,68 @@ async function generateOpenAiCompatibleImage(settings, prompt, width, height) {
   return transcode.normalizeProviderImage(Buffer.from(encoded, 'base64'));
 }
 
+/**
+ * Pre-publish SEO scan, exactly mirroring what publish() will do: planned
+ * internal links (matched to real posts), verified external links, the
+ * assembled body and the shared Rank Math/Yoast analyzer. Runs without
+ * changing anything on WordPress.
+ */
+async function seoScan(request) {
+  const settings = requireWordPressSettings(request);
+  const draft = request.draft || {};
+  const root = wpRoot(settings.wordpressBaseUrl);
+  const keyphrase = String(draft.focusKeyphrase || '').trim();
+  const slug = DraftContract.cleanSlug(draft.slug || '');
+
+  const preview = await previewArticle(request);
+  let posts = [];
+  let plugins = { bridge: false, rankmath: false, yoast: false };
+  try { posts = await Seo.fetchPublishedPosts(root, settings); } catch { /* matching simply yields nothing */ }
+  try { plugins = await Seo.detectSeo(root, settings); } catch { /* keep neutral status */ }
+
+  const plannedInternal = posts.length ? SeoAnalyzerLib.matchInternalLinks(draft.internalLinks, posts, null) : [];
+  const plannedExternal = [];
+  const skipped = [];
+  let html = preview.html;
+  if (plannedInternal.length) html = SeoAnalyzerLib.injectLinks(html, plannedInternal);
+  if (settings.seoExternalLinks !== false && Array.isArray(draft.externalReferences)) {
+    const rtl = SeoAnalyzerLib.isRtl(`${keyphrase} ${draft.title}`);
+    for (const ref of draft.externalReferences.slice(0, 2)) {
+      const verified = await Seo.verifyWikipediaReference(ref.topic, rtl);
+      if (!verified) { skipped.push(`لا يوجد مرجع موثوق لـ: ${ref.topic}`); continue; }
+      const link = { anchor: ref.anchor, url: verified.url, title: verified.title, external: true };
+      plannedExternal.push(link);
+      html = SeoAnalyzerLib.injectLinks(html, [link]);
+    }
+  }
+  const normText = (s) => SeoAnalyzerLib.norm(String(s || ''));
+  const keyphraseUsedBefore = !!keyphrase && posts.some((p) => normText(p.title).includes(normText(keyphrase)));
+  const altTexts = [
+    PublishingContracts.featuredImageAltText(draft.title, draft.contentType, keyphrase),
+    PublishingContracts.pinterestImageAltText(draft.pinterestAltText || draft.pinterestTitle, draft.title, keyphrase),
+  ];
+  const analysis = Seo.analyzeDraft(draft, {
+    slug,
+    contentHtml: html,
+    altTexts,
+    internalLinkCount: plannedInternal.length,
+    externalLinkCount: plannedExternal.length,
+    keyphraseUsedBefore,
+  });
+  return {
+    ok: true,
+    analysis,
+    plugins,
+    internalLinks: plannedInternal,
+    externalLinks: plannedExternal,
+    skipped,
+    canonical: preview.canonical,
+    pluginInstallUrl: plugins.bridge ? '' : `${root}/wp-admin/plugin-install.php`,
+  };
+}
+
 module.exports = {
+  seoScan,
   wpRoot,
   wordpressHeaders,
   storedSettings,
