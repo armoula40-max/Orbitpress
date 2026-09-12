@@ -122,10 +122,12 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   window.Native.saveWorkspace(JSON.stringify({ theme: 'night', keywords: [], drafts: [], logs: [], categories: [], siteProfiles: [{ id: 'site-default', name: 'Askinz' }], activeSiteId: 'site-default', plan: {} }));
   assert.equal(JSON.parse(window.Native.loadWorkspace()).theme, 'night');
 
-  // The Facebook/Pinterest analyzer hub pages were removed from the UI
-  // (backend stays dormant); their FeedSpy toolbars are no longer injected.
-  assert.equal(window.document.querySelector('#spyFToolbar'), null, 'facebook hub toolbar removed');
-  assert.equal(window.document.querySelector('#spyPToolbar'), null, 'pinterest hub toolbar removed');
+  // The Facebook and Pinterest Analyzer hub pages are core tools: the
+  // FeedSpy toolbars inject into their screens on boot.
+  assert.ok(window.document.querySelector('#screen-facebook'), 'facebook analyzer screen present');
+  assert.ok(window.document.querySelector('#screen-pinterest'), 'pinterest analyzer screen present');
+  assert.ok(window.document.querySelector('#spyFToolbar'), 'facebook toolbar present');
+  assert.ok(window.document.querySelector('#spyPToolbar'), 'pinterest toolbar present');
   // Per-tenant server sessions still log in from a card injected into Settings.
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.ok(window.document.querySelector('#spySessionsCard'), 'server-login sessions card still lives in Settings');
