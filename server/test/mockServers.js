@@ -70,7 +70,7 @@ function startWordPressMock(state = {}) {
     // Public-facing post pages (for the internal-link liveness GET) — these
     // never require authorization on a real WordPress site. When the mock
     // simulates plain (?p=) permalinks, pretty /slug/ URLs 404 like WordPress.
-    if (req.method === 'GET' && !url.pathname.startsWith('/wp-json') && !url.pathname.startsWith('/wp-')) {
+    if (req.method === 'GET' && !url.pathname.startsWith('/wp-json') && !url.pathname.startsWith('/wp-') && !url.searchParams.get('rest_route')) {
       if (data.deadLinks === true || data.plainPermalinks === true || data.publicPagesBlocked === true) {
         res.writeHead(data.publicPagesBlocked === true ? 403 : 404, { 'Content-Type': 'text/html' });
         return res.end('not found');
@@ -81,14 +81,27 @@ function startWordPressMock(state = {}) {
     // the REST API root advertises what the site can authenticate with
     if (req.method === 'GET' && url.pathname === '/wp-json/') {
       const authentication = data.noApplicationPasswords ? {} : { 'application-passwords': { endpoints: { authorization: `${data.baseUrl}/wp-admin/authorize-application.php` } } };
-      return json({ name: 'Mock Site', description: 'Just another WordPress site', url: data.baseUrl, namespaces: ['wp/v2'], authentication });
+      const bridgeNs = data.bridge === false ? [] : ['orbitpress/v1'];
+      return json({ name: 'Mock Site', description: 'Just another WordPress site', url: data.baseUrl, namespaces: ['wp/v2', ...bridgeNs], authentication });
+    }
+    // ?rest_route= fallback (servers whose nginx only forwards /wp-json/wp/v2/*)
+    if (req.method === 'GET' && url.pathname === '/' && url.searchParams.get('rest_route')) {
+      const route = url.searchParams.get('rest_route');
+      if (route === '/orbitpress/v1/seo/plugins' && data.restRouteOnly !== false && data.bridge !== false) {
+        const yoast = data.seoPlugin === 'yoast';
+        return json({ ok: true, bridge: 'orbitpress-seo-bridge/1.1.0', rankmath: !yoast, yoast, has_seo: true });
+      }
+      if (route === '/' || route === '') {
+        return json({ name: 'Mock Site', namespaces: ['wp/v2', ...(data.bridge === false || data.restRouteOnly === true ? [] : ['orbitpress/v1'])] });
+      }
+      return json({ code: 'rest_no_route', message: 'No route' }, 404);
     }
     // OrbitPress SEO Bridge plugin (public discovery; authed write)
     if (req.method === 'GET' && url.pathname === '/wp-json/orbitpress/v1/seo/plugins') {
-      if (data.bridge === false) return json({ code: 'rest_no_route', message: 'No route' }, 404);
+      if (data.bridge === false || data.restRouteOnly === true) return json({ code: 'rest_no_route', message: 'No route' }, 404);
       const yoast = data.seoPlugin === 'yoast';
       const rankmath = data.seoPlugin !== 'yoast';
-      return json({ ok: true, bridge: 'orbitpress-seo-bridge/1.0.0', rankmath, yoast, has_seo: true });
+      return json({ ok: true, bridge: 'orbitpress-seo-bridge/1.1.0', rankmath, yoast, has_seo: true });
     }
     if (req.method === 'POST' && url.pathname === '/wp-json/orbitpress/v1/seo') {
       if (!req.headers.authorization) return json({ code: 'rest_not_logged_in' }, 401);

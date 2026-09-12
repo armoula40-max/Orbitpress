@@ -155,7 +155,7 @@ final class OrbitPress_SEO_Bridge {
 		return rest_ensure_response(
 			array(
 				'ok'           => true,
-				'bridge'       => 'orbitpress-seo-bridge/1.0.0',
+				'bridge'       => 'orbitpress-seo-bridge/1.1.0',
 				'rankmath'     => (bool) $plugins['rankmath'],
 				'yoast'        => (bool) $plugins['yoast'],
 				'has_seo'      => (bool) ( $plugins['rankmath'] || $plugins['yoast'] ),

@@ -514,3 +514,23 @@ test('self-GET failures (VPS hairpin/coming-soon) still keep REST-confirmed inte
     assert.ok(result.report.skipped.some((s) => s.includes('rest') || s.includes('REST')), 'the public-GET failure is reported, not silent');
   } finally { wp.server.close(); }
 });
+
+test('bridge detection works over ?rest_route= when nginx 404s the custom pretty namespace', async () => {
+  const wp = await mocks.startWordPressMock({ restRouteOnly: true });
+  try {
+    const settings = { wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' };
+    const detected = await Seo.detectSeo(wp.url, settings);
+    assert.equal(detected.bridge, true);
+    assert.match(detected.bridgeVersion, /1\.1\.0/);
+  } finally { wp.server.close(); }
+});
+
+test('bridge detection reports "activate the plugin" when the namespace is absent', async () => {
+  const wp = await mocks.startWordPressMock({ bridge: false });
+  try {
+    const settings = { wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' };
+    const detected = await Seo.detectSeo(wp.url, settings);
+    assert.equal(detected.bridge, false);
+    assert.equal(detected.reason, 'plugin_inactive');
+  } finally { wp.server.close(); }
+});

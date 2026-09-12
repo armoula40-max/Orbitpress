@@ -26,24 +26,56 @@ function canonicalFor(root, slug) {
 /** Detect bridge plugin + which SEO plugin(s) are active; never throws. */
 async function detectSeo(root, settings) {
   const headers = settings ? require('./wordpress').wordpressHeaders(settings) : {};
-  const out = { bridge: false, rankmath: false, yoast: false, bridgeVersion: '' };
-  try {
-    const info = await requestJson(`${root}${BRIDGE_PLUGINS}`, 'GET', headers);
-    if (info && info.ok) {
-      out.bridge = true;
-      out.rankmath = !!info.rankmath;
-      out.yoast = !!info.yoast;
-      out.bridgeVersion = info.bridge || '';
-    }
-  } catch {
-    // Bridge absent/unreachable: infer active SEO plugins from the public
-    // REST index (one attempt; never fatal to publishing).
+  const out = { bridge: false, rankmath: false, yoast: false, bridgeVersion: '', reason: '', detail: '' };
+
+  // Some nginx configs only forward /wp-json/wp/v2/* and 404 custom namespaces;
+  // the ?rest_route= query form bypasses such rewrites. Try both, plus the
+  // namespace list in the REST index as a third presence signal.
+  const attempts = [
+    `${root}${BRIDGE_PLUGINS}`,
+    `${root}/?rest_route=${BRIDGE_PLUGINS.replace('/wp-json', '')}`,
+  ];
+  let lastError = null;
+  for (const url of attempts) {
     try {
-      const index = await requestJson(`${root}/wp-json`, 'GET');
-      const namespaces = Array.isArray(index && index.namespaces) ? index.namespaces.join(' ') : '';
-      out.rankmath = /rank-?math/i.test(namespaces);
-      out.yoast = /yoast/i.test(namespaces);
-    } catch { /* site unreachable or REST hidden; publish must not depend on this */ }
+      const info = await requestJson(url, 'GET', headers);
+      if (info && info.ok) {
+        out.bridge = true;
+        out.rankmath = !!info.rankmath;
+        out.yoast = !!info.yoast;
+        out.bridgeVersion = info.bridge || '';
+        return out;
+      }
+    } catch (error) { lastError = error; }
+  }
+
+  // Bridge route did not answer: inspect the REST index (both URL forms).
+  let index = null;
+  try {
+    index = await requestJson(`${root}/wp-json`, 'GET');
+  } catch {
+    try { index = await requestJson(`${root}/?rest_route=/`, 'GET'); } catch (e) { lastError = e; }
+  }
+  const namespaces = Array.isArray(index && index.namespaces) ? index.namespaces.join(' ') : '';
+  out.rankmath = /rank-?math/i.test(namespaces);
+  out.yoast = /yoast/i.test(namespaces);
+  if (/orbitpress\/v1/i.test(namespaces)) {
+    // Namespace registered but the discovery call failed — a WAF/security rule.
+    out.bridge = true;
+    out.bridgeVersion = 'registered';
+    out.reason = 'route_blocked';
+    out.detail = 'مساحة الأسماء orbitpress/v1 مسجّلة لكن نقطة الفحص محجوبة (إضافة أمان/WAF أو جدار nginx). الكتابة قد تعمل رغم ذلك.';
+    return out;
+  }
+  if (!index) {
+    const status = lastError && lastError.status;
+    out.reason = status === 401 || status === 403 ? 'rest_forbidden' : 'rest_inaccessible';
+    out.detail = status
+      ? `تعذّر الوصول إلى REST API لوردبريس (HTTP ${status}). تحققي من إضافات الأمان وكلمات مرور التطبيقات.`
+      : 'تعذّر الوصول إلى /wp-json إطلاقًا (الرابط الجذري أو إعدادات الروابط الدائمة أو nginx).';
+  } else {
+    out.reason = 'plugin_inactive';
+    out.detail = 'لم تُسجَّل مساحة orbitpress/v1: الإضافة غير مفعّلة. بعد الرفع اضغطي «تفعيل / Activate».';
   }
   return out;
 }
