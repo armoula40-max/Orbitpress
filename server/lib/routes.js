@@ -100,7 +100,12 @@ function pinfluxNormalize(input) {
     enabled: a && a.enabled !== false,
     connected: !!(a && a.connected),
     sessionLabel: String(a && a.sessionLabel || '').trim().slice(0, 120),
-  })).filter((a) => a.id && a.boardId && groupIds.has(a.groupId));
+    boardsLoaded: !!(a && a.boardsLoaded),
+    boards: Array.isArray(a && a.boards) ? a.boards.slice(0, 500).map((b) => ({
+      id: String(b && (b.id || b.boardId || b.url) || '').slice(0, 240),
+      name: String(b && (b.name || b.title || b.id || b.url) || '').slice(0, 160),
+    })).filter((b) => b.id) : [],
+  })).filter((a) => a.id && groupIds.has(a.groupId));
   return { sourcePinId: String(source.sourcePinId || '').trim().slice(0, 120), groups, accounts, completed: Array.isArray(source.completed) ? source.completed.map(String).slice(0, 5000) : [] };
 }
 router.get('/pinflux/state', (req, res) => res.json({ ok: true, ...pinfluxState() }));
@@ -118,7 +123,7 @@ router.post('/pinflux/plan', asyncRoute(async (req, res) => {
   const groupMap = new Map(data.groups.map((g) => [g.id, g]));
   const operations = [];
   data.groups.filter((g) => g.enabled).forEach((group) => {
-    data.accounts.filter((a) => a.enabled && a.groupId === group.id).slice(0, group.maxOperations).forEach((account) => {
+    data.accounts.filter((a) => a.enabled && a.groupId === group.id && a.boardId).slice(0, group.maxOperations).forEach((account) => {
       const key = `${data.sourcePinId}:${account.id}:${account.boardId}`;
       if (data.completed.includes(key)) return;
       operations.push({ key, pinId: data.sourcePinId, accountId: account.id, accountName: account.name, boardId: account.boardId, groupId: group.id, parentGroupId: group.parentId, delaySeconds: group.delaySeconds, action: 'save_or_repin' });
@@ -416,6 +421,20 @@ router.post('/pinflux/accounts/:accountId/login', asyncRoute(async (req, res) =>
 }));
 router.post('/pinflux/accounts/:accountId/verify', asyncRoute(async (req, res) => {
   res.json({ ok: true, ...await scraper.sessions.verifyConnected('pinterest', req.params.accountId) });
+}));
+router.get('/pinflux/accounts/:accountId/boards', asyncRoute(async (req, res) => {
+  const accountId = String(req.params.accountId || '').trim();
+  if (!accountId) return res.status(400).json({ ok: false, message: 'معرّف حساب PinFlux مطلوب.' });
+  const cookieHeader = await scraper.sessions.cookieHeader('pinterest', accountId).catch(() => '');
+  if (!cookieHeader || !/_pinterest_sess=/.test(cookieHeader)) {
+    return res.status(401).json({ ok: false, message: 'جلسة Pinterest لهذا الحساب غير متصلة.' });
+  }
+  const publisher = require('./scraper/pinterestPublish');
+  const hosts = publisher.hosts();
+  let username = '';
+  try { username = await publisher.sessionAlive(hosts, cookieHeader); } catch { /* board request remains the proof */ }
+  const listed = await publisher.listMyBoards(hosts, cookieHeader, username || '');
+  res.json({ ok: true, accountId, username: listed.username || username || '', boards: listed.boards || [] });
 }));
 router.delete('/pinflux/accounts/:accountId', asyncRoute(async (req, res) => {
   res.json(await scraper.sessions.logout('pinterest', req.params.accountId));
