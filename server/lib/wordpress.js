@@ -1012,14 +1012,17 @@ async function generateImage(request) {
   const templateFallback = kind === 'pinterest' && Array.isArray(settings.pinterestPrompts)
     ? String((settings.pinterestPrompts.find((t) => t && t.prompt) || {}).prompt || '')
     : '';
+  const defaultPrompt = kind === 'pinterest'
+    ? 'Amateur editorial photograph taken with a premium smartphone camera, natural close-up of {{title}}, clearly showing {{keyword}}, authentic user-generated detail, realistic textures, soft available light, portrait 2:3 Pinterest composition, strong single focal subject, clean negative space, no text, no words, no letters, no numbers, no logos, no watermark, no collage, no artificial product render, no studio-perfect CGI.'
+    : 'Amateur editorial photograph taken with a premium smartphone camera, natural close-up of {{title}}, clearly showing {{keyword}}, authentic user-generated detail, realistic textures, soft available light, natural perspective, balanced editorial composition, useful practical context, no text, no words, no letters, no numbers, no logos, no watermark, no collage, no artificial product render, no studio-perfect CGI.';
   const configuredPrompt = String(
     kind === 'pinterest' ? (settings.pinterestPrompt || templateFallback || '') : (settings.imagePrompt || ''),
-  ).trim();
-  const prompt = (String(request.prompt || '').trim() || configuredPrompt)
+  ).trim() || defaultPrompt;
+  const expandedPrompt = (String(request.prompt || '').trim() || configuredPrompt)
     .replace(/\{\{title\}\}/g, String(request.title || ''))
     .replace(/\{\{keyword\}\}/g, String(request.keyword || ''));
   const { MediaPublishingContract } = require('./contracts');
-  const normalized = MediaPublishingContract.normalizePrompt(prompt);
+  const normalized = MediaPublishingContract.normalizePrompt(expandedPrompt);
   // Ask for the shape the slot needs. Cloudflare's flux schema takes no size
   // at all and always answers square, so the browser fits the result — that is
   // why `store:false` exists: it returns the raw bytes for the UI to compose.
