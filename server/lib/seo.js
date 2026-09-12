@@ -137,18 +137,47 @@ async function verifyWikipediaReference(topic, rtl) {
 }
 
 /**
- * A GET against the final permalink before the link is allowed into the
- * article. REST-returned links normally resolve; this catches sites with
- * broken rewrites, maintenance plugins or privacy blockers. Short budget.
+ * Public GET against the final permalink (what a visitor's browser would do).
+ * Catches broken rewrites or privacy/maintenance plugins. Short budget and
+ * best-effort: a VPS often cannot reach its own public hostname (split-horizon
+ * DNS / hairpin NAT), so a failed self-GET must NEVER by itself discard a link
+ * that the authenticated REST API confirms exists.
  */
 async function internalLinkResolves(url) {
   try {
     await request(url, 'GET', { Accept: 'text/html,*/*' }, null, {
-      timeoutMs: 8000,
+      timeoutMs: 5000,
       maxHops: 4,
       allowHttp: /^http:\/\//.test(String(url)),
     });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Authoritative verification over the SAME authenticated REST channel the
+ * publisher already uses: resolve either the ?p=<id> plain permalink or the
+ * /<slug>/ pretty permalink back to a published post. Works even when the
+ * OrbitPress server cannot browse the site's public URL itself.
+ */
+async function internalLinkConfirmedByRest(root, settings, link) {
+  try {
+    const headers = require('./wordpress').wordpressHeaders(settings);
+    const u = new URL(link.url);
+    const plainId = u.searchParams.get('p');
+    if (plainId) {
+      const row = await requestJson(`${root}/wp-json/wp/v2/posts/${encodeURIComponent(plainId)}?_fields=id,status,link`, 'GET', headers);
+      return !!(row && Number(row.id) === Number(plainId) && (row.status === 'publish' || !row.status));
+    }
+    const slug = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
+    if (!slug) return false;
+    const rows = await requestJson(
+      `${root}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&status=publish&per_page=1&_fields=id,status,link`,
+      'GET', headers,
+    );
+    return Array.isArray(rows) && rows.length > 0;
   } catch {
     return false;
   }
@@ -186,10 +215,25 @@ async function enrichDraftLinks(draft, { root, settings, enabledExternal = true,
   }
   report.postsCount = posts.length;
   const TARGET_INTERNAL = 3;
+  const verifyCache = new Map();
 
+  // A link ships when EITHER the public permalink answers (visitor view) OR
+  // the authenticated REST API confirms the post exists. Both failing means
+  // the link is genuinely dead and it is dropped (recorded in skipped[]).
   const verify = async (link) => {
-    const ok = await internalLinkResolves(link.url);
-    if (!ok) report.skipped.push(`internal: رابط غير مستجيب (${link.url})`);
+    if (verifyCache.has(link.url)) return verifyCache.get(link.url);
+    let ok = await internalLinkResolves(link.url);
+    let method = 'public-get';
+    if (!ok) {
+      ok = await internalLinkConfirmedByRest(root, settings, link);
+      method = 'rest-confirm';
+    }
+    if (!ok) {
+      report.skipped.push(`internal: رابط غير موجود للمقال «${link.title || link.anchor || ''}» (${link.url})`);
+    } else if (method === 'rest-confirm') {
+      report.skipped.push(`internal-info: تعذّر طلب الرابط العلني من الخادم نفسه لكن REST أكّد المقال (${link.url})`);
+    }
+    verifyCache.set(link.url, ok);
     return ok;
   };
 

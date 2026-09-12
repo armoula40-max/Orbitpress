@@ -493,3 +493,24 @@ test('generation prompt receives the real WordPress published titles as internal
   assert.ok(promptText.includes('وصفة كنافة نابلسية بالقشطة'), 'real post title handed to the model');
   assert.ok(promptText.includes('internalLinks'));
 });
+
+test('self-GET failures (VPS hairpin/coming-soon) still keep REST-confirmed internal links', async () => {
+  const wp = await mocks.startWordPressMock({
+    liveInternalLinks: true, publicPagesBlocked: true,
+    posts: [
+      { id: 1, title: { rendered: 'وصفة كيك الشوكولاتة الداكنة' }, link: 'https://wp.test/chocolate/', slug: 'chocolate', status: 'publish' },
+      { id: 2, title: { rendered: 'حلى الأوريو البارد خطوة بخطوة' }, link: 'https://wp.test/oreo-dessert/', slug: 'oreo-dessert', status: 'publish' },
+    ],
+  });
+  try {
+    const settings = { wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' };
+    const draft = {
+      htmlContent: '<h2>مقدمة</h2><p>مقال جديد لا يذكر عناوين المقالات الأخرى داخل المتن.</p>',
+      focusKeyphrase: 'حلى القهوة', title: 'حلى القهوة السريع', secondaryKeywords: [],
+    };
+    const result = await Seo.enrichDraftLinks(draft, { root: wp.url, settings, enabledExternal: false, selfId: null });
+    assert.equal(result.report.internal.length, 2, 'REST-confirmed links still ship when the public self-GET fails');
+    assert.ok(result.htmlContent.includes('مقالات ذات صلة'));
+    assert.ok(result.report.skipped.some((s) => s.includes('rest') || s.includes('REST')), 'the public-GET failure is reported, not silent');
+  } finally { wp.server.close(); }
+});

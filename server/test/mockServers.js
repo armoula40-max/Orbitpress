@@ -71,8 +71,8 @@ function startWordPressMock(state = {}) {
     // never require authorization on a real WordPress site. When the mock
     // simulates plain (?p=) permalinks, pretty /slug/ URLs 404 like WordPress.
     if (req.method === 'GET' && !url.pathname.startsWith('/wp-json') && !url.pathname.startsWith('/wp-')) {
-      if (data.deadLinks === true || data.plainPermalinks === true) {
-        res.writeHead(404, { 'Content-Type': 'text/html' });
+      if (data.deadLinks === true || data.plainPermalinks === true || data.publicPagesBlocked === true) {
+        res.writeHead(data.publicPagesBlocked === true ? 403 : 404, { 'Content-Type': 'text/html' });
         return res.end('not found');
       }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -201,7 +201,9 @@ function startWordPressMock(state = {}) {
         return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
       }
       const slug = url.searchParams.get('slug');
-      let rows = slug ? data.posts.filter((p) => p.slug === slug) : data.posts;
+      let rows;
+      if (slug && data.deadLinks === true) rows = []; // genuinely broken permalinks
+      else rows = slug ? data.posts.filter((p) => p.slug === slug) : data.posts;
       // Internal-link verification GETs the public permalink: hand back rows
       // whose link points at this live mock instead of the fake wp.test host.
       if (data.liveInternalLinks === true && data.deadLinks !== true) {
