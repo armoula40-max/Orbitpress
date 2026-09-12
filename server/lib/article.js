@@ -15,6 +15,8 @@ const {
 } = require('./contracts');
 const { requireAiSettings } = require('./wordpress');
 const SeoAnalyzer = require('../public/app/seoAnalyzer');
+const AiProviders = require('./ai/providers');
+const AiClient = require('./ai/client');
 
 // ---------------------------------------------------------------------------
 // Default prompts, single source of truth (also served at /api/prompt-defaults
@@ -74,58 +76,58 @@ function articleResponseFormat() {
 }
 
 /**
- * Run an article completion down a compatibility ladder, because providers
- * (OpenRouter/DeepSeek/Together/Ollama/...) disagree about structured output:
- *   1. strict json_schema (OpenAI-compatible providers)
- *   2. {type:'json_object'} (DeepSeek and most OpenAI-aliases support this)
- *   3. no response_format at all, then salvage the JSON from fences/prose
- * Retries happen on ANY structured-output rejection (we match the HTTP status
- * too, not just the wording, so "Response format not supported" with a space
- * no longer escapes detection) and on 400/422 responses.
- * Returns { response, mode } or throws the last (real) provider error.
+ * Article completion through the unified provider layer (lib/ai).
+ *  - resolves the selected preset (Gemini native / OpenAI-compatible / ...),
+ *  - the adapter walks its own structured-output ladder internally,
+ *  - an optional fallback provider is tried when the primary fails after its
+ *    own retries are exhausted, and the switch + reason is recorded.
+ * Returns { response (OpenAI-shaped for the caller), mode, provenance }.
  */
-async function requestArticleCompletion({ baseUrl, apiKey, model, messages, temperature = 0.2, maxTokens }) {
-  const ladder = [
-    { mode: 'json_schema', responseFormat: articleResponseFormat() },
-    { mode: 'json_object', responseFormat: { type: 'json_object' } },
-    { mode: 'plain', responseFormat: undefined },
-  ];
-  // Some providers cap output below our 12k request (e.g. DeepSeek's 8k);
-  // step down the budget instead of failing the whole generation.
-  const tokenBudgets = [maxTokens, 8000, 6000].filter((v, i, arr) => v && arr.indexOf(v) === i && v <= maxTokens);
-  let lastError = null;
-  for (const budget of tokenBudgets) {
-    for (const step of ladder) {
-      const body = { model, max_tokens: budget, messages, temperature };
-      if (step.responseFormat) body.response_format = step.responseFormat;
-      try {
-        const response = await requestJson(chatEndpoint(baseUrl), 'POST', { Authorization: `Bearer ${apiKey}` }, body);
-        return { response, mode: step.mode };
-      } catch (error) {
-        lastError = error;
-        const status = Number(error && error.status) || 0;
-        const message = String(error && error.message || '').toLowerCase();
-        const formatRelated = /response.format|json_schema|json schema|structured|unsupported|unknown argument|invalid.*format|not supported/.test(message);
-        const tokenLimit = /max_tokens|maximum|too large|context.length|token limit|longer than|exceed/.test(message);
-        if (tokenLimit && (status === 400 || status === 422 || status === 413)) break; // retry with smaller budget
-        const clientFormatError = (status === 400 || status === 422) && formatRelated;
-        // 401/403/404/5xx and unrelated 400s will not be fixed by changing
-        // response_format or token budget — fail with the provider's real text.
-        if (!clientFormatError && !(status === 0 && formatRelated)) {
-          throw Object.assign(new Error(explainProviderError(error)), { status });
-        }
-      }
+async function requestArticleCompletion({ settings, messages, temperature = 0.2, maxTokens }) {
+  const { primary, fallback } = AiProviders.resolvePrimaryAndFallback(settings);
+  const schema = articleResponseFormat().json_schema.schema;
+  const provenance = { attempts: [], startedAt: new Date().toISOString() };
+
+  const tryOne = async (cfg, role) => {
+    const started = Date.now();
+    const result = await AiClient.chat(cfg, { messages, temperature, maxTokens, jsonSchema: schema });
+    provenance.attempts.push({
+      role, provider: cfg.presetId, label: cfg.label, model: cfg.model,
+      mode: result.mode, ok: true, latencyMs: Date.now() - started,
+    });
+    provenance.generatedBy = role === 'fallback' ? `${cfg.label} · ${cfg.model}` : `${cfg.label} · ${cfg.model}`;
+    return {
+      response: { choices: [{ message: { content: result.content } }], usage: result.usage },
+      mode: result.mode,
+      cfg,
+      provenance,
+    };
+  };
+
+  let primaryError = null;
+  try {
+    return await tryOne(primary, 'primary');
+  } catch (error) {
+    provenance.attempts.push({
+      role: 'primary', provider: primary.presetId, label: primary.label, model: primary.model,
+      ok: false, reason: String(error && error.message || error).slice(0, 300),
+    });
+    primaryError = error;
+  }
+  if (fallback) {
+    try {
+      const out = await tryOne(fallback, 'fallback');
+      provenance.fallbackUsed = true;
+      provenance.fallbackReason = String(primaryError && primaryError.message || primaryError).slice(0, 300);
+      return out;
+    } catch (error) {
+      provenance.attempts.push({
+        role: 'fallback', provider: fallback.presetId, label: fallback.label, model: fallback.model,
+        ok: false, reason: String(error && error.message || error).slice(0, 300),
+      });
     }
   }
-  throw new Error(explainProviderError(lastError));
-}
-
-/** Keep the provider's actual message visible instead of a generic verdict. */
-function explainProviderError(error) {
-  const status = error && error.status ? ` (HTTP ${error.status})` : '';
-  const raw = String((error && error.message) || error || '').trim();
-  const snippet = raw.replace(/^Request failed \(\d+\):\s*/i, '').slice(0, 400);
-  return `Article API error${status}: ${snippet || 'no response body'}`;
+  throw primaryError;
 }
 
 async function requestCompletion({ baseUrl, apiKey, model, messages, temperature = 0.2, responseFormat }) {
@@ -172,23 +174,17 @@ async function generate(request) {
   const customizedTextPrompt = String(settings.textPrompt || '').trim()
     .replace(/\{\{keyword\}\}/g, keyword)
     .replace(/\{\{category\}\}/g, category);
-  const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
+  const maxTokens = 12000;
   const prompt = buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt });
 
   const messages = [
     { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
     { role: 'user', content: prompt },
   ];
-  const { response } = await requestArticleCompletion({
-    baseUrl: provider.baseUrl,
-    apiKey: settings.articleApiKey,
-    model: provider.model,
-    messages,
-    temperature: 0.7,
-    maxTokens: provider.maxOutputTokens,
-  });
-  const content = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;
+  const first = await requestArticleCompletion({ settings, messages, temperature: 0.7, maxTokens });
+  const content = first.response.choices && first.response.choices[0] && first.response.choices[0].message && first.response.choices[0].message.content;
   let draft = parseArticleDraft(content, category, keyword);
+  let provenance = first.provenance;
   if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
     const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
     const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
@@ -196,21 +192,30 @@ async function generate(request) {
       { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
       { role: 'user', content: `${prompt}\n${repairInstruction}` },
     ];
-    const repaired = await requestArticleCompletion({
-      baseUrl: provider.baseUrl,
-      apiKey: settings.articleApiKey,
-      model: provider.model,
-      messages: repairMessages,
-      temperature: 0.4,
-      maxTokens: provider.maxOutputTokens,
-    });
+    const repaired = await requestArticleCompletion({ settings, messages: repairMessages, temperature: 0.4, maxTokens });
     const repairedContent = repaired.response.choices && repaired.response.choices[0] && repaired.response.choices[0].message && repaired.response.choices[0].message.content;
     draft = parseArticleDraft(repairedContent, category, keyword);
+    provenance = {
+      ...repaired.provenance,
+      attempts: [...provenance.attempts, ...repaired.provenance.attempts],
+      repairPasses: 1,
+      repairReason: issue,
+    };
     const completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
     if (!completeness.valid) {
       throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
     }
   }
+  // Non-secret generation provenance: which provider/model actually answered,
+  // structured-output mode, fallback switch and repair attempts.
+  draft.generation = {
+    generatedBy: provenance.generatedBy || '',
+    fallbackUsed: !!provenance.fallbackUsed,
+    fallbackReason: provenance.fallbackReason || '',
+    repairPasses: provenance.repairPasses || 0,
+    attempts: provenance.attempts.map((a) => ({ ...a, reason: a.reason ? String(a.reason).slice(0, 220) : undefined })),
+    at: provenance.startedAt,
+  };
   return { ok: true, draft };
 }
 
@@ -409,38 +414,20 @@ async function viralKeywords(request) {
  */
 async function testArticleApi(request) {
   const settings = requireAiSettings(request);
-  const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
-  const body = {
-    model: provider.model,
-    temperature: 0,
-    max_tokens: 24,
-    messages: [
-      { role: 'system', content: 'You are a connectivity probe.' },
-      { role: 'user', content: 'Reply with exactly: OK' },
-    ],
-  };
-  const started = Date.now();
-  try {
-    const response = await requestJson(chatEndpoint(provider.baseUrl), 'POST', { Authorization: `Bearer ${settings.articleApiKey}` }, body);
-    const choice = response && response.choices && response.choices[0];
-    const content = choice && choice.message && choice.message.content;
-    if (content == null || String(content).trim() === '') {
-      return { ok: false, model: provider.model, latencyMs: Date.now() - started, message: 'المزوّد ردّ بدون محتوى — تحقق من اسم الموديل.' };
-    }
-    return {
-      ok: true,
-      model: provider.model,
-      latencyMs: Date.now() - started,
-      sample: String(content).trim().slice(0, 80),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      model: provider.model,
-      latencyMs: Date.now() - started,
-      message: ProviderCompatibilityContract.diagnostic(error.message),
-    };
+  const { primary, fallback } = AiProviders.resolvePrimaryAndFallback(settings);
+  const problems = AiProviders.validateConfig(primary);
+  if (problems.length) {
+    return { ok: false, model: primary.model, latencyMs: 0, message: problems.join(' · ') };
   }
+  const result = await AiClient.probe(primary);
+  // Surface the active provider and its structured-JSON capability explicitly.
+  result.message = result.ok
+    ? `${primary.label} · ${result.structured ? 'يدعم JSON المنظّم ✓' : 'يجيب لكن بدون تأكيد وضع JSON (سيعمل وضع الاستخراج)'} · ${result.mode}`
+    : result.message;
+  if (fallback) {
+    result.fallback = await AiClient.probe(fallback);
+  }
+  return result;
 }
 
 async function analyzeSocialKeywords(request) {
@@ -515,6 +502,7 @@ async function feedspyReport(request) {
 module.exports = {
   viralKeywords,
   testArticleApi,
+  requestArticleCompletion,
   generate,
   analyzeSocialKeywords,
   analyzePinterestKeywords,

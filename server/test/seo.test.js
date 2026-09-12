@@ -351,3 +351,33 @@ test('seoScan previews the score, real links and bridge status without publishin
   assert.ok(typeof scan.analysis.score === 'number');
   assert.ok(scan.analysis.checks.some((c) => c.id === 'recipe-schema' && c.status === 'good'));
 });
+
+test('analysis returns the five branched scorecard groups', () => {
+  const r = analyze(6);
+  const ids = r.groups.map((g) => g.id);
+  assert.deepEqual(ids, ['technical', 'onpage', 'readability', 'media', 'schema']);
+  const totalMax = r.groups.reduce((sum, g) => sum + g.max, 0);
+  assert.equal(totalMax, 100);
+  const totalScore = r.groups.reduce((sum, g) => sum + g.score, 0);
+  assert.equal(totalScore, r.score, 'branched group scores add up to the overall score');
+});
+
+test('a body image with an empty alt is a hard blocker even if the rest is perfect', () => {
+  const draft = perfectDraft(6);
+  const r = SeoAnalyzer.analyze({
+    keyphrase: draft.focusKeyphrase,
+    seoTitle: draft.seoTitle,
+    seoDescription: draft.seoDescription,
+    slug: draft.slug,
+    contentHtml: `<img src="x.jpg" alt=""><img src="y.jpg" alt="وصف جيد للصورة الثانية طويل بما يكفي">${draft.htmlContent}`,
+    wordTarget: 900,
+    altTexts: [],
+    internalLinkCount: 1,
+    externalLinkCount: 1,
+    contentType: 'article',
+    schemaValid: true,
+  });
+  const check = r.checks.find((c) => c.id === 'img-alt-required');
+  assert.equal(check.status, 'bad');
+  assert.ok(r.blockers.some((b) => b.id === 'img-alt-required'), 'missing alt lands in the publish blockers list');
+});

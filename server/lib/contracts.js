@@ -775,10 +775,13 @@ const SettingsPersistenceContract = {
       'textPrompt', 'imagePrompt', 'pinterestPrompt', 'articleImageCount', 'scraperApiBaseUrl',
       'articleSystemPrompt', 'analyzerPrompt', 'viralPrompt', 'feedspyPrompt',
       'recipeRepairSystemPrompt', 'recipeRepairPrompt',
+      // Multi-provider text layer (lib/ai/providers.js)
+      'textProvider', 'articleAccountId',
+      'textFallbackProvider', 'articleFallbackBaseUrl', 'articleFallbackModel', 'articleFallbackAccountId',
     ].forEach((key) => {
       merged[key] = optStr(incoming[key]).trim();
     });
-    ['articleApiKey', 'wordpressAppPassword', 'imageApiToken', 'pinterestAccessToken', 'facebookAccessToken', 'scraperApiKey'].forEach((key) => {
+    ['articleApiKey', 'wordpressAppPassword', 'imageApiToken', 'pinterestAccessToken', 'facebookAccessToken', 'scraperApiKey', 'articleFallbackApiKey'].forEach((key) => {
       const value = optStr(incoming[key]).trim();
       if (value) merged[key] = value;
     });
@@ -808,6 +811,10 @@ const SettingsPersistenceContract = {
     // false hides the Canva-style pin designer from the draft review screen.
     if (incoming.pinStudioEnabled === true || incoming.pinStudioEnabled === false) {
       merged.pinStudioEnabled = incoming.pinStudioEnabled;
+    }
+    // Verified external-reference links default ON; an explicit false persists.
+    if (incoming.seoExternalLinks === true || incoming.seoExternalLinks === false) {
+      merged.seoExternalLinks = incoming.seoExternalLinks;
     }
     const rolePrompts = incoming.articleImageRolePrompts;
     if (Array.isArray(rolePrompts)) {

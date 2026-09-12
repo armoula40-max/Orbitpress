@@ -1465,7 +1465,7 @@ test('Article API probe reports a working provider and a failing one', async (t)
 
   // no settings at all -> asks for the AI fields by name
   store.saveSiteSettings({}, 'site-probe-empty');
-  await assert.rejects(() => article.testArticleApi({ siteId: 'site-probe-empty' }), /Article API settings/);
+  await assert.rejects(() => article.testArticleApi({ siteId: 'site-probe-empty' }), /إعدادات مزوّد المقالات/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1593,9 +1593,10 @@ test('pinterest HTTP scanner mines the embedded JSON island', async (t) => {
 // ---------------------------------------------------------------------------
 
 test('analyzer: FeedSpy filters, sorting, stats and CSV', () => {
+  const isoDaysAgo = (days) => new Date(Date.now() - days * 864e5).toISOString();
   const posts = [
-    { title: 'Old viral', publishedAt: '2026-08-01T10:00:00Z', reactions: 10, comments: 2, shares: 1 },
-    { title: 'Fresh hit nail art', publishedAt: '2026-09-05T10:00:00Z', reactions: 50, comments: 20, shares: 10 },
+    { title: 'Old viral', publishedAt: isoDaysAgo(42), reactions: 10, comments: 2, shares: 1 },
+    { title: 'Fresh hit nail art', publishedAt: isoDaysAgo(2), reactions: 50, comments: 20, shares: 10 },
     { title: 'Undated mystery', publishedAt: null, reactions: 999, comments: 1, shares: 1 },
   ];
   const ranked = analyzer.rankPosts(posts);

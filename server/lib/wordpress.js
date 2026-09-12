@@ -38,10 +38,20 @@ function storedSettings(siteId) {
  */
 function requireAiSettings(request) {
   const settings = storedSettings(request.siteId || 'site-default');
-  const required = ['articleBaseUrl', 'articleModel', 'articleApiKey'];
-  const missing = required.filter((key) => !String(settings[key] || '').trim());
-  if (missing.length) throw new Error(`Complete and save the Article API settings first: ${missing.join(', ')}.`);
-  PublishingContracts.requireHttpsUrl(settings.articleBaseUrl, 'Article API URL');
+  // Validate through the provider registry so keyless/loopback providers
+  // (Ollama on the same VPS) are accepted while HTTP stays blocked elsewhere.
+  const AiProviders = require('./ai/providers');
+  const { primary } = AiProviders.resolvePrimaryAndFallback(settings);
+  const problems = AiProviders.validateConfig(primary);
+  if (problems.length) {
+    throw new Error(`أكملي إعدادات مزوّد المقالات أولاً: ${problems.join(' · ')}`);
+  }
+  // Legacy/custom free-form URLs still must be HTTPS (the registry already
+  // enforces this, but keep the old guard for any direct callers).
+  if (primary.kind !== 'gemini' && primary.baseUrl.startsWith('http://') && !primary.allowHttp
+      && !/^http:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)([:/]|$)/i.test(primary.baseUrl)) {
+    PublishingContracts.requireHttpsUrl(primary.baseUrl, 'Article API URL');
+  }
   return settings;
 }
 
@@ -760,6 +770,19 @@ async function publish(request) {
     keyphraseUsedBefore,
   });
   const failedChecks = gateAnalysis.checks.filter((c) => c.status === 'bad').map((c) => c.label);
+  // Critical defects can never be overridden: empty SEO title/meta, missing
+  // image alts, broken internal links or invalid JSON-LD produce broken rich
+  // results and inaccessible posts. Everything else is repairable and may be
+  // explicitly overridden.
+  const CRITICAL_CHECK_IDS = ['seo-title', 'meta-desc', 'img-alt-required', 'internal', 'recipe-schema', 'article-schema'];
+  const critical = (gateAnalysis.blockers || [])
+    .filter((c) => CRITICAL_CHECK_IDS.includes(c.id))
+    .map((c) => c.label);
+  if (critical.length) {
+    const error = new Error(`أخطاء SEO حرجة تمنع النشر نهائيًا (لا يمكن تجاوزها): ${critical.join('؛ ')}.`);
+    error.seoReport = { analysis: gateAnalysis, links: enriched.report, critical: true };
+    throw error;
+  }
   if (request.enforceSeoGate && gateAnalysis.score < 100 && !request.seoOverride) {
     const error = new Error(`تحسين SEO غير مكتمل (${gateAnalysis.score}/100): ${failedChecks.join('؛ ')}. أكمل العناصر الناقصة أو أكّد النشر رغم التحذيرات.`);
     error.seoReport = { analysis: gateAnalysis, links: enriched.report };

@@ -49,6 +49,7 @@ async function startUi(overrides, bridgeAnswer) {
   const feedspyJs = fs.readFileSync(path.join(PUBLIC, 'app', 'feedspy.js'), 'utf8');
   const pinStudioJs = fs.readFileSync(path.join(PUBLIC, 'app', 'pinStudio.js'), 'utf8');
   const seoAnalyzerJs = fs.readFileSync(path.join(PUBLIC, 'app', 'seoAnalyzer.js'), 'utf8');
+  const providersUiJs = fs.readFileSync(path.join(PUBLIC, 'app', 'providers-ui.js'), 'utf8');
   const injection = `<script>window.__BOOT__=${JSON.stringify(boot).replace(/</g, '\\u003c')};</script>\n<script>${bridgeJs}</script>`;
   const html = raw.replace('<body>', `<body>\n${injection}`);
 
@@ -78,6 +79,7 @@ async function startUi(overrides, bridgeAnswer) {
   // run the deferred scripts manually (jsdom does not download them here)
   window.eval(pinStudioJs);
   window.eval(seoAnalyzerJs);
+  window.eval(providersUiJs);
   window.eval(feedspyJs);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 100));

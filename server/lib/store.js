@@ -17,7 +17,7 @@ const reqContext = require('./reqContext');
 // pre-multiuser workspace). Per-tenant paths resolve dynamically through
 // reqContext.getDataDir() (data/users/<id>/ for issued access-code users).
 const DATA_DIR = reqContext.ROOT_DATA_DIR;
-const SECRET_FIELDS = ['articleApiKey', 'wordpressAppPassword', 'imageApiToken', 'pinterestAccessToken', 'facebookAccessToken', 'scraperApiKey'];
+const SECRET_FIELDS = ['articleApiKey', 'wordpressAppPassword', 'imageApiToken', 'pinterestAccessToken', 'facebookAccessToken', 'scraperApiKey', 'articleFallbackApiKey'];
 const SECRET_ENC_PREFIX = 'enc:v1:';
 const PBKDF2_ITERATIONS = 120000;
 
@@ -156,6 +156,14 @@ function getSettingsSummary(siteId) {
       : [],
     articleImageCount: Number(saved.articleImageCount) || 0,
     pinStudioEnabled: saved.pinStudioEnabled !== false,
+    seoExternalLinks: saved.seoExternalLinks !== false,
+    textProvider: saved.textProvider || '',
+    articleAccountId: saved.articleAccountId || '',
+    textFallbackProvider: saved.textFallbackProvider || '',
+    articleFallbackBaseUrl: saved.articleFallbackBaseUrl || '',
+    articleFallbackModel: saved.articleFallbackModel || '',
+    articleFallbackAccountId: saved.articleFallbackAccountId || '',
+    articleFallbackConfigured: !!(saved.articleFallbackModel && (saved.articleFallbackApiKey || saved.textFallbackProvider === 'ollama')),
     scraperApiBaseUrl: saved.scraperApiBaseUrl || '',
     scraperApiConfigured: !!saved.scraperApiKey,
   };

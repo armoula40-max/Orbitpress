@@ -218,20 +218,57 @@
       }
     }
 
+    // ---- Deterministic readability checks (suggestions, non-blocking) ----
+    const paragraphs = String(d.contentHtml || '').match(/<p\b[^>]*>([\s\S]*?)<\/p>/gi) || [];
+    const pLengths = paragraphs.map((p) => wordCount(p));
+    const longestParagraph = pLengths.reduce((m, n) => Math.max(m, n), 0);
+    add('readability-paragraphs', 'فقرات قصيرة قابلة للقراءة (لا توجد كتلة نصية طويلة جدًا)',
+      longestParagraph === 0 || longestParagraph <= 120 ? 'good' : 'warn',
+      longestParagraph ? `أطول فقرة ${longestParagraph} كلمة` : '');
+    checks[checks.length - 1].blocking = false;
+    const hasList = /<(ul|ol)\b/i.test(String(d.contentHtml || ''));
+    add('readability-lists', 'قوائم نقطية/مرقمة حيثما يكون ذلك مناسبًا', hasList ? 'good' : 'warn', '');
+    checks[checks.length - 1].blocking = false;
+    // every embedded <img> must carry an alt attribute
+    const imgTags = String(d.contentHtml || '').match(/<img\b[^>]*>/gi) || [];
+    const missingAlt = imgTags.filter((tag) => !/\balt\s*=/.test(tag) || /\balt\s*=\s*(""|'')/.test(tag)).length;
+    add('img-alt-required', 'لكل صورة داخل المقال نص بديل (alt) غير فارغ',
+      missingAlt === 0 ? 'good' : 'bad', imgTags.length ? `${imgTags.length - missingAlt}/${imgTags.length} صورة` : 'لا صور داخل المتن');
+
     // Score: green = 1, warn = 0.55, bad/info = 0. Checks flagged non-blocking
     // (recommendations like an outbound reference link) are displayed but
     // never stop the post reaching 100.
     const weights = { warn: 0.55, good: 1, bad: 0 };
     const graded = checks.filter((c) => c.status !== 'info' && c.blocking !== false);
-    const suggestions = checks.filter((c) => c.blocking === false && c.status !== 'good');
     const score = graded.length
       ? Math.round(graded.reduce((sum, c) => sum + (weights[c.status] || (c.status === 'warn' ? 0.55 : 0)), 0) / graded.length * 100)
       : 0;
+
+    // Detailed scorecard: Technical / On-page / Readability / Media / Schema.
+    const GROUP_DEFS = [
+      { id: 'technical', label: 'SEO التقني', max: 25, ids: ['kp', 'seo-title', 'seo-title-length', 'meta-desc', 'meta-desc-length', 'slug', 'previous'] },
+      { id: 'onpage', label: 'تحسين الصفحة', max: 25, ids: ['intro', 'density', 'subheadings', 'h2-count', 'length', 'internal', 'external'] },
+      { id: 'readability', label: 'سهولة القراءة', max: 20, ids: ['readability-paragraphs', 'readability-lists'] },
+      { id: 'media', label: 'الصور والوسائط', max: 15, ids: ['img-alt', 'img-alt-required'] },
+      { id: 'schema', label: 'المخطط (Schema)', max: 15, ids: ['recipe-data', 'recipe-schema', 'article-schema'] },
+    ];
+    const byId = Object.fromEntries(checks.map((c) => [c.id, c]));
+    const groups = GROUP_DEFS.map((g) => {
+      const present = g.ids.map((id) => byId[id]).filter(Boolean);
+      const ratio = present.length
+        ? present.reduce((sum, c) => sum + (weights[c.status] || (c.status === 'warn' ? 0.55 : 0)), 0) / present.length
+        : 1;
+      return { id: g.id, label: g.label, max: g.max, score: Math.round(ratio * g.max), ratio: Math.round(ratio * 100) };
+    });
+
     const status = score >= 85 ? 'good' : score >= 60 ? 'warn' : 'bad';
+    const blockers = graded.filter((c) => c.status === 'bad');
     return {
       score,
       status,
       checks,
+      groups,
+      blockers,
       stats: { words, target, rtl },
       bad: checks.filter((c) => c.status === 'bad').length,
       warn: checks.filter((c) => c.status === 'warn').length,
