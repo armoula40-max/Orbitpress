@@ -245,6 +245,9 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         when (request.getString("type")) {
           "analyzeSocialKeywords" -> analyzeSocialKeywords(request)
           "analyzePinterestKeywords" -> analyzePinterestKeywords(request)
+          "pinterestTrends" -> pinterestTrends(request)
+          "pinfluxPlan" -> pinfluxPlan(request)
+          "imageSlotPlan" -> imageSlotPlan(request)
           "facebookGraphScan" -> facebookGraphScan(request)
           "pinterestApiScan" -> pinterestApiScan(request)
           "scraperFacebook" -> scraperScan(request, "facebook")
@@ -296,6 +299,37 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     cookieValues.forEach { (name, value) -> cookies.put(JSONObject().put("name", name).put("value", value)) }
     val body = JSONObject().put("url", url).put(if (platform == "facebook") "maxPosts" else "maxItems", limit).put("cookies", cookies)
     return JSONObject(http(endpoint, "POST", mapOf("Content-Type" to "application/json", "Accept" to "application/json", "x-orbitpress-key" to key), body.toString().toByteArray(StandardCharsets.UTF_8)))
+  }
+  private fun pinterestTrends(request: JSONObject): JSONObject {
+    val query = request.optString("query").trim()
+    require(query.isNotBlank()) { "Enter a keyword or niche before reading Pinterest Trends." }
+    val raw = request.optJSONArray("results") ?: JSONArray()
+    return JSONObject().put("ok", true).put("source", "https://trends.pinterest.com/").put("query", query).put("results", PinterestTrendsContract.normalize(raw, query))
+  }
+  private fun pinfluxPlan(request: JSONObject): JSONObject {
+    val source = request.optString("sourcePinId").trim()
+    val groups = mutableListOf<PinFluxGroup>()
+    val rawGroups = request.optJSONArray("groups") ?: JSONArray()
+    for (i in 0 until rawGroups.length()) {
+      val item = rawGroups.optJSONObject(i) ?: continue
+      groups += PinFluxGroup(item.optString("id"), item.optString("name"), item.optString("parentId").ifBlank { null }, item.optInt("delaySeconds", 30), item.optInt("maxOperations", 20), item.optBoolean("enabled", true))
+    }
+    val accounts = mutableListOf<PinFluxAccount>()
+    val rawAccounts = request.optJSONArray("accounts") ?: JSONArray()
+    for (i in 0 until rawAccounts.length()) {
+      val item = rawAccounts.optJSONObject(i) ?: continue
+      accounts += PinFluxAccount(item.optString("id"), item.optString("name"), item.optString("boardId"), item.optString("groupId"), item.optBoolean("enabled", true))
+    }
+    val errors = PinFluxContract.validate(groups, accounts, source)
+    val completed = mutableSetOf<String>(); val rawCompleted = request.optJSONArray("completed") ?: JSONArray()
+    for (i in 0 until rawCompleted.length()) completed += rawCompleted.optString(i)
+    val errorJson = JSONArray(); errors.forEach { errorJson.put(it) }
+    return JSONObject().put("ok", errors.isEmpty()).put("errors", errorJson).put("action", "save_or_repin").put("operations", PinFluxContract.nextOperations(source, groups, accounts, completed))
+  }
+  private fun imageSlotPlan(request: JSONObject): JSONObject {
+    val slots = OrbitPressImageSlotContract.plan(request.optJSONObject("draft") ?: JSONObject(), request.optInt("count", 4))
+    val output = JSONArray(); slots.forEach { output.put(JSONObject().put("id", it.id).put("role", it.role).put("section", it.section).put("prompt", it.prompt).put("altText", it.altText).put("required", it.required)) }
+    return JSONObject().put("ok", true).put("slots", output)
   }
 
   private fun facebookGraphScan(request: JSONObject): JSONObject {
@@ -853,6 +887,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     var currentUrl = url
     var currentMethod = method
     var currentBody = body
+    var retryAttempt = 0
     repeat(4) { hop ->
       val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = currentMethod
@@ -863,6 +898,12 @@ private class NativeBridge(private val activity: Activity, private val webView: 
         if (currentBody != null) { doOutput = true; outputStream.use { it.write(currentBody!!) } }
       }
       val status = connection.responseCode
+      if (OrbitPressRetryPolicy.shouldRetry(status) && retryAttempt < 3) {
+        val retryAfter = connection.getHeaderField("Retry-After")?.toLongOrNull()
+        Thread.sleep(OrbitPressRetryPolicy.delayMillis(retryAttempt, retryAfter))
+        retryAttempt += 1
+        return@repeat
+      }
       if (status in 300..399) {
         val location = connection.getHeaderField("Location")?.trim().orEmpty()
         if (location.isBlank()) throw IllegalStateException("Request failed ($status): redirect without Location")
