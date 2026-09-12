@@ -65,7 +65,66 @@ const saveWorkspaceHandler = asyncRoute(async (req, res) => {
 // POST accepted as well because beforeunload flushes via navigator.sendBeacon (POST only).
 router.put('/workspace', saveWorkspaceHandler);
 router.post('/workspace', saveWorkspaceHandler);
-
+// ---------------------------------------------------------------------------
+// Pinterest PinFlux — deterministic hierarchy and duplicate-safe planning.
+// The plan is intentionally separate from execution: saving/repinning is an
+// external Pinterest action and is only allowed after the user reviews it.
+// ---------------------------------------------------------------------------
+function pinfluxState() {
+  const workspace = store.loadWorkspace() || {};
+  const saved = workspace.pinflux && typeof workspace.pinflux === 'object' ? workspace.pinflux : {};
+  return {
+    sourcePinId: String(saved.sourcePinId || ''),
+    groups: Array.isArray(saved.groups) ? saved.groups : [],
+    accounts: Array.isArray(saved.accounts) ? saved.accounts : [],
+    completed: Array.isArray(saved.completed) ? saved.completed : [],
+  };
+}
+function pinfluxNormalize(input) {
+  const source = input || {};
+  const groups = (Array.isArray(source.groups) ? source.groups : []).map((g, index) => ({
+    id: String(g && g.id || `group-${index + 1}`).trim().slice(0, 80),
+    name: String(g && g.name || `Group ${index + 1}`).trim().slice(0, 120),
+    parentId: String(g && g.parentId || '').trim().slice(0, 80) || null,
+    delaySeconds: Math.max(5, Math.min(86400, Number(g && g.delaySeconds) || 30)),
+    maxOperations: Math.max(1, Math.min(500, Number(g && g.maxOperations) || 20)),
+    enabled: g && g.enabled !== false,
+  }));
+  const groupIds = new Set(groups.map((g) => g.id));
+  groups.forEach((g) => { if (g.parentId && !groupIds.has(g.parentId)) g.parentId = null; });
+  const accounts = (Array.isArray(source.accounts) ? source.accounts : []).map((a, index) => ({
+    id: String(a && a.id || `account-${index + 1}`).trim().slice(0, 120),
+    name: String(a && a.name || a && a.id || `Account ${index + 1}`).trim().slice(0, 120),
+    boardId: String(a && a.boardId || '').trim().slice(0, 240),
+    groupId: String(a && a.groupId || '').trim().slice(0, 80),
+    enabled: a && a.enabled !== false,
+  })).filter((a) => a.id && a.boardId && groupIds.has(a.groupId));
+  return { sourcePinId: String(source.sourcePinId || '').trim().slice(0, 120), groups, accounts, completed: Array.isArray(source.completed) ? source.completed.map(String).slice(0, 5000) : [] };
+}
+router.get('/pinflux/state', (req, res) => res.json({ ok: true, ...pinfluxState() }));
+router.put('/pinflux/state', asyncRoute(async (req, res) => {
+  const workspace = store.loadWorkspace() || {};
+  workspace.pinflux = pinfluxNormalize(req.body || {});
+  store.saveWorkspace(workspace);
+  res.json({ ok: true, ...workspace.pinflux });
+}));
+router.post('/pinflux/plan', asyncRoute(async (req, res) => {
+  const data = pinfluxNormalize(req.body || {});
+  const errors = [];
+  if (!data.sourcePinId) errors.push('أدخل معرّف الـPin الأصلي.');
+  if (!data.groups.length) errors.push('أضف مجموعة واحدة على الأقل.');
+  const groupMap = new Map(data.groups.map((g) => [g.id, g]));
+  const operations = [];
+  data.groups.filter((g) => g.enabled).forEach((group) => {
+    data.accounts.filter((a) => a.enabled && a.groupId === group.id).slice(0, group.maxOperations).forEach((account) => {
+      const key = `${data.sourcePinId}:${account.id}:${account.boardId}`;
+      if (data.completed.includes(key)) return;
+      operations.push({ key, pinId: data.sourcePinId, accountId: account.id, accountName: account.name, boardId: account.boardId, groupId: group.id, parentGroupId: group.parentId, delaySeconds: group.delaySeconds, action: 'save_or_repin' });
+    });
+  });
+  if (data.accounts.some((a) => !groupMap.has(a.groupId))) errors.push('كل حساب يجب أن يرتبط بمجموعة موجودة.');
+  res.json({ ok: errors.length === 0, errors, action: 'save_or_repin', operations });
+}));
 router.get('/settings', (req, res) => {
   res.json(store.getSettingsSummary(req.query.siteId || 'site-default'));
 });
