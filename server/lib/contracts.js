@@ -82,9 +82,9 @@ const DraftContract = {
       }
     }
     recipes.forEach((item, index) => {
-      if (!item.isRecipe) throw new Error(`Recipe ${index + 1} was missing recipe details.`);
+      if (!item.isRecipe) throw new Error(`Recipe ${index + 1} was missing recipe details (the ${index + 1 === 1 ? 'first' : `recipe ${index + 1}`} item in recipes[] was not a recipe object).`);
       if (!(item.ingredients.length > 0 && item.instructions.length >= 4 && item.instructions.length <= 9)) {
-        throw new Error(`Recipe ${index + 1} was incomplete.`);
+        throw new Error(`Recipe ${index + 1} was incomplete (ingredients: ${item.ingredients.length}, instructions: ${item.instructions.length}; need ≥1 ingredient and 4–9 steps).`);
       }
     });
     const pinterestSource = optObj(raw.pinterest);
@@ -261,6 +261,22 @@ function stringArray(source, maxItems, maxLength) {
   return out;
 }
 
+/**
+ * Models frequently return list fields as ONE newline/bullet-separated
+ * string instead of an array. Coerce both shapes: split on newlines, bullets
+ * (•, -, *, ▪), Arabic semicolons/commas-with-digits and numbered prefixes.
+ */
+function coerceStringList(source, maxItems, maxLength) {
+  if (typeof source === 'string') {
+    const parts = source
+      .split(/\r?\n|•|▪|◦|(?:^|\s)[-*](?=\s)|؛|;\s*\n?|(?=\s*\d+[).、])/)
+      .map((s) => s.replace(/^\s*\d+[).、]\s*/, '').replace(/^\s*[-*•]\s*/, '').trim())
+      .filter(Boolean);
+    return parts.map((s) => s.slice(0, maxLength)).slice(0, maxItems);
+  }
+  return stringArray(source, maxItems, maxLength);
+}
+
 function emptyRecipe() {
   return {
     isRecipe: false,
@@ -279,14 +295,25 @@ function emptyRecipe() {
 function normalizeRecipe(source, contentType) {
   if (contentType !== 'recipe') return emptyRecipe();
   const recipe = optObj(source) || {};
-  const ingredients = stringArray(recipe.ingredients, 30, 260);
-  const notes = stringArray(recipe.notes, 3, 360);
+  const ingredients = coerceStringList(recipe.ingredients, 30, 260);
+  const notes = coerceStringList(recipe.notes, 3, 360);
   const instructions = [];
-  optArr(recipe.instructions).slice(0, 9).forEach((item, index) => {
-    if (!optObj(item)) return;
-    const name = optStr(item.name).trim().slice(0, 120) || `Step ${index + 1}`;
-    const text = optStr(item.text).trim().slice(0, 900);
-    if (text) instructions.push({ name, text });
+  // Steps may arrive as {name,text} objects, plain strings, or one
+  // newline/numbered string — accept all three without dropping content.
+  const rawSteps = Array.isArray(recipe.instructions)
+    ? recipe.instructions.slice(0, 9)
+    : (typeof recipe.instructions === 'string'
+      ? coerceStringList(recipe.instructions, 9, 900)
+      : []);
+  rawSteps.forEach((item, index) => {
+    if (optObj(item)) {
+      const name = optStr(item.name).trim().slice(0, 120) || `Step ${index + 1}`;
+      const text = optStr(item.text).trim().slice(0, 900);
+      if (text) instructions.push({ name, text });
+    } else {
+      const text = optStr(item).replace(/^\s*\d+[).、]\s*/, '').trim().slice(0, 900);
+      if (text) instructions.push({ name: `Step ${index + 1}`, text });
+    }
   });
   return {
     isRecipe: true,

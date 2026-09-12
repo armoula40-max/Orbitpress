@@ -341,6 +341,7 @@ function sampleArticleJson() {
 
 function startArticleApiMock(options = {}) {
   const calls = [];
+  const payloadQueue = Array.isArray(options.payloads) ? options.payloads.slice() : null;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -382,8 +383,12 @@ function startArticleApiMock(options = {}) {
         res.end(JSON.stringify({ error: { message: `max_tokens must be at most ${options.rejectMaxTokens}` } }));
         return;
       }
+      // A payloads[] queue models a first incomplete reply followed by a
+      // repaired complete reply; after it drains, fall back to options.payload.
+      const queued = payloadQueue && payloadQueue.length ? payloadQueue.shift() : null;
+      const finishReason = payloadQueue ? (payloadQueue.length ? 'length' : 'stop') : (options.finishReason || 'stop');
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(options.payload || sampleArticleJson()) } }] }));
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(queued || options.payload || sampleArticleJson()) }, finish_reason: finishReason }] }));
     });
   });
   return new Promise((resolve) => {

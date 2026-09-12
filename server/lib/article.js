@@ -94,11 +94,13 @@ async function requestArticleCompletion({ settings, messages, temperature = 0.2,
     provenance.attempts.push({
       role, provider: cfg.presetId, label: cfg.label, model: cfg.model,
       mode: result.mode, ok: true, latencyMs: Date.now() - started,
+      finishReason: result.finishReason || '',
     });
     provenance.generatedBy = role === 'fallback' ? `${cfg.label} · ${cfg.model}` : `${cfg.label} · ${cfg.model}`;
     return {
       response: { choices: [{ message: { content: result.content } }], usage: result.usage },
       mode: result.mode,
+      finishReason: result.finishReason || '',
       cfg,
       provenance,
     };
@@ -193,29 +195,85 @@ async function generate(request) {
     { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
     { role: 'user', content: prompt },
   ];
-  const first = await requestArticleCompletion({ settings, messages, temperature: 0.7, maxTokens });
-  const content = first.response.choices && first.response.choices[0] && first.response.choices[0].message && first.response.choices[0].message.content;
-  let draft = parseArticleDraft(content, category, keyword);
-  let provenance = first.provenance;
-  if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
-    const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
-    const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
-    const repairMessages = [
-      { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
-      { role: 'user', content: `${prompt}\n${repairInstruction}` },
-    ];
-    const repaired = await requestArticleCompletion({ settings, messages: repairMessages, temperature: 0.4, maxTokens });
-    const repairedContent = repaired.response.choices && repaired.response.choices[0] && repaired.response.choices[0].message && repaired.response.choices[0].message.content;
-    draft = parseArticleDraft(repairedContent, category, keyword);
-    provenance = {
-      ...repaired.provenance,
-      attempts: [...provenance.attempts, ...repaired.provenance.attempts],
-      repairPasses: 1,
-      repairReason: issue,
-    };
+  // Soft parse: a malformed/truncated roundup response must NOT surface as a
+  // raw "Recipe N was incomplete" error before the repair loop gets a chance.
+  const tryParse = (text, finishReason) => {
+    try {
+      return { draft: parseArticleDraft(text, category, keyword) };
+    } catch (error) {
+      const reason = String(error && error.message || error);
+      const truncated = finishReason === 'length'
+        || /unexpected end|truncat|unterminated|expected|end of (json|input)/i.test(reason);
+      return { error: reason, truncated };
+    }
+  };
+
+  const isRecipeError = (msg) => requestedRecipeCount > 0
+    || /recipe content was (missing|incomplete)|recipe \d+ was (incomplete|missing)/i.test(String(msg || ''));
+
+  let attempt = await requestArticleCompletion({ settings, messages, temperature: 0.7, maxTokens });
+  let provenance = attempt.provenance;
+  let content = attempt.response.choices && attempt.response.choices[0] && attempt.response.choices[0].message && attempt.response.choices[0].message.content;
+  let parsed = tryParse(content, attempt.finishReason);
+  let repairPasses = 0;
+  let issue = parsed.error || '';
+  let truncated = !!parsed.truncated || attempt.finishReason === 'length';
+
+  const recipeProblem = () => {
+    if (parsed.error) return parsed.error;
+    if (requestedRecipeCount > 0) {
+      const check = LongFormCompletenessContract.validate(parsed.draft, requestedRecipeCount);
+      return check.valid ? '' : check.reason;
+    }
+    return '';
+  };
+
+  // A recipe-bearing response (single or roundup) is repaired when parsing
+  // failed, a recipe is incomplete, or the provider cut the output off.
+  let problem = recipeProblem();
+  const needsRepair = () => (parsed.error ? isRecipeError(parsed.error) : !!problem)
+    || (truncated && requestedRecipeCount > 0);
+
+  if (needsRepair()) {
+    const MAX_REPAIR_PASSES = 2;
+    for (let pass = 1; pass <= MAX_REPAIR_PASSES && (parsed.error || problem || (truncated && requestedRecipeCount > 0)); pass += 1) {
+      issue = problem || parsed.error || (truncated ? 'the response was cut off before all recipes were returned (output length limit)' : '');
+      repairPasses = pass;
+      const repairInstruction = resolvePrompt(
+        settings.recipeRepairPrompt,
+        PROMPT_DEFAULTS.recipeRepairInstruction,
+        { count: requestedRecipeCount || 1, issue },
+      );
+      const truncationNote = truncated
+        ? `\nIMPORTANT: the previous response was TRUNCATED by the output length limit (${maxTokens} tokens). Re-output the COMPLETE valid JSON in one response, compactly: shorten each step to 1-2 sentences, omit decorative prose, but include EVERY one of the ${requestedRecipeCount || 1} recipe(s) with every required field.`
+        : '';
+      const repairMessages = [
+        { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
+        { role: 'user', content: `${prompt}\n${repairInstruction}${truncationNote}` },
+      ];
+      // A truncating provider may accept a larger budget; never below the
+      // initial budget (the adapter ladder already shrinks when capped).
+      attempt = await requestArticleCompletion({ settings, messages: repairMessages, temperature: 0.4, maxTokens: truncated ? Math.round(maxTokens * 1.25) : maxTokens });
+      provenance = {
+        ...attempt.provenance,
+        attempts: [...provenance.attempts, ...attempt.provenance.attempts],
+        repairPasses: pass,
+        repairReason: issue,
+      };
+      content = attempt.response.choices && attempt.response.choices[0] && attempt.response.choices[0].message && attempt.response.choices[0].message.content;
+      truncated = attempt.finishReason === 'length';
+      parsed = tryParse(content, attempt.finishReason);
+      problem = recipeProblem();
+      if (!parsed.error && !problem && !(truncated && requestedRecipeCount > 0)) break;
+    }
+  }
+
+  if (parsed.error) throw new Error(parsed.error);
+  let draft = parsed.draft;
+  if (requestedRecipeCount > 0) {
     const completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
     if (!completeness.valid) {
-      throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
+      throw new Error(`The Article API returned incomplete recipe output after ${repairPasses + 1} attempt(s): ${completeness.reason}. Retry, or use a model with a longer output limit for roundups (each recipe needs ingredients, 4–9 steps, timings, yield and a note).`);
     }
   }
   // Non-secret generation provenance: which provider/model actually answered,

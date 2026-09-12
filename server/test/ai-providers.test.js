@@ -286,3 +286,122 @@ test('drafts carry non-secret generation provenance through generate()', async (
   const serialized = JSON.stringify(result.draft.generation);
   assert.equal(serialized.includes('sk-primary-secret'), false, 'no api key leaks into provenance');
 });
+
+// ---------------------------------------------------------------------------
+// Roundup completeness: tolerant parsing + automatic repair of "Recipe N was
+// incomplete" instead of a hard failure.
+// ---------------------------------------------------------------------------
+
+const { DraftContract, LongFormCompletenessContract } = require('../lib/contracts');
+
+function roundupFixture(overrides = {}) {
+  const filler = Array.from({ length: 80 }, (_, i) => `Step guidance paragraph number ${i} with useful detail about the recipes.`).join(' ');
+  const recipe = (n, extra = {}) => ({
+    isRecipe: true,
+    title: `Chicken recipe ${n}`,
+    description: `A complete description for recipe ${n}.`,
+    prepTime: 'PT10M', cookTime: 'PT20M', totalTime: 'PT30M',
+    recipeYield: '4 servings', cuisine: 'International',
+    ingredients: ['500 g chicken', '1 tsp salt', '1 tbsp oil', '1 onion'],
+    instructions: [
+      { name: 'Prep', text: `Recipe ${n}: prep the ingredients.` },
+      { name: 'Cook', text: `Recipe ${n}: cook thoroughly.` },
+      { name: 'Rest', text: `Recipe ${n}: rest briefly.` },
+      { name: 'Serve', text: `Recipe ${n}: serve warm.` },
+    ],
+    notes: ['Use fresh herbs.'],
+    ...extra,
+  });
+  return {
+    title: 'Two easy chicken recipes',
+    metaDescription: 'Two easy chicken recipes for weeknight dinners with simple ingredients.',
+    seoTitle: 'Two easy chicken recipes for quick dinners at home',
+    seoDescription: 'Two easy chicken recipes for weeknight dinners, with full ingredients, steps and tips for a juicy result every time.',
+    focusKeyphrase: 'two easy chicken recipes',
+    slug: 'two-easy-chicken-recipes',
+    contentType: 'article',
+    categoryName: 'Chicken',
+    htmlContent: `<h2>Introduction</h2><p>${filler}</p>`,
+    internalLinks: [], externalReferences: [], secondaryKeywords: [],
+    outline: [{ heading: 'First recipe', keyPoints: ['a'] }],
+    recipes: [recipe(1), recipe(2)],
+    recipe: { isRecipe: false },
+    pinterest: { title: 'Two easy chicken recipes', altText: 'Two easy chicken recipes pin cover' },
+    ...overrides,
+  };
+}
+
+test('recipe fields tolerate newline-string ingredients and plain-string steps', () => {
+  const fixture = roundupFixture({
+    recipes: [{
+      isRecipe: true, title: 'Loose-format recipe', description: 'desc',
+      prepTime: 'PT5M', cookTime: 'PT15M', recipeYield: '2', cuisine: 'x',
+      ingredients: '2 cups flour\n1 cup milk\n• 1 egg\n▪ 1 tsp salt',
+      instructions: ['Mix the dry ingredients.', 'Add the milk and egg.', 'Cook on medium heat.', 'Serve immediately.'],
+      notes: 'Best warm\n',
+    }],
+  });
+  const draft = DraftContract.normalize(fixture, 'Chicken');
+  assert.equal(draft.recipes[0].ingredients.length, 4, 'newline/bullet string split into ingredients');
+  assert.equal(draft.recipes[0].instructions.length, 4, 'plain string steps accepted');
+  assert.equal(draft.recipes[0].notes.length, 1);
+});
+
+test('incomplete recipe errors name the actual missing counts', () => {
+  const fixture = roundupFixture();
+  fixture.recipes[0].ingredients = [];
+  fixture.recipes[0].instructions = [{ name: 'a', text: 'only one step' }];
+  assert.throws(
+    () => DraftContract.normalize(fixture, 'Chicken'),
+    /Recipe 1 was incomplete \(ingredients: 0, instructions: 1/,
+  );
+});
+
+test('an incomplete first roundup reply is repaired automatically and logged', async (t) => {
+  const complete = roundupFixture();
+  const incomplete = roundupFixture({
+    recipes: [{
+      isRecipe: true, title: 'Chicken recipe 1', description: 'd',
+      prepTime: 'PT1M', cookTime: 'PT1M', recipeYield: '1', cuisine: 'x',
+      ingredients: ['a'], instructions: [{ name: 's', text: 'only one short step' }], notes: ['n'],
+    }],
+  });
+  const api = await mocks.startArticleApiMock({ payloads: [incomplete, complete] });
+  t.after(() => api.server.close());
+  store.saveSiteSettings({
+    textProvider: 'custom',
+    articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'sk',
+  }, 'site-roundup-repair');
+  const result = await article.generate({
+    siteId: 'site-roundup-repair',
+    keyword: '2 easy chicken recipes', niche: 'food', contentType: 'auto', categoryName: 'Chicken',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.draft.recipes.length, 2);
+  assert.ok(result.draft.generation.repairPasses >= 1, 'repair pass recorded on the draft');
+  const check = LongFormCompletenessContract.validate(result.draft, 2);
+  assert.equal(check.valid, true, check.reason);
+});
+
+test('a roundup that stays incomplete after repair fails with the exact recipe reason', async (t) => {
+  const bad = roundupFixture({
+    recipes: [{
+      isRecipe: true, title: 'Only recipe', description: 'd',
+      prepTime: 'PT1M', cookTime: 'PT1M', recipeYield: '1', cuisine: 'x',
+      ingredients: ['a'], instructions: [{ name: 's', text: 'one step' }], notes: ['n'],
+    }],
+  });
+  const api = await mocks.startArticleApiMock({ payloads: [bad, bad, bad] });
+  t.after(() => api.server.close());
+  store.saveSiteSettings({
+    textProvider: 'custom',
+    articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'sk',
+  }, 'site-roundup-stuck');
+  await assert.rejects(
+    () => article.generate({
+      siteId: 'site-roundup-stuck',
+      keyword: '2 easy chicken recipes', niche: 'food', contentType: 'auto', categoryName: 'Chicken',
+    }),
+    /incomplete recipe output|incomplete/,
+  );
+});
