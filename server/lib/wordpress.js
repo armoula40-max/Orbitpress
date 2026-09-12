@@ -723,6 +723,17 @@ async function resolvePublishedLink(root, settings, createdPost, slug) {
   };
 }
 
+async function publishStage(label, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error && error.cloudflare) {
+      error.message = `${error.message} المرحلة المتأثرة: ${label}.`;
+    }
+    throw error;
+  }
+}
+
 async function publish(request) {
   const settings = requireWordPressSettings(request);
   const draft = request.draft || {};
@@ -792,13 +803,13 @@ async function publish(request) {
     throw error;
   }
 
-  const featuredMedia = await uploadMedia(root, settings, featured, `${slug}-featured`, featuredAlt);
-  const pinterestMedia = await uploadMedia(root, settings, pinterest, `${slug}-pinterest`, pinterestAlt);
+  const featuredMedia = await publishStage('رفع الصورة البارزة إلى WordPress', () => uploadMedia(root, settings, featured, `${slug}-featured`, featuredAlt));
+  const pinterestMedia = await publishStage('رفع صورة Pinterest إلى WordPress', () => uploadMedia(root, settings, pinterest, `${slug}-pinterest`, pinterestAlt));
   const uploadedAdditional = [];
   for (let index = 0; index < Math.min(additional.length, 8); index += 1) {
     const reference = String(additional[index] || '').trim();
     if (!reference) continue;
-    const media = await uploadMedia(root, settings, parseImage(reference, false, request.siteId || 'site-default'), `${slug}-inline-${index + 1}`, `${draft.title || ''} image ${index + 1}`);
+    const media = await publishStage(`رفع الصورة داخل المقال رقم ${index + 1}`, () => uploadMedia(root, settings, parseImage(reference, false, request.siteId || 'site-default'), `${slug}-inline-${index + 1}`, `${draft.title || ''} image ${index + 1}`));
     uploadedAdditional.push(media.source_url);
   }
   const content = assemblePublishedHtml({
@@ -839,7 +850,7 @@ async function publish(request) {
     rank_math_focus_keyword: keyphrase,
     rank_math_canonical_url: draft.canonicalUrl ? SeoContract.canonical(draft.canonicalUrl) : previewCanonical,
   };
-  const published = await requestJson(`${root}/wp-json/wp/v2/posts`, 'POST', wordpressHeaders(settings), post);
+  const published = await publishStage('إنشاء المقال في WordPress', () => requestJson(`${root}/wp-json/wp/v2/posts`, 'POST', wordpressHeaders(settings), post));
   const resolution = await resolvePublishedLink(root, settings, published, slug);
   const finalCanonical = resolution.plainPermalinks ? resolution.url : Seo.canonicalFor(root, slug);
   if (resolution.plainPermalinks) {

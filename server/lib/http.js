@@ -48,10 +48,16 @@ async function request(url, method, headers = {}, bodyBytes = null, options = {}
     }
     const buffer = Buffer.from(await response.arrayBuffer());
     if (status < 200 || status > 299) {
-      const snippet = buffer.toString('utf8').slice(0, 280);
-      const error = new Error(`Request failed (${status}): ${snippet}`);
+      const body = buffer.toString('utf8');
+      const snippet = body.slice(0, 280);
+      const cloudflare522 = status === 522 && /cloudflare|connection timed out|error 522/i.test(body);
+      const message = cloudflare522
+        ? 'WordPress لم يستجب عبر Cloudflare (522). الخادم الأصلي أو PHP-FPM غير متاح أو أبطأ من مهلة Cloudflare. تحقق من حالة VPS وNginx/Apache وPHP-FPM وقاعدة البيانات، ثم جرّب النشر بعد عودة الموقع.'
+        : `Request failed (${status}): ${snippet}`;
+      const error = new Error(message);
       error.status = status;
-      error.body = snippet;
+      error.body = cloudflare522 ? 'Cloudflare 522 origin timeout' : snippet;
+      error.cloudflare = cloudflare522;
       throw error;
     }
     return buffer;
