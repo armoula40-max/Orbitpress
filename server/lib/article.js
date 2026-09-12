@@ -27,7 +27,7 @@ const PROMPT_DEFAULTS = {
   articleSystem: "You are Askinz's exacting content editor and technical SEO strategist optimizing for a guaranteed 100/100 score in both Rank Math and Yoast. You write in the SAME language and script as the primary keyword (Modern Standard Arabic for Arabic keywords, natural English for English ones). Adapt vocabulary, examples, safety guidance, and expertise to the requested niche. Produce genuinely helpful original content for practical search intent; use cooking rules only when the niche and keyword are genuinely food-related. Never fabricate reviews, ratings, citations, testing, nutrition, calories, provenance, medical advice, or ranking promises. Never invent URLs or statistics. Keyword usage must read naturally — no stuffing. Use only semantic HTML allowed in a WordPress post body (h2, h3, p, ul, ol, li, strong, em, table, figure, img are fine).",
   recipeRepairSystem: 'You are a strict recipe-roundup completion editor. Never summarize requested recipes; return every complete recipe.',
   recipeRepairInstruction: 'CRITICAL COMPLETENESS REPAIR: return exactly {count} fully populated objects in recipes[]. Do not return a summary, names only, or a single recipe. Every object must include a title, description, at least 4 ingredients with quantities, prep time, cook time, yield, 4 to 9 numbered instructions, and at least one useful note. The collection body must be long and detailed. Previous output problem: {issue}',
-  analyzer: 'You are a {platform} content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim.',
+  analyzer: 'You are a {platform} content analyst. Analyze only the supplied posts. Return strict JSON with keys summary, reason, primaryKeywords, longTailKeywords, relatedKeywords, topics, winningPhrases, searchIntent, titlePatterns, contentAngles. Keep extracted keywords separate from AI suggestions. Do not copy a post verbatim. For Pinterest, never use a generic Pin title as the keyword source: use description/body, board name, alt text, outbound URL and repeated topic entities as evidence; reject title-only phrases and return search-ready 2–5 word topic phrases.',
   viral: 'You are an SEO editor. For each supplied post propose exactly one precise search keyword, a writing angle and the content type (recipe or article). Return strict JSON: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. Never copy the post title verbatim.',
   viralAr: 'أنت محرر SEO. لكل منشور مرقق، اقترح كلمة مفتاحية بحثية واحدة دقيقة وزاوية كتابة واضحة ونوع المحتوى (recipe أو article). أعد JSON صارماً: {"items":[{"id":"...","keyword":"...","angle":"...","contentType":"recipe|article"}]}. لا تنسخ عنوان المنشور حرفياً.',
   feedspy: 'You are an expert FeedSpy-style social content analyst. Analyze only the supplied posts and the stats block. Return strict JSON with keys: headline, executiveSummary, viralPatterns, primaryKeywords, longTailKeywords, topics, winningPhrases, bestTimeAdvice, contentAngles, competitorWatch, planOfAction. Lists are plain string arrays. Never copy a post verbatim.',
@@ -321,14 +321,25 @@ async function analyzeKeywords(request, platformHint) {
   const compact = posts.map((post) => ({
     title: String(post.title || '').slice(0, 500),
     text: String(post.text || '').slice(0, 1800),
+    description: String(post.description || post.text || '').slice(0, 1800),
+    boardName: String(post.boardName || '').slice(0, 240),
+    altText: String(post.altText || post.imageAlt || '').slice(0, 500),
+    outboundUrl: String(post.outboundUrl || post.link || '').slice(0, 500),
+    keywords: Array.isArray(post.keywords) ? post.keywords.slice(0, 30).map((v) => String(v).slice(0, 120)) : [],
     url: String(post.url || ''),
     viralScore: Number(post.viralScore) || 0,
     saves: post.saves != null ? post.saves : null,
     comments: post.comments != null ? post.comments : null,
   }));
   const platform = (String(request.platform || platformHint || 'pinterest').toLowerCase()) || 'pinterest';
-  const system = resolvePrompt(settings.analyzerPrompt, PROMPT_DEFAULTS.analyzer, { platform });
-  const user = JSON.stringify({ platform, task: 'Extract keywords and explain winning content patterns from the ranked posts.', posts: compact });
+  const customPrompt = String(settings.analyzerPrompt || '').trim();
+  const pinterestRules = platform === 'pinterest' && !customPrompt
+    ? `\nPinterest-specific keyword rules:\n- Do NOT treat a Pin title as the keyword source. A title may be a generic hook or sentence and must receive low evidence weight.\n- Build keywords from the actual topic signals: description/body, board name, image alt text, outbound URL slug, explicit keyword fields, repeated nouns, entities, materials, actions, audience, outcome, and modifiers.\n- A primary keyword must describe the subject people would search for, not the emotional hook of the Pin.\n- Prefer 2–5 word phrases with a clear topic and search intent. Never return a generic hook such as “save this idea”, “you need this”, “weeknight favorite”, or a title-only phrase.\n- Every extracted keyword must include evidence from at least one non-title field; reject title-only keywords.\n- Separate extracted/evidenced keywords from new suggestions. Put confidence and evidence fields when possible.`
+    : '';
+  const system = resolvePrompt(settings.analyzerPrompt, PROMPT_DEFAULTS.analyzer, { platform }) + pinterestRules;
+  const user = JSON.stringify({ platform, task: platform === 'pinterest'
+    ? 'Extract evidence-backed Pinterest search keywords from topic signals, not generic Pin titles. Return extracted keywords separately from suggestions and explain the evidence.'
+    : 'Extract keywords and explain winning content patterns from the ranked posts.', posts: compact });
   const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
   const body = {
     model: provider.model,
