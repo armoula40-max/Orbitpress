@@ -6,3 +6,8 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Server edition runtime data, dependencies and the deployment secret
+server/node_modules/
+server/data/
+.env
