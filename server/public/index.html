@@ -165,6 +165,27 @@
     .debug-shots small{font-size:10px;direction:ltr;text-align:center;word-break:break-all}
   .seo-checks{display:grid;gap:5px;margin:11px 0}.seo-check{display:grid;grid-template-columns:24px 1fr auto;align-items:baseline;gap:8px;padding:7px 10px;border-radius:10px;background:#f8fbf5;border:1px solid #e4eadf;font-size:12px}.seo-check small{color:#77837a;font-size:10.5px;text-align:left}.seo-check .seo-dot{display:grid;place-items:center;width:19px;height:19px;border-radius:50%;font-weight:900;font-size:11px;color:#fff}.seo-check.good{background:#eef8e9;border-color:#cde5c2}.seo-check.good .seo-dot{background:#397044}.seo-check.warn{background:#fdf6e8;border-color:#ecd6b5}.seo-check.warn .seo-dot{background:#9a6a21}.seo-check.bad{background:#fdeeeb;border-color:#ecc6c0}.seo-check.bad .seo-dot{background:#a14037}.seo-check .seo-label{color:#33463a;font-weight:700}
   </style>
+
+<style id="orbitpress-responsive-polish">
+  html, body, main, .screen, .card, .section, .panel { max-width: 100%; min-width: 0; }
+  *, *::before, *::after { min-width: 0; }
+  img, video, svg, canvas { max-width: 100%; height: auto; }
+  .image-preview, .image-slot img, .generated-image, .article-image, .pin-image { display: block; width: 100%; max-width: 100%; height: auto; max-height: min(62vw, 420px); object-fit: contain; object-position: center; border-radius: 12px; }
+  .image-slot, .image-grid, .image-preview-wrap, .media-preview, .pin-result { max-width: 100%; overflow: hidden; }
+  .keyword-cloud, .filter-grid, .filter-row, .analyzer-filters, .scan-filters, .social-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 9px; width: 100%; }
+  .keyword-cloud { display: flex; flex-wrap: wrap; }
+  .keyword-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+  .pinterest-url-row, .row, .row.three, .analyzer-grid, .orbit-tool-grid { min-width: 0; }
+  input, select, textarea, button { max-width: 100%; min-width: 0; }
+  @media (max-width: 760px) {
+    .row, .row.three, .analyzer-grid, .filter-grid, .filter-row, .analyzer-filters, .scan-filters, .social-filters { grid-template-columns: 1fr; }
+    .pinterest-url-row { grid-template-columns: 1fr; display: grid; }
+    .pinterest-url-row .scan-button, .pinterest-url-row button { width: 100%; }
+    .section-head { flex-wrap: wrap; }
+    .section-head > * { max-width: 100%; }
+    .image-preview, .image-slot img, .generated-image, .article-image, .pin-image { max-height: 72vw; }
+  }
+</style>
 </head>
 <body>
   <header class="topbar"><div class="brand" aria-label="OrbitPress">OrbitPress</div><button id="menuToggle" class="menu-toggle" type="button" aria-label="Open application menu" aria-expanded="false"><span class="hamburger-lines" aria-hidden="true"><i></i><i></i><i></i></span></button></header>
