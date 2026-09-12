@@ -293,6 +293,40 @@ test('the soft SEO gate blocks a sub-100 publish, then an explicit override publ
   assert.equal(result.seo.bridge.reason, 'bridge_missing');
 });
 
+test('a gate-enabled publish reaches 100 on the real assembled body and writes a green score', async (t) => {
+  const wp = await mocks.startWordPressMock({
+    posts: [{ id: 1, title: { rendered: 'حلى الأوريو البارد خطوة بخطوة' }, link: 'https://wp.test/oreo-dessert/', slug: 'oreo-dessert', status: 'publish' }],
+  });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({
+    wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw',
+    articleBaseUrl: '', articleModel: '', categoryId: '7',
+  }, 'site-green');
+  const images = {
+    featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)),
+    pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+  };
+  // Sweep natural occurrence counts; at least one placement must give 100.
+  let published = null;
+  for (const occ of [4, 5, 6]) {
+    try {
+      const draft = perfectDraft(occ);
+      draft.slug = `تشيز-كيك-الاوريو-${occ}`;
+      published = await wordpress.publish({
+        siteId: 'site-green', draft, images, postStatus: 'publish', enforceSeoGate: true,
+      });
+      break;
+    } catch (error) {
+      if (occ === 6) throw error;
+    }
+  }
+  assert.ok(published, 'the gate allowed a fully green article');
+  assert.equal(published.seo.score, 100);
+  assert.equal(published.seo.bridge.ok, true);
+  assert.equal(wp.data.seoWrites.at(-1).score, 100, 'the bridge stored a green 100 score');
+  assert.ok(wp.data.seoWrites.at(-1).focus_keyphrase === KP);
+});
+
 test('seoScan previews the score, real links and bridge status without publishing', async (t) => {
   const wp = await mocks.startWordPressMock({
     seoPlugin: 'yoast',

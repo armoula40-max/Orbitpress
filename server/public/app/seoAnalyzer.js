@@ -199,6 +199,7 @@
         Number(d.internalLinkCount) >= 1 ? 'good' : 'bad', d.internalLinkCount ? `${d.internalLinkCount} روابط` : 'لا روابط داخلية');
       add('external', 'رابط خارجي موثوق واحد على الأقل',
         Number(d.externalLinkCount) >= 1 ? 'good' : 'warn', d.externalLinkCount ? `${d.externalLinkCount} روابط` : 'غير متوفر');
+      checks[checks.length - 1].blocking = false; // Rank Math recommendation only, and network-verified
       add('h2-count', 'توزيع جيد للعناوين (3–8 عناوين H2/H3)',
         hs.length >= 3 && hs.length <= 12 ? 'good' : hs.length ? 'warn' : 'bad', `${hs.length} عناوين`);
 
@@ -217,11 +218,14 @@
       }
     }
 
-    // Score: green = 1, warn = 0.55, bad/info = 0; only "graded" checks count.
+    // Score: green = 1, warn = 0.55, bad/info = 0. Checks flagged non-blocking
+    // (recommendations like an outbound reference link) are displayed but
+    // never stop the post reaching 100.
     const weights = { warn: 0.55, good: 1, bad: 0 };
-    const graded = checks.filter((c) => c.status === 'good' || c.status === 'warn' || c.status === 'bad');
+    const graded = checks.filter((c) => c.status !== 'info' && c.blocking !== false);
+    const suggestions = checks.filter((c) => c.blocking === false && c.status !== 'good');
     const score = graded.length
-      ? Math.round(graded.reduce((sum, c) => sum + (weights[c.status] || 0), 0) / graded.length * 100)
+      ? Math.round(graded.reduce((sum, c) => sum + (weights[c.status] || (c.status === 'warn' ? 0.55 : 0)), 0) / graded.length * 100)
       : 0;
     const status = score >= 85 ? 'good' : score >= 60 ? 'warn' : 'bad';
     return {
