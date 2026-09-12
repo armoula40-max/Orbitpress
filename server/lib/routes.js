@@ -11,6 +11,7 @@ const images = require('./images');
 const article = require('./article');
 const socialapi = require('./socialapi');
 const scraper = require('./scraper');
+const pinterest = require('./scraper/pinterest');
 const scheduler = require('./scheduler');
 const users = require('./users');
 const reqContext = require('./reqContext');
@@ -131,6 +132,22 @@ router.post('/pinflux/plan', asyncRoute(async (req, res) => {
   });
   if (data.accounts.some((a) => !groupMap.has(a.groupId))) errors.push('كل حساب يجب أن يرتبط بمجموعة موجودة.');
   res.json({ ok: errors.length === 0, errors, action: 'save_or_repin', operations });
+}));
+router.get('/pinflux/source-pins', asyncRoute(async (req, res) => {
+  const cookieHeader = await scraper.sessions.cookieHeader('pinterest', 'default').catch(() => '');
+  if (!cookieHeader || !/_pinterest_sess=/.test(cookieHeader)) {
+    return res.status(401).json({ ok: false, message: 'سجّل الدخول إلى حساب Pinterest الرئيسي من Settings أولاً.' });
+  }
+  const publisher = require('./scraper/pinterestPublish');
+  const username = await publisher.sessionAlive(publisher.hosts(), cookieHeader);
+  if (!username) return res.status(401).json({ ok: false, message: 'جلسة الحساب الرئيسي موجودة لكن Pinterest لم يؤكد الحساب.' });
+  const result = await pinterest.scanPinterest({
+    url: `https://www.pinterest.com/${encodeURIComponent(username)}/_created/`,
+    maxItems: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
+    scrolls: 6,
+    useSession: true,
+  });
+  res.json({ ok: true, account: username, posts: result.posts || [], collectionMethod: result.collectionMethod || '' });
 }));
 router.get('/settings', (req, res) => {
   res.json(store.getSettingsSummary(req.query.siteId || 'site-default'));
