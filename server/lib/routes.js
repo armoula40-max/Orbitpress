@@ -98,6 +98,8 @@ function pinfluxNormalize(input) {
     boardId: String(a && a.boardId || '').trim().slice(0, 240),
     groupId: String(a && a.groupId || '').trim().slice(0, 80),
     enabled: a && a.enabled !== false,
+    connected: !!(a && a.connected),
+    sessionLabel: String(a && a.sessionLabel || '').trim().slice(0, 120),
   })).filter((a) => a.id && a.boardId && groupIds.has(a.groupId));
   return { sourcePinId: String(source.sourcePinId || '').trim().slice(0, 120), groups, accounts, completed: Array.isArray(source.completed) ? source.completed.map(String).slice(0, 5000) : [] };
 }
@@ -402,7 +404,22 @@ router.get('/scraper/jobs/:id/export.csv', (req, res) => {
 router.get('/sessions', (req, res) => {
   res.json({ ok: true, ...scraper.sessions.statuses() });
 });
-
+router.get('/pinflux/sessions', (req, res) => {
+  const sessions = scraper.sessions.statuses();
+  res.json({ ok: true, accounts: sessions.pinterestAccounts || [] });
+});
+router.post('/pinflux/accounts/:accountId/login', asyncRoute(async (req, res) => {
+  const accountId = String(req.params.accountId || '').trim();
+  if (!accountId) return res.status(400).json({ ok: false, message: 'معرّف حساب PinFlux مطلوب.' });
+  const status = await scraper.sessions.login('pinterest', { ...(req.body || {}), accountId });
+  res.json({ ok: true, ...status });
+}));
+router.post('/pinflux/accounts/:accountId/verify', asyncRoute(async (req, res) => {
+  res.json({ ok: true, ...await scraper.sessions.verifyConnected('pinterest', req.params.accountId) });
+}));
+router.delete('/pinflux/accounts/:accountId', asyncRoute(async (req, res) => {
+  res.json(await scraper.sessions.logout('pinterest', req.params.accountId));
+}));
 router.post('/sessions/:platform/login', asyncRoute(async (req, res) => {
   // Returns either { connected:true } or { status:'verification_required', challenge }
   const status = await scraper.sessions.login(req.params.platform, req.body || {});
@@ -411,7 +428,7 @@ router.post('/sessions/:platform/login', asyncRoute(async (req, res) => {
 
 // Re-validate a stored session against the live site (refreshes connected flag)
 router.post('/sessions/:platform/verify', asyncRoute(async (req, res) => {
-  const status = await scraper.sessions.verifyConnected(req.params.platform);
+  const status = await scraper.sessions.verifyConnected(req.params.platform, req.body && req.body.accountId);
   res.json({ ok: true, ...status });
 }));
 
@@ -419,7 +436,7 @@ router.post('/sessions/:platform/verify', asyncRoute(async (req, res) => {
 // reliable path when the headless server browser is shown a CAPTCHA wall).
 router.post('/sessions/:platform/cookies', asyncRoute(async (req, res) => {
   const raw = req.body && (req.body.cookies || req.body.raw || '');
-  const status = await scraper.sessions.importCookies(req.params.platform, raw);
+  const status = await scraper.sessions.importCookies(req.params.platform, raw, req.body && req.body.accountId);
   res.json({ ok: true, ...status });
 }));
 
@@ -429,7 +446,8 @@ router.get('/sessions/:platform/boards', asyncRoute(async (req, res) => {
   if (platform !== 'pinterest') {
     return res.status(400).json({ ok: false, message: 'قائمة اللوحات متاحة لـ Pinterest فقط.' });
   }
-  const cookieHeader = await scraper.sessions.cookieHeader('pinterest').catch(() => '');
+  const accountId = String(req.query.accountId || 'default');
+  const cookieHeader = await scraper.sessions.cookieHeader('pinterest', accountId).catch(() => '');
   if (!cookieHeader || !/_pinterest_sess=/.test(cookieHeader)) {
     return res.json({ ok: false, stage: 'session', message: 'لا توجد جلسة Pinterest متصلة — اربط الحساب من البطاقة أولاً.' });
   }
@@ -458,20 +476,20 @@ router.get('/sessions/:platform/boards', asyncRoute(async (req, res) => {
 }));
 
 router.get('/sessions/:platform/verification', asyncRoute(async (req, res) => {
-  res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform) });
+  res.json({ ok: true, ...scraper.sessions.verificationState(req.params.platform, req.query.accountId) });
 }));
 
 router.post('/sessions/:platform/verification', asyncRoute(async (req, res) => {
-  const status = await scraper.sessions.submitVerification(req.params.platform, req.body && req.body.code);
+  const status = await scraper.sessions.submitVerification(req.params.platform, req.body && req.body.code, req.body && req.body.accountId);
   res.json({ ok: true, ...status });
 }));
 
 router.delete('/sessions/:platform/verification', asyncRoute(async (req, res) => {
-  res.json(await scraper.sessions.cancelVerification(req.params.platform));
+  res.json(await scraper.sessions.cancelVerification(req.params.platform, req.query.accountId));
 }));
 
 router.delete('/sessions/:platform', asyncRoute(async (req, res) => {
-  res.json(await scraper.sessions.logout(req.params.platform));
+  res.json(await scraper.sessions.logout(req.params.platform, req.query.accountId));
 }));
 
 // ---------------------------------------------------------------------------

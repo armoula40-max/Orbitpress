@@ -50,8 +50,12 @@ function tenantId() {
   return reqContext.getUserId() || reqContext.OWNER_ID;
 }
 
-function contextKey(platform, headless) {
-  return `${tenantId()}:${platform}:${headless ? 'headless' : 'headed'}`;
+function safeAccountId(value) {
+  return String(value || 'default').trim().replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'default';
+}
+
+function contextKey(platform, headless, accountId = 'default') {
+  return `${tenantId()}:${platform}:${safeAccountId(accountId)}:${headless ? 'headless' : 'headed'}`;
 }
 
 /** Per-tenant folder for the login/scan diagnostic snapshots. */
@@ -75,8 +79,8 @@ function debugDirLabel() {
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const pendingLogins = new Map(); // `${tenant}:${platform}` -> { page, context, challenge, createdAt }
 
-function pendingKey(platform) {
-  return `${tenantId()}:${platform}`;
+function pendingKey(platform, accountId = 'default') {
+  return `${tenantId()}:${platform}:${safeAccountId(accountId)}`;
 }
 
 setInterval(() => {
@@ -89,15 +93,15 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-function rememberPending(platform, page, context, challenge) {
-  const key = pendingKey(platform);
+function rememberPending(platform, page, context, challenge, accountId = 'default') {
+  const key = pendingKey(platform, accountId);
   const old = pendingLogins.get(key);
   if (old) old.page.close().catch(() => {});
   pendingLogins.set(key, { page, context, challenge, createdAt: Date.now() });
 }
 
-function getPending(platform) {
-  const key = pendingKey(platform);
+function getPending(platform, accountId = 'default') {
+  const key = pendingKey(platform, accountId);
   const pending = pendingLogins.get(key);
   if (!pending) return null;
   if (Date.now() - pending.createdAt > PENDING_TTL_MS) {
@@ -108,8 +112,8 @@ function getPending(platform) {
   return pending;
 }
 
-function clearPending(platform) {
-  const key = pendingKey(platform);
+function clearPending(platform, accountId = 'default') {
+  const key = pendingKey(platform, accountId);
   const pending = pendingLogins.get(key);
   if (pending) pending.page.close().catch(() => {});
   pendingLogins.delete(key);
@@ -129,21 +133,24 @@ function platformConfig(platform) {
   return config;
 }
 
-function profileDir(platform) {
-  return path.join(sessionsDir(), `${platform}-profile`);
+function profileDir(platform, accountId = 'default') {
+  const suffix = safeAccountId(accountId);
+  return path.join(sessionsDir(), suffix === 'default' ? `${platform}-profile` : `${platform}-${suffix}-profile`);
 }
 
 function metaStore() {
   return loadNamedStore('sessions-meta', { platforms: {} });
 }
 
-function sessionStatus(platform) {
+function sessionStatus(platform, accountId = 'default') {
   const config = PLATFORMS[platform] ? platform : null;
   void config;
-  const meta = metaStore().platforms[platform] || null;
-  const hasProfile = fs.existsSync(profileDir(platform));
+  const key = `${platform}:${safeAccountId(accountId)}`;
+  const meta = metaStore().platforms[key] || (safeAccountId(accountId) === 'default' ? metaStore().platforms[platform] : null);
+  const hasProfile = fs.existsSync(profileDir(platform, accountId));
   return {
     platform,
+    accountId: safeAccountId(accountId),
     connected: !!(meta && meta.connected && hasProfile),
     label: meta && meta.label ? meta.label : '',
     lastLoginAt: meta && meta.lastLoginAt ? meta.lastLoginAt : null,
@@ -152,12 +159,18 @@ function sessionStatus(platform) {
 }
 
 function statuses() {
-  return { facebook: sessionStatus('facebook'), pinterest: sessionStatus('pinterest') };
+  const meta = metaStore().platforms;
+  const pinterestAccounts = Object.keys(meta)
+    .filter((key) => key.startsWith('pinterest:'))
+    .map((key) => key.split(':')[1])
+    .filter((id) => id && id !== 'default')
+    .map((id) => sessionStatus('pinterest', id));
+  return { facebook: sessionStatus('facebook'), pinterest: sessionStatus('pinterest'), pinterestAccounts };
 }
 
-async function getContext(platform, { headless = true } = {}) {
+async function getContext(platform, { headless = true, accountId = 'default' } = {}) {
   const pw = playwright();
-  const key = contextKey(platform, headless);
+  const key = contextKey(platform, headless, accountId);
   const existing = liveContexts.get(key);
   if (existing) return existing;
   const inFlight = launchingContexts.get(key);
@@ -166,7 +179,7 @@ async function getContext(platform, { headless = true } = {}) {
   // twice throws "Failed to lock profile directory", which used to happen when
   // a login and a scan (or two tenants sharing one old global key) raced.
   const launch = (async () => {
-    const context = await pw.chromium.launchPersistentContext(profileDir(platform), {
+    const context = await pw.chromium.launchPersistentContext(profileDir(platform, accountId), {
       headless,
       viewport: { width: 1280, height: 900 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -201,10 +214,11 @@ async function closeAllContexts() {
  */
 async function login(platform, credentials) {
   const config = platformConfig(platform);
+  const accountId = safeAccountId(credentials && credentials.accountId);
   const username = String(credentials && credentials.username || '').trim();
   const password = String(credentials && credentials.password || '');
   if (!username || !password) throw new Error('Enter the account email/username and password.');
-  const context = await getContext(platform);
+  const context = await getContext(platform, { accountId });
   const page = await context.newPage();
   try {
     // A brand-new tenant profile landing directly on /login looks like a
@@ -229,7 +243,7 @@ async function login(platform, credentials) {
       (name) => preCookies.some((cookie) => cookie.name === name && cookie.value),
     );
     if (alreadyHasSession && !/(login|signup|sign-up|authorization|auth)/i.test(landedUrl)) {
-      return finishLogin(platform, context, username);
+      return finishLogin(platform, context, username, accountId);
     }
 
     const userInput = await waitForAny(page, [
@@ -294,7 +308,7 @@ async function login(platform, credentials) {
     const cookiesNow = await context.cookies();
     const hasSession = config.sessionCookies.some((name) => cookiesNow.some((cookie) => cookie.name === name && cookie.value));
     if (hasSession) {
-      return finishLogin(platform, context, username);
+      return finishLogin(platform, context, username, accountId);
     }
 
     // Verification challenge? Keep the page alive and hand the user control.
@@ -302,10 +316,10 @@ async function login(platform, credentials) {
     const isCheckpoint = /checkpoint|approvals_code|two[_-]?factor|two_step|login\/cookie/i.test(currentUrl) || !!codeInput;
     if (!hasSession && isCheckpoint) {
       const challenge = codeInput ? 'code' : 'device_approval';
-      rememberPending(platform, page, context, challenge);
+      rememberPending(platform, page, context, challenge, accountId);
       await saveLoginDebug(platform, page, `verification-${challenge}`);
       return {
-        ...sessionStatus(platform),
+        ...sessionStatus(platform, accountId),
         status: 'verification_required',
         challenge,
         challengeHint: challenge === 'code'
@@ -325,7 +339,7 @@ async function login(platform, credentials) {
     }
     throw normalizeLoginError(error);
   } finally {
-    if (!pendingLogins.has(pendingKey(platform))) {
+    if (!pendingLogins.has(pendingKey(platform, accountId))) {
       await page.close().catch(() => {});
     }
   }
@@ -428,17 +442,18 @@ function normalizeLoginError(error) {
   return error instanceof Error ? error : new Error(message);
 }
 
-async function finishLogin(platform, context, username) {
+async function finishLogin(platform, context, username, accountId = 'default') {
   const cookies = await context.cookies();
-  clearPending(platform);
+  clearPending(platform, accountId);
   const meta = metaStore();
-  meta.platforms[platform] = {
+  const key = `${platform}:${safeAccountId(accountId)}`;
+  meta.platforms[key] = {
     connected: true,
     label: labelFromCookies(platform, cookies) || username.replace(/(.{2}).+(@.+)/, '$1…$2'),
     lastLoginAt: new Date().toISOString(),
   };
   saveNamedStore('sessions-meta', meta);
-  return { ...sessionStatus(platform), status: 'connected' };
+  return { ...sessionStatus(platform, accountId), status: 'connected' };
 }
 
 /**
@@ -447,8 +462,8 @@ async function finishLogin(platform, context, username) {
  *  - challenge 'device_approval': user approved the login on their phone; we
  *    click the checkpoint "continue" and re-validate the session cookies
  */
-async function submitVerification(platform, code) {
-  const pending = getPending(platform);
+async function submitVerification(platform, code, accountId = 'default') {
+  const pending = getPending(platform, accountId);
   if (!pending) {
     throw new Error('لا توجد محاولة تحقق نشطة (انتهت مهلة 10 دقائق أو بدأت محاولة جديدة). أعد تسجيل الدخول من البداية.');
   }
@@ -476,7 +491,7 @@ async function submitVerification(platform, code) {
 
   const cookies = await context.cookies();
   const hasSession = config.sessionCookies.some((name) => cookies.some((cookie) => cookie.name === name && cookie.value));
-  if (hasSession) return finishLogin(platform, context, '');
+  if (hasSession) return finishLogin(platform, context, '', accountId);
 
   const url = page.url();
   const html = await page.content();
@@ -493,9 +508,9 @@ async function submitVerification(platform, code) {
   throw new Error('لم تتأكد الجلسة بعد. إن وافقتَ على الدخول من هاتفك بالفعل، انتظر ثواني وأعد الضغط؛ وإلا أعد تسجيل الدخول من البداية.');
 }
 
-function verificationState(platform) {
+function verificationState(platform, accountId = 'default') {
   platformConfig(platform);
-  const pending = getPending(platform);
+  const pending = getPending(platform, accountId);
   return {
     pending: !!pending,
     challenge: pending ? pending.challenge : null,
@@ -503,9 +518,9 @@ function verificationState(platform) {
   };
 }
 
-async function cancelVerification(platform) {
+async function cancelVerification(platform, accountId = 'default') {
   platformConfig(platform);
-  clearPending(platform);
+  clearPending(platform, accountId);
   return { ok: true };
 }
 
@@ -521,11 +536,11 @@ function labelFromCookies(platform, cookies) {
 }
 
 /** Cookies for seeding plain-HTTP scraper requests with the stored session. */
-async function cookiesFor(platform) {
+async function cookiesFor(platform, accountId = 'default') {
   const config = platformConfig(platform);
-  if (!fs.existsSync(profileDir(platform))) return [];
+  if (!fs.existsSync(profileDir(platform, accountId))) return [];
   try {
-    const context = await getContext(platform);
+    const context = await getContext(platform, { accountId });
     const cookies = await context.cookies();
     return cookies.filter((cookie) => /facebook\.com$/.test(cookie.domain) || /pinterest\.com$/.test(cookie.domain) || config.sessionCookies.includes(cookie.name));
   } catch {
@@ -533,25 +548,26 @@ async function cookiesFor(platform) {
   }
 }
 
-async function cookieHeader(platform) {
-  const cookies = await cookiesFor(platform);
+async function cookieHeader(platform, accountId = 'default') {
+  const cookies = await cookiesFor(platform, accountId);
   const seen = new Map();
   cookies.forEach((cookie) => seen.set(cookie.name, cookie.value));
   return [...seen.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
 }
 
-async function logout(platform) {
+async function logout(platform, accountId = 'default') {
   platformConfig(platform);
-  const keyPrefix = `${tenantId()}:${platform}:`;
+  const keyPrefix = `${tenantId()}:${platform}:${safeAccountId(accountId)}:`;
   await Promise.all([...liveContexts.entries()]
     .filter(([key]) => key.startsWith(keyPrefix))
     .map(([key, context]) => context.close().catch(() => {}).then(() => liveContexts.delete(key))));
   for (const key of [...launchingContexts.keys()]) {
     if (key.startsWith(keyPrefix)) launchingContexts.delete(key);
   }
-  fs.rmSync(profileDir(platform), { recursive: true, force: true });
+  fs.rmSync(profileDir(platform, accountId), { recursive: true, force: true });
   const meta = metaStore();
-  delete meta.platforms[platform];
+  delete meta.platforms[`${platform}:${safeAccountId(accountId)}`];
+  if (safeAccountId(accountId) === 'default') delete meta.platforms[platform];
   saveNamedStore('sessions-meta', meta);
   return { ok: true };
 }
@@ -679,11 +695,11 @@ function parseCookieImport(platform, raw) {
  * login). Cookies are added one by one so a single malformed entry cannot
  * abort the rest.
  */
-async function importCookies(platform, raw) {
+async function importCookies(platform, raw, accountId = 'default') {
   platformConfig(platform);
   const cookies = parseCookieImport(platform, raw);
   const config = PLATFORMS[platform];
-  const context = await getContext(platform);
+  const context = await getContext(platform, { accountId });
   const page = await context.newPage();
   try {
     await page.goto(config.homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
@@ -718,7 +734,7 @@ async function importCookies(platform, raw) {
       await saveLoginDebug(platform, page, 'cookie-import-unauth');
       throw new Error('الكوكيز المستوردة لم تُنشئ جلسة دخول. افتح صفحة المنصة في متصفحك وتأكد أنك ترى حسابك مسجّلاً، ثم اضغط Export في Cookie-Editor من جديد والصق النص فوراً (لا تُسجّل الخروج بعد النسخ).');
     }
-    return finishLogin(platform, context, '');
+  return finishLogin(platform, context, '', accountId);
   } finally {
     await page.close().catch(() => {});
   }
@@ -729,12 +745,12 @@ async function importCookies(platform, raw) {
  * jar refreshes, then apply the same session-cookie presence rule login uses.
  * It never downgrades a profile whose browser could not be reached.
  */
-async function verifyConnected(platform) {
+async function verifyConnected(platform, accountId = 'default') {
   platformConfig(platform);
-  if (!fs.existsSync(profileDir(platform))) {
-    return sessionStatus(platform);
+  if (!fs.existsSync(profileDir(platform, accountId))) {
+    return sessionStatus(platform, accountId);
   }
-  const context = await getContext(platform);
+  const context = await getContext(platform, { accountId });
   const page = await context.newPage();
   try {
     await page.goto(PLATFORMS[platform].homeUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -743,16 +759,17 @@ async function verifyConnected(platform) {
     const cookies = await context.cookies();
     const ok = hasSessionCookies(platform, cookies);
     const meta = metaStore();
-    const entry = meta.platforms[platform] || {};
+    const key = `${platform}:${safeAccountId(accountId)}`;
+    const entry = meta.platforms[key] || {};
     entry.connected = ok;
     entry.lastVerifiedAt = new Date().toISOString();
     if (ok) {
       entry.lastLoginAt = entry.lastLoginAt || entry.lastVerifiedAt;
       entry.label = labelFromCookies(platform, cookies) || entry.label || platform;
     }
-    meta.platforms[platform] = entry;
+    meta.platforms[key] = entry;
     saveNamedStore('sessions-meta', meta);
-    return sessionStatus(platform);
+    return sessionStatus(platform, accountId);
   } finally {
     await page.close().catch(() => {});
   }
