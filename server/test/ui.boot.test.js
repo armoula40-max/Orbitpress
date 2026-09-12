@@ -120,8 +120,13 @@ test('the web UI boots with the server bridge and FeedSpy layer', async () => {
   window.Native.saveWorkspace(JSON.stringify({ theme: 'night', keywords: [], drafts: [], logs: [], categories: [], siteProfiles: [{ id: 'site-default', name: 'Askinz' }], activeSiteId: 'site-default', plan: {} }));
   assert.equal(JSON.parse(window.Native.loadWorkspace()).theme, 'night');
 
-  assert.ok(window.document.querySelector('#spyFToolbar'), 'facebook toolbar present');
-  assert.ok(window.document.querySelector('#spyPToolbar'), 'pinterest toolbar present');
+  // The Facebook/Pinterest analyzer hub pages were removed from the UI
+  // (backend stays dormant); their FeedSpy toolbars are no longer injected.
+  assert.equal(window.document.querySelector('#spyFToolbar'), null, 'facebook hub toolbar removed');
+  assert.equal(window.document.querySelector('#spyPToolbar'), null, 'pinterest hub toolbar removed');
+  // Per-tenant server sessions still log in from a card injected into Settings.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.ok(window.document.querySelector('#spySessionsCard'), 'server-login sessions card still lives in Settings');
 
   // the single Pinterest prompt field is now a library of editable templates
   const tplList = window.document.getElementById('pinterestPromptList');
