@@ -174,8 +174,20 @@ async function generate(request) {
   const customizedTextPrompt = String(settings.textPrompt || '').trim()
     .replace(/\{\{keyword\}\}/g, keyword)
     .replace(/\{\{category\}\}/g, category);
+  // Best-effort: when WordPress is configured, hand the model the REAL titles
+  // of published posts so internal-link anchors match actual articles. AI
+  // generation stays independent of WordPress — failures are silent no-ops.
+  let internalCandidates = [];
+  try {
+    if (String(settings.wordpressBaseUrl || '').trim()) {
+      const wordpress = require('./wordpress');
+      const Seo = require('./seo');
+      const realPosts = await Seo.fetchPublishedPosts(wordpress.wpRoot(settings.wordpressBaseUrl), settings, 2);
+      internalCandidates = realPosts.map((p) => String(p.title || '').trim()).filter(Boolean).slice(0, 40);
+    }
+  } catch { /* no WordPress connection yet: model still suggests anchors */ }
   const maxTokens = 12000;
-  const prompt = buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt });
+  const prompt = buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt, internalCandidates });
 
   const messages = [
     { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
@@ -251,7 +263,7 @@ function applySeoDefaults(draft, keyword) {
   return draft;
 }
 
-function buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt }) {
+function buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt, internalCandidates }) {
   const rtl = SeoAnalyzer.isRtl(keyword);
   const language = rtl ? 'Modern Standard Arabic (العربية الفصحى), including EVERY field: title, seoTitle, descriptions, headings, body, notes and alt text' : 'natural English';
   const isRoundup = requestedRecipeCount > 0;
@@ -280,7 +292,8 @@ function buildPrompt({ keyword, niche, requestedType, category, keywords, titleL
     - Body length: at least ${wordTarget} words of real content in htmlContent. Short paragraphs (2-4 sentences). ${isRoundup ? 'Each recipe in recipes[] is rendered separately as a schema-rich recipe card; the body ties the collection together.' : ''}
     - 4 to 8 H2 sections (plus H3 sub-steps where useful); the introduction directly promises the answer in 2-3 short paragraphs.
     - Include an FAQ-style H2 near the end answering 3 paaQuestions briefly in your own words.
-    - internalLinks: 2 to 4 anchor-text suggestions using phrases that could exist in real article titles on this site. Never invent URLs — only anchor text + reason.
+    - internalLinks: 2 to 4 anchor suggestions. The site ALREADY contains these real published articles: ${(internalCandidates && internalCandidates.length) ? internalCandidates.map((t) => `"${t}"`).join(' · ') : 'none available yet'}. When related articles exist, pick 2-3 of these EXACT titles (or a distinctive 2-4 word phrase from each) as anchor text, and place that exact phrase once, naturally and contextually, in the relevant section of htmlContent (e.g. in a paragraph that discusses that sub-topic). Suggest anchors unrelated to the article's body for nothing; and NEVER invent URLs — anchors only, the server matches the real link.
+    - seoTitle CTR: if the body genuinely delivers a numbered set (N tips, N steps, N recipes, N ways, N mistakes), put that REAL number at or near the start of seoTitle — never invent a number for an article that is not a list. Use ONE truthful Arabic power word only when the content really supports it (سهلة، سريعة، مجربة، لذيذة، عملية، شاملة، فعالة، مثالية، ناجحة، خطوة بخطوة) — no hype the body does not deliver.
     - externalReferences: 1 or 2 objects {anchor,topic} where topic is a stable, well-known reference topic suitable for Wikipedia or an official organisation page (e.g. an ingredient, technique, standard or organisation). Use that exact anchor phrase once naturally in the body. No fabricated studies, statistics or citations.
     - Use the focus keyphrase exactly (same word order) at least once; surrounding synonyms elsewhere.
 

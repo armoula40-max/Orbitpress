@@ -137,11 +137,46 @@ async function verifyWikipediaReference(topic, rtl) {
 }
 
 /**
+ * A GET against the final permalink before the link is allowed into the
+ * article. REST-returned links normally resolve; this catches sites with
+ * broken rewrites, maintenance plugins or privacy blockers. Short budget.
+ */
+async function internalLinkResolves(url) {
+  try {
+    await request(url, 'GET', { Accept: 'text/html,*/*' }, null, {
+      timeoutMs: 8000,
+      maxHops: 4,
+      allowHttp: /^http:\/\//.test(String(url)),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remove anchors pointing at any of urls (unwrap them back to their text). */
+function unwrapLinks(html, urls) {
+  let out = String(html || '');
+  urls.forEach((url) => {
+    const href = String(url || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`<a\\b[^>]*href="${href}"[^>]*>([\\s\\S]*?)</a>`, 'gi'), '$1');
+  });
+  return out;
+}
+
+/**
  * Return a copy of the draft with verified internal + external links injected
  * into htmlContent, plus a report of what was linked.
+ *
+ * Internal links come from three real sources, in order:
+ *   1. AI anchor suggestions matched to REAL published posts,
+ *   2. real post titles already appearing verbatim in the body (autolink),
+ *   3. a "related articles" section built from real posts when inline links
+ *      are still fewer than two — guaranteeing internal links whenever the
+ *      site actually has posts, without ever inventing a URL.
  */
 async function enrichDraftLinks(draft, { root, settings, enabledExternal = true, selfId = null }) {
-  const report = { internal: [], external: [], skipped: [] };
+  const report = { internal: [], external: [], skipped: [], postsCount: 0 };
   let html = String(draft.htmlContent || '');
   let posts = [];
   try {
@@ -149,10 +184,75 @@ async function enrichDraftLinks(draft, { root, settings, enabledExternal = true,
   } catch (error) {
     report.skipped.push(`internal: ${String(error.message || error).slice(0, 140)}`);
   }
+  report.postsCount = posts.length;
+  const TARGET_INTERNAL = 3;
+
+  const verify = async (link) => {
+    const ok = await internalLinkResolves(link.url);
+    if (!ok) report.skipped.push(`internal: رابط غير مستجيب (${link.url})`);
+    return ok;
+  };
+
+  // 1) AI-suggested anchor phrases matched against real posts
   if (posts.length) {
-    report.internal = SeoAnalyzer.matchInternalLinks(draft.internalLinks, posts, selfId);
-    if (report.internal.length) html = SeoAnalyzer.injectLinks(html, report.internal);
+    const suggested = SeoAnalyzer.matchInternalLinks(draft.internalLinks, posts, selfId);
+    let checked = [];
+    for (const link of suggested.slice(0, TARGET_INTERNAL)) {
+      if (await verify(link)) checked.push({ ...link, placement: 'inline' });
+    }
+    if (checked.length) {
+      html = SeoAnalyzer.injectLinks(html, checked);
+      // injectLinks skips anchors that do not literally occur in the body.
+      checked = checked.filter((l) => html.includes(`href="${l.url}"`));
+    }
+    report.internal.push(...checked);
   }
+
+  // 2) Reverse autolink: real post titles occurring in the body text
+  const linkedIds = new Set(report.internal.map((l) => String(l.id)));
+  if (posts.length && report.internal.length < TARGET_INTERNAL) {
+    const discovered = SeoAnalyzer.autolinkPosts(html, posts, {
+      selfId,
+      max: TARGET_INTERNAL - report.internal.length,
+      skipIds: linkedIds,
+    });
+    const good = [];
+    for (const link of discovered.links) {
+      if (await verify(link)) good.push({ ...link, placement: 'inline' });
+    }
+    const badUrls = discovered.links.filter((l) => !good.some((g) => g.url === l.url)).map((l) => l.url);
+    html = badUrls.length ? unwrapLinks(discovered.html, badUrls) : discovered.html;
+    report.internal.push(...good);
+  }
+
+  // 3) Related-articles fallback from real posts (only when inline links < 2)
+  if (posts.length && report.internal.length < 2) {
+    const rtl = SeoAnalyzer.isRtl(`${draft.focusKeyphrase || ''} ${draft.title || ''}`);
+    const usedUrls = new Set(report.internal.map((l) => l.url));
+    const context = [draft.focusKeyphrase, draft.title, (draft.secondaryKeywords || []).join(' '), draft.categoryName].join(' ');
+    const ranked = SeoAnalyzer.rankPostsForContext(posts, context, { selfId })
+      .filter(({ p }) => !usedUrls.has(p.link || p.url))
+      .slice(0, TARGET_INTERNAL - report.internal.length);
+    const sectionLinks = [];
+    for (const candidate of ranked) {
+      const link = { id: candidate.p.id, anchor: candidate.p.title, url: candidate.p.link || candidate.p.url, title: candidate.p.title };
+      if (await verify(link)) sectionLinks.push({ ...link, placement: 'related', score: candidate.score });
+    }
+    // On a young site with no topical overlap yet, still link the newest real
+    // posts rather than shipping zero internal links.
+    for (const candidate of ranked.slice(sectionLinks.length)) {
+      if (sectionLinks.length >= TARGET_INTERNAL - report.internal.length) break;
+      if (sectionLinks.some((l) => l.url === (candidate.p.link || candidate.p.url))) continue;
+      const link = { id: candidate.p.id, anchor: candidate.p.title, url: candidate.p.link || candidate.p.url, title: candidate.p.title };
+      if (await verify(link)) sectionLinks.push({ ...link, placement: 'related', score: candidate.score });
+    }
+    if (sectionLinks.length) {
+      const rtlBody = SeoAnalyzer.isRtl(`${draft.focusKeyphrase || ''} ${html.slice(0, 200)}`);
+      html += SeoAnalyzer.relatedPostsHtml(sectionLinks, rtlBody);
+      report.internal.push(...sectionLinks);
+    }
+  }
+
   if (enabledExternal && Array.isArray(draft.externalReferences) && draft.externalReferences.length) {
     const rtl = SeoAnalyzer.isRtl(`${draft.focusKeyphrase || ''} ${draft.title}`);
     for (const ref of draft.externalReferences.slice(0, 2)) {
@@ -162,7 +262,12 @@ async function enrichDraftLinks(draft, { root, settings, enabledExternal = true,
         report.skipped.push(`external: anchor "${ref.anchor}" missing from body`);
         continue;
       }
-      const link = { anchor: ref.anchor, url: verified.url, title: verified.title, external: true };
+      // Editorially verified encyclopaedic references are NOT nofollow: they
+      // are tagged so the bridge plugin can undo host-side rel rewriting.
+      const link = {
+        anchor: ref.anchor, url: verified.url, title: verified.title, external: true,
+        className: 'orbitpress-trusted-ref', rel: 'noopener',
+      };
       report.external.push(link);
       html = SeoAnalyzer.injectLinks(html, [link]);
     }

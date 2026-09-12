@@ -3,7 +3,7 @@
  * Plugin Name:       OrbitPress SEO Bridge
  * Plugin URI:        https://github.com/armoula40-max/Orbitpress
  * Description:       Lets the OrbitPress server write Yoast SEO and Rank Math metadata (focus keyphrase, SEO title, meta description, canonical, social tags, stored score) through the REST API with an Application Password. No telemetry, no outbound calls.
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 5.9
  * Requires PHP:      7.4
  * Author:            OrbitPress
@@ -30,6 +30,85 @@ final class OrbitPress_SEO_Bridge {
 
 	public function __construct() {
 		add_action( 'rest_api_init', array( $this, 'register_routes' ) );
+		// Run late (after Rank Math/Yoast/WordPress have rewritten rel=):
+		// editorially verified references are meant to be followed.
+		add_filter( 'the_content', array( $this, 'trusted_reference_links' ), 99 );
+	}
+
+	/**
+	 * Hosts OrbitPress treats as neutral, editorially safe references: the
+	 * Wikimedia family, intergovernmental/official-health bodies, and the
+	 * global .gov / .edu / .ac.<cc> address space.
+	 */
+	private function is_trusted_host( $url ) {
+		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		if ( '' === $host ) {
+			return false;
+		}
+		$allow = array(
+			'wikipedia.org', 'wikimedia.org', 'wikidata.org', 'wikibooks.org',
+			'wiktionary.org', 'wikiquote.org', 'wikisource.org',
+			'who.int', 'fao.org', 'un.org', 'unicef.org', 'unesco.org',
+			'worldbank.org', 'oecd.org', 'iso.org',
+			'cdc.gov', 'nih.gov', 'usda.gov', 'fda.gov', 'nist.gov', 'medlineplus.gov',
+		);
+		foreach ( $allow as $domain ) {
+			if ( $host === $domain || substr( $host, -( strlen( $domain ) + 1 ) ) === '.' . $domain ) {
+				return true;
+			}
+		}
+		return (bool) preg_match( '/\.(gov|edu|mil)(\.[a-z]{2})?$/', $host )
+			|| (bool) preg_match( '/\.ac\.[a-z]{2}$/', $host );
+	}
+
+	/**
+	 * External links verified by the OrbitPress server (Wikipedia OpenSearch
+	 * hits and the trusted-host allowlist above) are tagged with the
+	 * orbitpress-trusted-ref class and intended to be ordinary followed links.
+	 * If another plugin blanket-adds rel="nofollow" to every outbound link,
+	 * remove nofollow/sponsored/ugc from those anchors only, keeping noopener.
+	 */
+	public function trusted_reference_links( $content ) {
+		if ( false === stripos( (string) $content, '<a ' ) ) {
+			return $content;
+		}
+		return preg_replace_callback(
+			'/<a\b[^>]*>/i',
+			function ( $match ) {
+				$tag = $match[0];
+				$is_tagged = false !== stripos( $tag, 'orbitpress-trusted-ref' );
+				$href      = '';
+				if ( preg_match( '/\shref\s*=\s*("|\')(.*?)\1/i', $tag, $hm ) ) {
+					$href = html_entity_decode( $hm[2], ENT_QUOTES );
+				}
+				if ( ! $is_tagged && ! $this->is_trusted_host( $href ) ) {
+					return $tag;
+				}
+				$rel = array( 'noopener' );
+				if ( preg_match( '/\srel\s*=\s*("|\')(.*?)\1/i', $tag, $rm ) ) {
+					$tokens = preg_split( '/\s+/', strtolower( trim( $rm[2] ) ) );
+					foreach ( $tokens as $token ) {
+						if ( '' === $token ) {
+							continue;
+						}
+						if ( in_array( $token, array( 'nofollow', 'sponsored', 'ugc' ), true ) ) {
+							continue;
+						}
+						if ( ! in_array( $token, $rel, true ) ) {
+							$rel[] = $token;
+						}
+					}
+				}
+				$rel_attr = implode( ' ', $rel );
+				if ( preg_match( '/\srel\s*=\s*("|\')/i', $tag ) ) {
+					$tag = preg_replace( '/\srel\s*=\s*("|\').*?\1/i', ' rel="' . esc_attr( $rel_attr ) . '"', $tag, 1 );
+				} else {
+					$tag = preg_replace( '/<a\b/i', '<a rel="' . esc_attr( $rel_attr ) . '"', $tag, 1 );
+				}
+				return $tag;
+			},
+			(string) $content
+		);
 	}
 
 	/** Which SEO plugins are active on this site. */

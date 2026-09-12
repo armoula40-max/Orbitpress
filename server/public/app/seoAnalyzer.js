@@ -296,11 +296,150 @@
           + anchorTokensList.filter((w) => title.includes(w) || slug.includes(w)).length;
         if (score >= 2) {
           seen.add(s.anchor);
-          out.push({ anchor: String(s.anchor).trim(), url: p.link || p.url, title: p.title });
+          out.push({ id: p.id, anchor: String(s.anchor).trim(), url: p.link || p.url, title: p.title });
         }
       });
     });
     return out.slice(0, 3);
+  }
+
+  function escapeAttr(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /**
+   * Build a tolerant regex SOURCE from a raw phrase: Arabic letter variants
+   * (alef/ya/ta-marbuta), dropped tashkeel, flexible whitespace and
+   * punctuation — so "طَرِيقَة عَمَل" still matches "طريقة عمل" in a body.
+   */
+  function phrasePatternSource(phrase) {
+    let out = '';
+    for (const ch of String(phrase || '')) {
+      if (/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/u.test(ch)) continue; // tashkeel/harakat: match zero-width
+      if ('أإآٱا'.includes(ch)) out += '[أإآٱا]';
+      else if ('ىيئ'.includes(ch)) out += '[ىيئ]';
+      else if ('ؤو'.includes(ch)) out += '[ؤو]';
+      else if ('ةه'.includes(ch)) out += '[ةه]';
+      else if (/\s/.test(ch)) out += '\\s+';
+      else if (/[،,.;:!؟?()\-–—]/.test(ch)) out += '\\s*[.,;:،؟?!\\-–—]*\\s*';
+      else if (/[\p{L}\p{N}]/u.test(ch)) out += ch.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      else out += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    return out;
+  }
+
+  // Filler prefixes whose removal still leaves a usable post-title phrase.
+  const TITLE_PREFIXES = {
+    ar: ['طريقه', 'طريقة', 'عمل', 'وصفه', 'وصفة', 'كيفيه', 'كيفية', 'كيف', 'اسهل', 'أسهل', 'افضل', 'أفضل',
+      'احسن', 'أحسن', 'اجمل', 'أجمل', 'اشهى', 'أشهى', 'الذ', 'ألذ', 'انواع', 'أنواع', 'اهم', 'أهم',
+      'نصائح', 'خطوات', 'دليل', 'اسرار', 'أسرار', 'سر', 'كل', 'ما', 'هو', 'هي', 'حول', 'لعمل', 'تحضير'],
+    en: ['how', 'to', 'make', 'recipe', 'for', 'the', 'best', 'easy', 'quick', 'guide', 'tips', 'ultimate'],
+  };
+
+  /** Full title plus meaningful variants (prefix stripped) as raw phrases. */
+  function titlePhraseVariants(title, rtl) {
+    const raw = String(title || '').trim().replace(/\s+/g, ' ');
+    const variants = [raw];
+    const prefixes = rtl ? TITLE_PREFIXES.ar : TITLE_PREFIXES.en;
+    let words = raw.split(/\s+/);
+    for (let i = 0; i < Math.min(3, words.length - 1); i += 1) {
+      const first = normalizeArabic(words[0] || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+      if (!prefixes.some((p) => normalizeArabic(p) === first || first.startsWith(normalizeArabic(p)))) break;
+      words = words.slice(1);
+      if (words.length) variants.push(words.join(' '));
+    }
+    // Keep variants with at least 2 content tokens (or a long single token).
+    return variants.filter((v) => {
+      const t = tokens(v, rtl);
+      return t.length >= 2 || (t.length === 1 && t[0].length >= 6);
+    });
+  }
+
+  /**
+   * Reverse direction of matchInternalLinks: scan the body for REAL published
+   * post titles that already occur in the text and link the first occurrence
+   * in place. Never links inside an existing anchor; one link per post.
+   * Returns { html, links:[{id,anchor,url,title,inline:true}] }.
+   */
+  function autolinkPosts(html, posts, { selfId = null, max = 3, skipIds = null } = {}) {
+    const links = [];
+    const usedPosts = new Set();
+    let body = String(html || '');
+    const skip = skipIds instanceof Set ? skipIds : new Set(Array.isArray(skipIds) ? skipIds : []);
+    const candidates = [];
+    (Array.isArray(posts) ? posts : []).forEach((p) => {
+      if (!p || !(p.link || p.url) || !p.title) return;
+      if (String(p.id) === String(selfId == null ? '' : selfId) && selfId != null) return;
+      if (skip.has(String(p.id))) return;
+      const rtl = isRtl(p.title);
+      titlePhraseVariants(p.title, rtl).forEach((phrase) => candidates.push({ p, phrase, rtl }));
+    });
+    // Longest/most-specific phrases first.
+    candidates.sort((a, b) => norm(b.phrase).length - norm(a.phrase).length);
+    for (const cand of candidates) {
+      if (links.length >= max) break;
+      if (usedPosts.has(String(cand.p.id))) continue;
+      const source = phrasePatternSource(cand.phrase);
+      if (norm(cand.phrase).length < 6) continue;
+      const re = new RegExp(source, 'i');
+      let matchedText = '';
+      let inAnchor = 0;
+      body = body.replace(/(<\/?a\b[^>]*>)|(<[^>]+>)|([^<]+)/gi, (whole, anchorTag, otherTag, textNode) => {
+        if (matchedText || anchorTag === undefined && otherTag === undefined && textNode === undefined) return whole;
+        if (anchorTag) {
+          if (/^<a\b/i.test(anchorTag)) inAnchor += 1;
+          else if (/^<\/a/i.test(anchorTag)) inAnchor = Math.max(0, inAnchor - 1);
+          return whole;
+        }
+        if (otherTag || !textNode || inAnchor > 0) return whole;
+        const m = textNode.match(re);
+        if (!m) return whole;
+        const idx = m.index;
+        const before = textNode[idx - 1] || '';
+        const after = textNode[idx + m[0].length] || '';
+        if (/[\p{L}\p{N}]/u.test(before) || /[\p{L}\p{N}]/u.test(after)) return whole; // no partial-word links
+        matchedText = m[0];
+        return textNode.slice(0, idx)
+          + `<a href="${cand.p.link || cand.p.url}" data-orbitpress-internal="1" title="${escapeAttr(cand.p.title)}">${m[0]}</a>`
+          + textNode.slice(idx + m[0].length);
+      });
+      if (matchedText) {
+        usedPosts.add(String(cand.p.id));
+        links.push({ id: cand.p.id, anchor: matchedText.trim(), url: cand.p.link || cand.p.url, title: cand.p.title, inline: true });
+      }
+    }
+    return { html: body, links };
+  }
+
+  /** Rank real posts by how their title overlaps the draft's context text. */
+  function rankPostsForContext(posts, contextText, { selfId = null } = {}) {
+    const rtl = isRtl(contextText || '');
+    const wanted = new Set(tokens(contextText || '', rtl));
+    return (Array.isArray(posts) ? posts : [])
+      .filter((p) => p && p && (p.link || p.url) && p.title
+        && (selfId == null || String(p.id) !== String(selfId)))
+      .map((p) => {
+        const titleTokens = tokens(`${p.title} ${String(p.slug || '').replace(/-/g, ' ')}`, rtl);
+        let score = 0;
+        titleTokens.forEach((t) => { if (wanted.has(t)) score += t.length >= 4 ? 2 : 1; });
+        return { p, score };
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+
+  /** A real "related posts" section; every URL comes from REST, never invented. */
+  function relatedPostsHtml(links, rtl) {
+    const items = (Array.isArray(links) ? links : [])
+      .filter((l) => l && l.url && l.title)
+      .map((l) => `<li><a href="${l.url}" data-orbitpress-internal="1"${l.title ? ` title="${escapeAttr(l.title)}"` : ''}>${escapeHtml(l.title)}</a></li>`)
+      .join('');
+    if (!items) return '';
+    const heading = rtl ? 'مقالات ذات صلة' : 'Related articles';
+    return `<h2>${heading}</h2><ul>${items}</ul>`;
+  }
+
+  function escapeHtml(value) {
+    return escapeAttr(value);
   }
 
   /** Insert internal/external links into text nodes of the body HTML only. */
@@ -310,12 +449,20 @@
       if (!link || !link.anchor || !link.url || body.includes(`href="${link.url}"`)) return;
       const anchor = link.anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       let done = false;
-      body = body.replace(/(<[^>]+>)|([^<]+)/g, (whole, tag, textNode) => {
-        if (done || tag || !textNode) return whole;
+      const externalAttrs = link.external
+        ? ` target="_blank" rel="${escapeAttr(link.rel || 'noopener')}"${link.className ? ` class="${escapeAttr(link.className)}"` : ''}`
+        : (link.className ? ` class="${escapeAttr(link.className)}"` : '');
+      body = body.replace(/(<\/?a\b[^>]*>)|(<[^>]+>)|([^<]+)/g, (whole, anchorTag, otherTag, textNode) => {
+        if (done || (anchorTag === undefined && otherTag === undefined && textNode === undefined)) return whole;
+        if (anchorTag || otherTag || !textNode) {
+          if (anchorTag && /^<a\b/i.test(anchorTag)) done = true; // never nest links
+          if (anchorTag && /^<\/a/i.test(anchorTag)) done = false;
+          return whole;
+        }
         const re = new RegExp(anchor.replace(/\s+/g, '\\s+'), 'i');
         if (re.test(textNode)) {
           done = true;
-          return textNode.replace(re, (m) => `<a href="${link.url}"${link.external ? ' target="_blank" rel="noopener"' : ''}>${m}</a>`);
+          return textNode.replace(re, (m) => `<a href="${link.url}"${externalAttrs}>${m}</a>`);
         }
         return whole;
       });
@@ -335,6 +482,10 @@
     buildSeoDescription,
     analyze,
     matchInternalLinks,
+    autolinkPosts,
+    rankPostsForContext,
+    relatedPostsHtml,
+    phrasePatternSource,
     injectLinks,
   };
 }));

@@ -4,6 +4,8 @@ process.env.ORBITPRESS_DATA_DIR = require('fs').mkdtempSync(require('path').join
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
 const mocks = require('./mockServers');
 const store = require('../lib/store');
 const wordpress = require('../lib/wordpress');
@@ -230,6 +232,7 @@ test('applySeoDefaults fills SEO fields for Arabic keywords', () => {
 test('full publish writes Yoast/Rank Math metadata through the SEO bridge', async (t) => {
   const wp = await mocks.startWordPressMock({
     posts: [{ id: 1, title: { rendered: 'حلى الأوريو البارد خطوة بخطوة' }, link: 'https://wp.test/oreo-dessert/', slug: 'oreo-dessert', status: 'publish' }],
+    liveInternalLinks: true,
   });
   t.after(() => wp.server.close());
   store.saveSiteSettings({
@@ -259,7 +262,7 @@ test('full publish writes Yoast/Rank Math metadata through the SEO bridge', asyn
   assert.equal(write.schema_type, 'recipe');
   assert.ok(write.score >= 80);
   // internal link really injected into the published body
-  assert.ok(wp.data.posts[1].content.raw.includes('href="https://wp.test/oreo-dessert/"'), 'real internal link injected');
+  assert.ok(wp.data.posts[1].content.raw.includes(`href="${wp.url}/oreo-dessert/"`), 'real internal link injected');
   // the published JSON-LD is a Recipe entity
   assert.ok(wp.data.posts[1].content.raw.includes('"@type":"Recipe"'));
 });
@@ -296,6 +299,7 @@ test('the soft SEO gate blocks a sub-100 publish, then an explicit override publ
 test('a gate-enabled publish reaches 100 on the real assembled body and writes a green score', async (t) => {
   const wp = await mocks.startWordPressMock({
     posts: [{ id: 1, title: { rendered: 'حلى الأوريو البارد خطوة بخطوة' }, link: 'https://wp.test/oreo-dessert/', slug: 'oreo-dessert', status: 'publish' }],
+    liveInternalLinks: true,
   });
   t.after(() => wp.server.close());
   store.saveSiteSettings({
@@ -329,7 +333,7 @@ test('a gate-enabled publish reaches 100 on the real assembled body and writes a
 
 test('seoScan previews the score, real links and bridge status without publishing', async (t) => {
   const wp = await mocks.startWordPressMock({
-    seoPlugin: 'yoast',
+    seoPlugin: 'yoast', liveInternalLinks: true,
     posts: [{ id: 1, title: { rendered: 'حلى الأوريو البارد' }, link: 'https://wp.test/oreo/', slug: 'oreo', status: 'publish' }],
   });
   t.after(() => wp.server.close());
@@ -380,4 +384,112 @@ test('a body image with an empty alt is a hard blocker even if the rest is perfe
   const check = r.checks.find((c) => c.id === 'img-alt-required');
   assert.equal(check.status, 'bad');
   assert.ok(r.blockers.some((b) => b.id === 'img-alt-required'), 'missing alt lands in the publish blockers list');
+});
+
+// ---------------------------------------------------------------------------
+// Real internal-link guarantees: autolink from real titles, related section,
+// liveness verification, and the critical gate.
+// ---------------------------------------------------------------------------
+
+test('autolinkPosts links a real Arabic post title that occurs in the body, once, never nested', () => {
+  const posts = [
+    { id: 1, title: 'طريقة عمل تشيز كيك الأوريو البارد', link: 'https://site.test/oreo/', slug: 'oreo' },
+    { id: 2, title: 'حلى قهوة سريع', link: 'https://site.test/coffee/', slug: 'coffee' },
+  ];
+  const html = '<p>يمكن تحضير حلى قهوة سريع في عشر دقائق.</p>'
+    + '<p>وطريقة عمل <a href="https://site.test/x/">تشيز كيك الأوريو البارد</a> موجودة في رابط آخر.</p>'
+    + '<p>ثم نكرر ذكر طريقة عمل تشيز كيك الأوريو البارد هنا أيضا.</p>';
+  const out = SeoAnalyzer.autolinkPosts(html, posts, { max: 3 });
+  // first occurrence of the coffee title linked
+  assert.ok(out.html.includes('href="https://site.test/coffee/"'));
+  // oreo first occurrence is inside an existing anchor -> never nested; the
+  // second free-text occurrence gets linked instead
+  const oreoCount = (out.html.match(/href="https:\/\/site\.test\/oreo\/"/g) || []).length;
+  assert.equal(oreoCount, 1);
+  assert.ok(!/<a[^>]*><a/.test(out.html), 'links are never nested');
+  assert.ok(/طريقة عمل <a[^>]*>تشيز/.test(out.html), 'existing anchor left untouched');
+});
+
+test('a body without matching titles still receives a real related-posts section', async () => {
+  const wp = await mocks.startWordPressMock({
+    liveInternalLinks: true,
+    posts: [{ id: 1, title: { rendered: 'وصفة كيك الشوكولاتة الداكنة' }, link: 'https://wp.test/chocolate/', slug: 'chocolate', status: 'publish' }],
+  });
+  // two posts total: one seeded + need a second distinct link — add a second row directly
+  wp.data.posts.push({ id: 2, title: { rendered: 'نصائح تخزين الحلويات الباردة' }, link: 'https://wp.test/storage/', slug: 'storage', status: 'publish' });
+  const settings = { wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw' };
+  const draft = {
+    htmlContent: '<h2>مقدمة</h2><p>مقال عن تنظيم المطبخ لا يذكر عناوين المقالات الأخرى.</p>',
+    focusKeyphrase: 'تنظيم المطبخ', title: 'تنظيم المطبخ', secondaryKeywords: [],
+  };
+  const result = Seo.enrichDraftLinks ? await Seo.enrichDraftLinks(draft, { root: wp.url, settings, enabledExternal: false, selfId: null }) : null;
+  assert.ok(result, 'enrichDraftLinks exported');
+  assert.equal(result.report.internal.length, 2, 'two real related links attached');
+  assert.ok(result.htmlContent.includes('مقالات ذات صلة'));
+  assert.ok(result.htmlContent.includes('href="' + wp.url + '/chocolate/"'));
+  assert.ok(result.htmlContent.includes('href="' + wp.url + '/storage/"'));
+  wp.server.close();
+});
+
+test('dead internal permalinks are dropped and the publish gate blocks even with override', async (t) => {
+  const wp = await mocks.startWordPressMock({
+    liveInternalLinks: false, deadLinks: true,
+    posts: [{ id: 1, title: { rendered: 'مقال قديم عن الحلى' }, link: 'https://wp.test/old/', slug: 'old', status: 'publish' }],
+  });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({
+    wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw',
+    articleBaseUrl: '', articleModel: '', categoryId: '7',
+  }, 'site-dead-links');
+  const draft = perfectDraft(6);
+  // point the REST list at the genuinely-broken https host instead of the live mock
+  wp.data.liveInternalLinks = false;
+  const images = {
+    featured: mocks.makeDataUrl(mocks.tinyPng(1200, 800)),
+    pinterest: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)),
+  };
+  await assert.rejects(
+    () => wordpress.publish({ siteId: 'site-dead-links', draft, images, postStatus: 'publish', enforceSeoGate: true, seoOverride: true }),
+    /حرجة/,
+  );
+});
+
+test('verified external references are tagged as trusted and never carry nofollow from us', async () => {
+  // No network in the sandbox: build exactly the link shape enrichDraftLinks
+  // injects for a verified Wikipedia hit.
+  const html = '<p>راجعي موسوعة ويكيبيديا لمزيد من التفاصيل.</p>';
+  const link = {
+    anchor: 'ويكيبيديا', url: 'https://ar.wikipedia.org/wiki/حلويات', external: true,
+    className: 'orbitpress-trusted-ref', rel: 'noopener',
+  };
+  const out = SeoAnalyzer.injectLinks(html, [link]);
+  assert.ok(out.includes('class="orbitpress-trusted-ref"'));
+  assert.ok(!/nofollow/.test(out));
+  assert.ok(out.includes('rel="noopener"'));
+  // The bridge plugin ships the server-side rel repair + trusted allowlist.
+  const php = fs.readFileSync(path.join(__dirname, '..', '..', 'wordpress', 'orbitpress-seo-bridge', 'orbitpress-seo-bridge.php'), 'utf8');
+  assert.ok(php.includes('trusted_reference_links'));
+  assert.ok(php.includes('orbitpress-trusted-ref'));
+  assert.ok(php.includes('wikipedia.org'));
+  assert.ok(php.includes("'nofollow'"));
+});
+
+test('generation prompt receives the real WordPress published titles as internal-link candidates', async (t) => {
+  const api = await mocks.startArticleApiMock();
+  t.after(() => api.server.close());
+  const wp = await mocks.startWordPressMock({
+    liveInternalLinks: true,
+    posts: [{ id: 1, title: { rendered: 'وصفة كنافة نابلسية بالقشطة' }, link: 'https://wp.test/knafeh/', slug: 'knafeh', status: 'publish' }],
+  });
+  t.after(() => wp.server.close());
+  store.saveSiteSettings({
+    textProvider: 'custom', articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k',
+    wordpressBaseUrl: wp.url, wordpressUsername: 'admin', wordpressAppPassword: 'pw',
+  }, 'site-candidates');
+  await article.generate({
+    siteId: 'site-candidates', keyword: 'أسهل حلى بارد', niche: 'food', contentType: 'article', categoryName: 'حلويات',
+  });
+  const promptText = JSON.stringify(api.calls[0].messages);
+  assert.ok(promptText.includes('وصفة كنافة نابلسية بالقشطة'), 'real post title handed to the model');
+  assert.ok(promptText.includes('internalLinks'));
 });

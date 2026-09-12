@@ -774,7 +774,10 @@ async function publish(request) {
   // image alts, broken internal links or invalid JSON-LD produce broken rich
   // results and inaccessible posts. Everything else is repairable and may be
   // explicitly overridden.
-  const CRITICAL_CHECK_IDS = ['seo-title', 'meta-desc', 'img-alt-required', 'internal', 'recipe-schema', 'article-schema'];
+  // 'internal' is only critical when the site actually has published posts to
+  // link to — a brand-new site's very first article cannot link anything yet.
+  const CRITICAL_CHECK_IDS = ['seo-title', 'meta-desc', 'img-alt-required', 'recipe-schema', 'article-schema'];
+  if (enriched.posts && enriched.posts.length > 0) CRITICAL_CHECK_IDS.push('internal');
   const critical = (gateAnalysis.blockers || [])
     .filter((c) => CRITICAL_CHECK_IDS.includes(c.id))
     .map((c) => c.label);
@@ -1139,48 +1142,42 @@ async function seoScan(request) {
   const keyphrase = String(draft.focusKeyphrase || '').trim();
   const slug = DraftContract.cleanSlug(draft.slug || '');
 
-  const preview = await previewArticle(request);
-  let posts = [];
+  // Same enrichment pipeline publish() uses (real-post autolink + related
+  // section + verified external references), so the scan shows exactly what
+  // will ship.
+  const enriched = await Seo.enrichDraftLinks(draft, {
+    root, settings,
+    enabledExternal: settings.seoExternalLinks !== false,
+    selfId: null,
+  });
+  const enrichedDraft = { ...draft, htmlContent: enriched.htmlContent };
+  const preview = await previewArticle({ ...request, draft: enrichedDraft });
+  const posts = enriched.posts || [];
   let plugins = { bridge: false, rankmath: false, yoast: false };
-  try { posts = await Seo.fetchPublishedPosts(root, settings); } catch { /* matching simply yields nothing */ }
   try { plugins = await Seo.detectSeo(root, settings); } catch { /* keep neutral status */ }
 
-  const plannedInternal = posts.length ? SeoAnalyzerLib.matchInternalLinks(draft.internalLinks, posts, null) : [];
-  const plannedExternal = [];
-  const skipped = [];
-  let html = preview.html;
-  if (plannedInternal.length) html = SeoAnalyzerLib.injectLinks(html, plannedInternal);
-  if (settings.seoExternalLinks !== false && Array.isArray(draft.externalReferences)) {
-    const rtl = SeoAnalyzerLib.isRtl(`${keyphrase} ${draft.title}`);
-    for (const ref of draft.externalReferences.slice(0, 2)) {
-      const verified = await Seo.verifyWikipediaReference(ref.topic, rtl);
-      if (!verified) { skipped.push(`لا يوجد مرجع موثوق لـ: ${ref.topic}`); continue; }
-      const link = { anchor: ref.anchor, url: verified.url, title: verified.title, external: true };
-      plannedExternal.push(link);
-      html = SeoAnalyzerLib.injectLinks(html, [link]);
-    }
-  }
   const normText = (s) => SeoAnalyzerLib.norm(String(s || ''));
   const keyphraseUsedBefore = !!keyphrase && posts.some((p) => normText(p.title).includes(normText(keyphrase)));
   const altTexts = [
     PublishingContracts.featuredImageAltText(draft.title, draft.contentType, keyphrase),
     PublishingContracts.pinterestImageAltText(draft.pinterestAltText || draft.pinterestTitle, draft.title, keyphrase),
   ];
-  const analysis = Seo.analyzeDraft(draft, {
+  const analysis = Seo.analyzeDraft(enrichedDraft, {
     slug,
-    contentHtml: html,
+    contentHtml: preview.html,
     altTexts,
-    internalLinkCount: plannedInternal.length,
-    externalLinkCount: plannedExternal.length,
+    internalLinkCount: enriched.report.internal.length,
+    externalLinkCount: enriched.report.external.length,
     keyphraseUsedBefore,
   });
   return {
     ok: true,
     analysis,
     plugins,
-    internalLinks: plannedInternal,
-    externalLinks: plannedExternal,
-    skipped,
+    internalLinks: enriched.report.internal,
+    externalLinks: enriched.report.external,
+    skipped: enriched.report.skipped,
+    postsCount: posts.length,
     canonical: preview.canonical,
     pluginInstallUrl: plugins.bridge ? '' : `${root}/wp-admin/plugin-install.php`,
   };

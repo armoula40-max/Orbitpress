@@ -67,6 +67,17 @@ function startWordPressMock(state = {}) {
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(payload));
     };
+    // Public-facing post pages (for the internal-link liveness GET) — these
+    // never require authorization on a real WordPress site. When the mock
+    // simulates plain (?p=) permalinks, pretty /slug/ URLs 404 like WordPress.
+    if (req.method === 'GET' && !url.pathname.startsWith('/wp-json') && !url.pathname.startsWith('/wp-')) {
+      if (data.deadLinks === true || data.plainPermalinks === true) {
+        res.writeHead(404, { 'Content-Type': 'text/html' });
+        return res.end('not found');
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><html><body><h1>Mock post ${url.pathname}</h1></body></html>`);
+    }
     // the REST API root advertises what the site can authenticate with
     if (req.method === 'GET' && url.pathname === '/wp-json/') {
       const authentication = data.noApplicationPasswords ? {} : { 'application-passwords': { endpoints: { authorization: `${data.baseUrl}/wp-admin/authorize-application.php` } } };
@@ -190,7 +201,14 @@ function startWordPressMock(state = {}) {
         return json({ code: 'rest_not_logged_in', message: 'You are not currently logged in.', data: { status: 401 } }, 401);
       }
       const slug = url.searchParams.get('slug');
-      return json(slug ? data.posts.filter((p) => p.slug === slug) : data.posts);
+      let rows = slug ? data.posts.filter((p) => p.slug === slug) : data.posts;
+      // Internal-link verification GETs the public permalink: hand back rows
+      // whose link points at this live mock instead of the fake wp.test host.
+      if (data.liveInternalLinks === true && data.deadLinks !== true) {
+        rows = rows.map((p) => (p.link && /^https?:\/\/wp\.test\/[^?]*\/?$/.test(p.link))
+          ? { ...p, link: `${data.baseUrl}/${p.slug || p.id}/` } : p);
+      }
+      return json(rows);
     }
     const postMatch = url.pathname.match(/^\/wp-json\/wp\/v2\/posts\/(\d+)/);
     if (postMatch && req.method === 'GET') {
@@ -217,6 +235,7 @@ function startWordPressMock(state = {}) {
         const postId = data.nextPostId++;
         const post = {
           id: postId,
+          title: { rendered: String(input.title || input.slug || `Post ${postId}`), raw: String(input.title || '') },
           link: data.plainPermalinks ? `https://wp.test/?p=${postId}` : `https://wp.test/${input.slug}/`,
           slug: input.slug,
           status: input.status,
