@@ -228,8 +228,33 @@ test('article generation falls back when json_schema is unsupported', async (t) 
   store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k', wordpressBaseUrl: 'https://wp.example.com', wordpressUsername: 'a', wordpressAppPassword: 'p' }, 'site-fallback');
   const result = await article.generate({ keyword: 'crispy chicken wings', niche: 'food', siteId: 'site-fallback' });
   assert.equal(result.ok, true);
-  assert.ok(api.calls.length >= 2, 'must retry without response_format');
-  assert.ok(!('response_format' in api.calls[1]));
+  assert.ok(api.calls.length >= 2, 'must retry down the compatibility ladder');
+  // the final attempt drops response_format entirely (plain salvage mode)
+  assert.ok(!('response_format' in api.calls[api.calls.length - 1]), 'last attempt is plain JSON salvage');
+});
+
+test('generation recovers when json_schema is refused with wording that lacks the response_format keyword', async (t) => {
+  // DeepSeek/OpenRouter-style: rejects strict schema ("Response format ...",
+  // with a space) but accepts the json_object mode.
+  const api = await mocks.startArticleApiMock({ rejectJsonSchemaOnly: true });
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'deepseek-ai/deepseek-v4-flash-0731', articleApiKey: 'k', wordpressBaseUrl: 'https://wp.example.com', wordpressUsername: 'a', wordpressAppPassword: 'p' }, 'site-ds');
+  const result = await article.generate({ keyword: 'وصفة تشيز كيك الأوريو', niche: 'حلويات', siteId: 'site-ds' });
+  assert.equal(result.ok, true);
+  assert.ok(result.draft.htmlContent.includes('askinz-recipe-card'));
+  const modes = api.calls.map((c) => (c.response_format ? (c.response_format.type || '?') : 'plain'));
+  assert.deepEqual(modes[0], 'json_schema');
+  assert.ok(modes.includes('json_object'), 'ladder retries with json_object');
+});
+
+test('generation retries with a smaller token budget when the provider caps max_tokens', async (t) => {
+  const api = await mocks.startArticleApiMock({ rejectMaxTokens: 8000 });
+  t.after(() => api.server.close());
+  store.saveSiteSettings({ articleBaseUrl: api.url + '/v1', articleModel: 'gen-x', articleApiKey: 'k', wordpressBaseUrl: 'https://wp.example.com', wordpressUsername: 'a', wordpressAppPassword: 'p' }, 'site-tokens');
+  const result = await article.generate({ keyword: 'crispy chicken wings', niche: 'food', siteId: 'site-tokens' });
+  assert.equal(result.ok, true);
+  assert.ok(api.calls.at(-1).max_tokens <= 8000, 'the successful call used the provider token cap');
+  assert.ok(api.calls.some((c) => c.max_tokens === 12000), 'the first attempt used the standard budget');
 });
 
 // ---------------------------------------------------------------------------

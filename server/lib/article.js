@@ -74,10 +74,60 @@ function articleResponseFormat() {
 }
 
 /**
- * Providers disagree about response_format: some reject json_object, some
- * ignore it and answer in prose. Try structured output, fall back to a
- * plain request, then salvage the first JSON object from the text.
+ * Run an article completion down a compatibility ladder, because providers
+ * (OpenRouter/DeepSeek/Together/Ollama/...) disagree about structured output:
+ *   1. strict json_schema (OpenAI-compatible providers)
+ *   2. {type:'json_object'} (DeepSeek and most OpenAI-aliases support this)
+ *   3. no response_format at all, then salvage the JSON from fences/prose
+ * Retries happen on ANY structured-output rejection (we match the HTTP status
+ * too, not just the wording, so "Response format not supported" with a space
+ * no longer escapes detection) and on 400/422 responses.
+ * Returns { response, mode } or throws the last (real) provider error.
  */
+async function requestArticleCompletion({ baseUrl, apiKey, model, messages, temperature = 0.2, maxTokens }) {
+  const ladder = [
+    { mode: 'json_schema', responseFormat: articleResponseFormat() },
+    { mode: 'json_object', responseFormat: { type: 'json_object' } },
+    { mode: 'plain', responseFormat: undefined },
+  ];
+  // Some providers cap output below our 12k request (e.g. DeepSeek's 8k);
+  // step down the budget instead of failing the whole generation.
+  const tokenBudgets = [maxTokens, 8000, 6000].filter((v, i, arr) => v && arr.indexOf(v) === i && v <= maxTokens);
+  let lastError = null;
+  for (const budget of tokenBudgets) {
+    for (const step of ladder) {
+      const body = { model, max_tokens: budget, messages, temperature };
+      if (step.responseFormat) body.response_format = step.responseFormat;
+      try {
+        const response = await requestJson(chatEndpoint(baseUrl), 'POST', { Authorization: `Bearer ${apiKey}` }, body);
+        return { response, mode: step.mode };
+      } catch (error) {
+        lastError = error;
+        const status = Number(error && error.status) || 0;
+        const message = String(error && error.message || '').toLowerCase();
+        const formatRelated = /response.format|json_schema|json schema|structured|unsupported|unknown argument|invalid.*format|not supported/.test(message);
+        const tokenLimit = /max_tokens|maximum|too large|context.length|token limit|longer than|exceed/.test(message);
+        if (tokenLimit && (status === 400 || status === 422 || status === 413)) break; // retry with smaller budget
+        const clientFormatError = (status === 400 || status === 422) && formatRelated;
+        // 401/403/404/5xx and unrelated 400s will not be fixed by changing
+        // response_format or token budget — fail with the provider's real text.
+        if (!clientFormatError && !(status === 0 && formatRelated)) {
+          throw Object.assign(new Error(explainProviderError(error)), { status });
+        }
+      }
+    }
+  }
+  throw new Error(explainProviderError(lastError));
+}
+
+/** Keep the provider's actual message visible instead of a generic verdict. */
+function explainProviderError(error) {
+  const status = error && error.status ? ` (HTTP ${error.status})` : '';
+  const raw = String((error && error.message) || error || '').trim();
+  const snippet = raw.replace(/^Request failed \(\d+\):\s*/i, '').slice(0, 400);
+  return `Article API error${status}: ${snippet || 'no response body'}`;
+}
+
 async function requestCompletion({ baseUrl, apiKey, model, messages, temperature = 0.2, responseFormat }) {
   const body = { model, temperature, messages };
   if (responseFormat) body.response_format = responseFormat;
@@ -123,54 +173,55 @@ async function generate(request) {
     .replace(/\{\{keyword\}\}/g, keyword)
     .replace(/\{\{category\}\}/g, category);
   const provider = ProviderCompatibilityContract.normalize(settings.articleBaseUrl, settings.articleModel);
-  const endpoint = chatEndpoint(provider.baseUrl);
   const prompt = buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt });
 
-  const body = {
+  const messages = [
+    { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
+    { role: 'user', content: prompt },
+  ];
+  const { response } = await requestArticleCompletion({
+    baseUrl: provider.baseUrl,
+    apiKey: settings.articleApiKey,
     model: provider.model,
-    max_tokens: provider.maxOutputTokens,
-    messages: [
-      { role: 'system', content: resolvePrompt(settings.articleSystemPrompt, PROMPT_DEFAULTS.articleSystem) },
-      { role: 'user', content: prompt },
-    ],
+    messages,
     temperature: 0.7,
-    response_format: articleResponseFormat(),
-  };
-  const headers = { Authorization: `Bearer ${settings.articleApiKey}` };
-  let response;
-  try {
-    response = await requestJson(endpoint, 'POST', headers, body);
-  } catch (error) {
-    const message = String(error.message || '').toLowerCase();
-    if (!(message.includes('response_format') || message.includes('json_schema') || message.includes('unsupported'))) {
-      throw new Error(ProviderCompatibilityContract.diagnostic(error.message));
-    }
-    delete body.response_format;
-    response = await requestJson(endpoint, 'POST', headers, body);
-  }
+    maxTokens: provider.maxOutputTokens,
+  });
   const content = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;
-  const json = stripCodeFence(content);
-  let draft = applySeoDefaults(DraftContract.normalize(JSON.parse(json), category), keyword);
+  let draft = parseArticleDraft(content, category, keyword);
   if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
     const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
     const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
-    const repairPrompt = prompt + `\n${repairInstruction}`;
-    const repairBody = {
-      ...body,
-      messages: [
-        { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
-        { role: 'user', content: repairPrompt },
-      ],
-    };
-    const repairedResponse = await requestJson(endpoint, 'POST', headers, repairBody);
-    const repairedContent = repairedResponse.choices && repairedResponse.choices[0] && repairedResponse.choices[0].message && repairedResponse.choices[0].message.content;
-    draft = applySeoDefaults(DraftContract.normalize(JSON.parse(stripCodeFence(repairedContent)), category), keyword);
+    const repairMessages = [
+      { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
+      { role: 'user', content: `${prompt}\n${repairInstruction}` },
+    ];
+    const repaired = await requestArticleCompletion({
+      baseUrl: provider.baseUrl,
+      apiKey: settings.articleApiKey,
+      model: provider.model,
+      messages: repairMessages,
+      temperature: 0.4,
+      maxTokens: provider.maxOutputTokens,
+    });
+    const repairedContent = repaired.response.choices && repaired.response.choices[0] && repaired.response.choices[0].message && repaired.response.choices[0].message.content;
+    draft = parseArticleDraft(repairedContent, category, keyword);
     const completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
     if (!completeness.valid) {
       throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
     }
   }
   return { ok: true, draft };
+}
+
+/** Parse a model reply into a normalized draft, tolerating fences and prose. */
+function parseArticleDraft(content, category, keyword) {
+  const parsed = parseModelJson(stripCodeFence(content));
+  if (!parsed || typeof parsed !== 'object') {
+    const preview = String(content || '').replace(/\s+/g, ' ').slice(0, 300);
+    throw new Error(`The Article API did not return JSON (it answered with prose or an empty body). Switch the model to one that supports JSON output, or retry. Response preview: ${preview}`);
+  }
+  return applySeoDefaults(DraftContract.normalize(parsed, category), keyword);
 }
 
 function applySeoDefaults(draft, keyword) {

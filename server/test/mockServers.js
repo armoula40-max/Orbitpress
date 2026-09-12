@@ -331,9 +331,21 @@ function startArticleApiMock(options = {}) {
         }));
         return;
       }
+      if (options.rejectJsonSchemaOnly && parsed.response_format && JSON.stringify(parsed.response_format).includes('json_schema')) {
+        // Real OpenRouter/DeepSeek wording: "Response format" uses a space,
+        // so naive substring matching on "response_format" would miss it.
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Response format is not supported by this model' } }));
+        return;
+      }
       if (options.rejectResponseFormat && parsed.response_format) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'unsupported parameter: response_format json_schema' } }));
+        return;
+      }
+      if (options.rejectMaxTokens && Number(parsed.max_tokens) > options.rejectMaxTokens) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `max_tokens must be at most ${options.rejectMaxTokens}` } }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
