@@ -7,12 +7,17 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Base64
+import android.util.TypedValue
+import android.view.Gravity
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
@@ -20,6 +25,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.work.ExistingWorkPolicy
@@ -33,6 +41,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -42,24 +51,111 @@ private const val PINTEREST_SCAN_REQUEST = 7101
 class MainActivity : Activity() {
   private lateinit var webView: WebView
   private var fileCallback: ValueCallback<Array<Uri>>? = null
+  private var serverBase: String? = null
+  private var leavingForLogin = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    webView = WebView(this)
-    webView.settings.javaScriptEnabled = true
-    webView.settings.domStorageEnabled = true
-    webView.settings.allowFileAccess = false
-    webView.settings.allowContentAccess = true
-    webView.settings.javaScriptCanOpenWindowsAutomatically = false
+    createNotificationChannel()
+    val store = ConnectionStore(this)
+    val base = store.serverBase
+    val token = store.token
+    if (base.isNullOrBlank() || token.isNullOrBlank()) {
+      startActivity(Intent(this, ServerLoginActivity::class.java))
+      finish()
+      return
+    }
+    serverBase = base
+    buildShell(base, token)
+    webView.loadUrl("$base/")
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+    }
+  }
+
+  /**
+   * Thin server shell: a compact native top bar (server identity, refresh,
+   * logout) over a WebView that renders the whole tool from the VPS. The
+   * server's own bridge.js replaces the old bundled NativeBridge, so no
+   * JavascriptInterface is injected and scanning runs server-side.
+   */
+  private fun buildShell(base: String, token: String) {
+    val root = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setBackgroundColor(Color.parseColor("#0B1220"))
+    }
+
+    val bar = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+      setPadding(dp(12), dp(6), dp(6), dp(6))
+      setBackgroundColor(Color.parseColor("#0D1528"))
+    }
+    val titles = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    titles.addView(TextView(this).apply {
+      text = if (BuildConfig.APP_ROLE == "admin") "OrbitPress · المدير" else "OrbitPress"
+      setTextColor(Color.WHITE)
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+      setTypeface(typeface, android.graphics.Typeface.BOLD)
+    })
+    titles.addView(TextView(this).apply {
+      text = runCatching {
+        URL(base).let { url -> url.host + if (url.port != -1) ":${url.port}" else "" }
+      }.getOrDefault(base)
+      setTextColor(Color.parseColor("#7C8DB0"))
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+    })
+    bar.addView(titles)
+    bar.addView(barButton("⟳") { webView.reload() })
+    bar.addView(barButton("خروج") { confirmLogout() })
+    root.addView(bar)
+
+    webView = WebView(this).apply {
+      settings.javaScriptEnabled = true
+      settings.domStorageEnabled = true
+      settings.databaseEnabled = true
+      settings.allowFileAccess = false
+      settings.allowContentAccess = true
+      settings.mediaPlaybackRequiresUserGesture = false
+      settings.javaScriptCanOpenWindowsAutomatically = false
+      settings.userAgentString = settings.userAgentString + " OrbitPressAndroid/4.1"
+    }
     WebView.setWebContentsDebuggingEnabled(false)
+
+    val cookieManager = CookieManager.getInstance()
+    cookieManager.setAcceptCookie(true)
+    cookieManager.setAcceptThirdPartyCookies(webView, false)
+    cookieManager.setCookie(base, "orbitpress_token=${URLEncoder.encode(token, "UTF-8")}; path=/")
+    cookieManager.flush()
+
     webView.webViewClient = object : WebViewClient() {
       override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
         val url = request?.url ?: return false
-        if (url.scheme == "https" || url.scheme == "http") {
-          startActivity(Intent(Intent.ACTION_VIEW, url))
-          return true
+        if (url.scheme != "http" && url.scheme != "https") return false
+        val sameServer = runCatching {
+          val destination = URL(url.toString())
+          val origin = URL(base)
+          destination.host.equals(origin.host, ignoreCase = true) && destination.port == origin.port
+        }.getOrDefault(false)
+        if (sameServer) return false // app navigation stays inside the shell
+        startActivity(Intent(Intent.ACTION_VIEW, url)) // external links open in the browser
+        return true
+      }
+
+      override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: android.webkit.WebResourceResponse?) {
+        val status = errorResponse?.statusCode ?: return
+        if (status != 401 && status != 403) return
+        val path = request?.url?.path.orEmpty()
+        if (request?.isForMainFrame == true || path.startsWith("/api/")) {
+          val message = if (status == 403)
+            "تم رفض الوصول: كود الدخول محظور من قبل المدير. تواصل مع الإدارة."
+          else
+            "انتهت الجلسة أو الكود غير صالح. سجّل الدخول مجددًا."
+          runOnUiThread { returnToLogin(message) }
         }
-        return false
       }
     }
     webView.webChromeClient = object : WebChromeClient() {
@@ -68,20 +164,71 @@ class MainActivity : Activity() {
         fileCallback = callback
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
           addCategory(Intent.CATEGORY_OPENABLE)
-          type = "image/*"
+          type = if (params.acceptTypes?.any { it.contains("image") == true } == true) "image/*" else "*/*"
         }
         startActivityForResult(intent, FILE_PICKER_REQUEST)
         return true
       }
     }
-    webView.addJavascriptInterface(NativeBridge(this, webView), "Native")
-    webView.loadUrl("file:///android_asset/index.html")
-    setContentView(webView)
-    createNotificationChannel()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
-    }
+    root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    setContentView(root)
   }
+
+  private fun barButton(label: String, action: () -> Unit) = Button(this).apply {
+    text = label
+    setTextColor(Color.parseColor("#CBD5E1"))
+    setBackgroundColor(Color.TRANSPARENT)
+    minHeight = dp(40)
+    minimumHeight = dp(40)
+    setPadding(dp(10), 0, dp(10), 0)
+    setOnClickListener { action() }
+  }
+
+  private fun confirmLogout() {
+    android.app.AlertDialog.Builder(this)
+      .setTitle("تسجيل الخروج")
+      .setMessage("سيتم مسح كود الدخول من هذا التطبيق. يمكنك الدخول مجددًا بنفس الكود أو بكود جديد من المدير.")
+      .setPositiveButton("خروج") { _, _ ->
+        leavingForLogin = true
+        ConnectionStore(this).clear()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        startActivity(
+          Intent(this, ServerLoginActivity::class.java).apply {
+            putExtra(ServerLoginActivity.EXTRA_LOGOUT, true)
+            putExtra(ServerLoginActivity.EXTRA_SERVER, serverBase)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+          },
+        )
+        finish()
+      }
+      .setNegativeButton("إلغاء", null)
+      .show()
+  }
+
+  private fun returnToLogin(message: String) {
+    if (leavingForLogin) return
+    leavingForLogin = true
+    ConnectionStore(this).clear()
+    CookieManager.getInstance().removeAllCookies(null)
+    CookieManager.getInstance().flush()
+    startActivity(
+      Intent(this, ServerLoginActivity::class.java).apply {
+        putExtra(ServerLoginActivity.EXTRA_MESSAGE, message)
+        putExtra(ServerLoginActivity.EXTRA_SERVER, serverBase)
+        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+      },
+    )
+    finish()
+  }
+
+  @Deprecated("Deprecated in Java")
+  override fun onBackPressed() {
+    if (::webView.isInitialized && webView.canGoBack()) webView.goBack() else super.onBackPressed()
+  }
+
+  private fun dp(value: Int): Int =
+    (value * resources.displayMetrics.density + 0.5f).toInt()
 
   private fun createNotificationChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -94,18 +241,6 @@ class MainActivity : Activity() {
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
-    if (requestCode == PINTEREST_SCAN_REQUEST) {
-      val raw = data?.getStringExtra(PinterestScanActivity.EXTRA_RESULT)
-        ?: data?.getStringExtra(SocialScanActivity.EXTRA_RESULT)
-        ?: JSONObject().put("ok", false).put("message", "Social scan returned no result.").toString()
-      val platform = runCatching { JSONObject(raw).optString("platform").lowercase() }.getOrDefault("")
-      if (platform == "facebook" || platform == "reddit") {
-        webView.evaluateJavascript("window.__socialScanResult(${JSONObject.quote(raw)})", null)
-      } else {
-        webView.evaluateJavascript("window.__pinterestScanResult(${JSONObject.quote(raw)})", null)
-      }
-      return
-    }
     if (requestCode != FILE_PICKER_REQUEST) return
     val callback = fileCallback ?: return
     fileCallback = null
@@ -519,7 +654,7 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val response = http("https://api.cloudflare.com/client/v4/accounts/$accountId/ai/run/$model", "POST", mapOf("Authorization" to "Bearer ${settings.getString("imageApiToken")}", "Content-Type" to "application/json"), body.toString().toByteArray())
     val encoded = JSONObject(response).optString("image")
     require(encoded.isNotBlank()) { "Cloudflare returned no generated image." }
-    return ImagePayload(Base64.decode(encoded, Base64.DEFAULT), "image/jpeg", "jpg")
+    return imagePayloadFromProviderBytes(Base64.decode(encoded, Base64.DEFAULT))
   }
 
   private fun generateOpenAiCompatibleImage(settings: JSONObject, prompt: String, width: Int, height: Int): ImagePayload {
@@ -529,7 +664,24 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val item = JSONObject(response).getJSONArray("data").getJSONObject(0)
     val encoded = item.optString("b64_json")
     require(encoded.isNotBlank()) { "Image provider returned no base64 image." }
-    return ImagePayload(Base64.decode(encoded, Base64.DEFAULT), "image/png", "png")
+    return imagePayloadFromProviderBytes(Base64.decode(encoded, Base64.DEFAULT))
+  }
+
+  /**
+   * Labels provider output from its real magic bytes rather than the advertised format:
+   * OpenAI-compatible endpoints may return JPEG while documenting PNG, and providers may
+   * start returning WebP. Unrecognized data is decoded and re-encoded to standard JPEG.
+   */
+  private fun imagePayloadFromProviderBytes(bytes: ByteArray): ImagePayload {
+    require(bytes.isNotEmpty()) { "Image provider returned an empty image." }
+    val detected = PublishingContracts.detectImageMimeType(bytes)
+    if (detected == "image/jpeg" || detected == "image/png" || detected == "image/webp") {
+      val extension = if (detected == "image/jpeg") "jpg" else detected.removePrefix("image/")
+      return ImagePayload(bytes, detected, extension)
+    }
+    val decoded = decodeBitmapForTranscode(bytes)
+      ?: throw IllegalArgumentException("Image provider returned data that is not a supported JPEG, PNG, or WebP image.")
+    return ImagePayload(encodeJpeg(decoded), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
   }
 
   private fun publishPinterest(request: JSONObject): JSONObject {
@@ -594,7 +746,30 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     val settings = requireStoredSettings(request)
     val root = wpRoot(settings.getString("wordpressBaseUrl"))
     val profile = JSONObject(http("$root/wp-json/wp/v2/users/me?context=edit", "GET", wordpressHeaders(settings), null))
-    return JSONObject().put("ok", true).put("accountName", profile.optString("name", profile.optString("slug", "WordPress account")))
+    verifyMediaUpload(root, settings)
+    return JSONObject().put("ok", true)
+      .put("accountName", profile.optString("name", profile.optString("slug", "WordPress account")))
+      .put("uploadsVerified", true)
+  }
+
+  /**
+   * A successful GET /users/me only proves the application password is valid; it does not
+   * prove the role can upload media or that no firewall strips upload bodies. Round-trip a
+   * tiny JPEG through the media endpoint and delete it, so the connection test fails with
+   * an actionable message instead of a false positive that surfaces only at publish time.
+   */
+  private fun verifyMediaUpload(root: String, settings: JSONObject) {
+    val probeBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+    val probe = ImagePayload(encodeJpeg(probeBitmap), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
+    val uploaded = try {
+      JSONObject(postMediaBytes(root, settings, probe, "orbitpress-connection-test"))
+    } catch (error: IllegalStateException) {
+      throw IllegalStateException(WordPressUploadContract.describeMediaFailure(error.message), error)
+    }
+    val mediaId = uploaded.optInt("id", 0)
+    if (mediaId > 0) {
+      runCatching { http("$root/wp-json/wp/v2/media/$mediaId?force=true", "DELETE", wordpressHeaders(settings), null) }
+    }
   }
 
   private fun safeSiteId(value: String): String = value.ifBlank { "site-default" }.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
@@ -850,11 +1025,81 @@ private class NativeBridge(private val activity: Activity, private val webView: 
   }
 
   private fun uploadMedia(root: String, settings: JSONObject, image: ImagePayload, basename: String, altText: String): JSONObject {
-    val response = http("$root/wp-json/wp/v2/media", "POST", wordpressHeaders(settings) + mapOf("Content-Type" to image.mimeType, "Content-Disposition" to "attachment; filename=\"$basename.${image.extension}\""), image.bytes)
-    val media = JSONObject(response)
+    // WebP is rejected by older WordPress, multisite networks, and some security plugins;
+    // JPEG is accepted everywhere, so normalize proactively at the WordPress boundary.
+    val prepared = if (WordPressUploadContract.shouldTranscodeToJpeg(image.mimeType)) {
+      transcodeImageToJpeg(image) ?: image
+    } else {
+      image
+    }
+    val media = try {
+      JSONObject(postMediaBytes(root, settings, prepared, basename))
+    } catch (error: IllegalStateException) {
+      val message = error.message.orEmpty()
+      if (WordPressUploadContract.isFileTypeRejection(message) &&
+        prepared.mimeType != WordPressUploadContract.JPEG_MIME) {
+        // A PNG (or WebP that could not be pre-converted) was refused; retry once as plain JPEG.
+        val fallback = transcodeImageToJpeg(image)
+        if (fallback != null) {
+          try {
+            JSONObject(postMediaBytes(root, settings, fallback, basename))
+          } catch (retryError: IllegalStateException) {
+            throw IllegalStateException(WordPressUploadContract.describeMediaFailure(retryError.message), retryError)
+          }
+        } else {
+          throw IllegalStateException(WordPressUploadContract.describeMediaFailure(message), error)
+        }
+      } else if (WordPressUploadContract.isFileTypeRejection(message) ||
+        WordPressUploadContract.isUploadPermissionRejection(message)) {
+        throw IllegalStateException(WordPressUploadContract.describeMediaFailure(message), error)
+      } else {
+        throw error
+      }
+    }
     http("$root/wp-json/wp/v2/media/${media.getInt("id")}", "POST", wordpressHeaders(settings) + mapOf("Content-Type" to "application/json"), JSONObject().put("alt_text", altText.take(320)).toString().toByteArray())
     return media
   }
+
+  private fun postMediaBytes(root: String, settings: JSONObject, image: ImagePayload, basename: String): String =
+    http(
+      "$root/wp-json/wp/v2/media",
+      "POST",
+      wordpressHeaders(settings) + mapOf(
+        "Content-Type" to image.mimeType,
+        "Content-Disposition" to "attachment; filename=\"$basename.${image.extension}\"",
+      ),
+      image.bytes,
+    )
+
+  private fun transcodeImageToJpeg(image: ImagePayload): ImagePayload? {
+    val bitmap = decodeBitmapForTranscode(image.bytes) ?: return null
+    return ImagePayload(encodeJpeg(bitmap), WordPressUploadContract.JPEG_MIME, WordPressUploadContract.JPEG_EXTENSION)
+  }
+
+  /** Decodes any Android-supported image, flattening transparency onto white and guarding memory. */
+  private fun decodeBitmapForTranscode(bytes: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sampleSize = 1
+    val longestEdge = maxOf(bounds.outWidth, bounds.outHeight)
+    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+      while (longestEdge / sampleSize > WordPressUploadContract.MAX_TRANSCODE_EDGE) sampleSize *= 2
+    }
+    val source = BitmapFactory.decodeByteArray(
+      bytes,
+      0,
+      bytes.size,
+      BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    ) ?: return null
+    val flattened = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(flattened)
+    canvas.drawColor(Color.WHITE)
+    canvas.drawBitmap(source, 0f, 0f, null)
+    return flattened
+  }
+
+  private fun encodeJpeg(bitmap: Bitmap): ByteArray =
+    ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
 
   private fun resolveTagIds(root: String, settings: JSONObject, names: List<String>): JSONArray {
     val ids = JSONArray()

@@ -1,0 +1,119 @@
+/* feedspy.css — FeedSpy analyzer layer for the OrbitPress server edition. */
+
+.spy-toolbar {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 14px;
+  padding: 13px;
+  border: 1px dashed #c9b7d9;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #fbf8ff, #f4f0ff);
+}
+html[data-theme="night"] .spy-toolbar { background: linear-gradient(135deg, #151226, #1a1633); border-color: #43386b; }
+
+.spy-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: end; }
+.spy-cell { min-width: 120px; flex: 0 0 auto; }
+.spy-cell.grow { flex: 1 1 170px; }
+.spy-cell label { display: block; margin: 0 0 4px; color: #5c5674; font-size: 10.5px; font-weight: 850; }
+html[data-theme="night"] .spy-cell label { color: #aab8ce; }
+.spy-cell input, .spy-cell select { padding: 9px 10px; font-size: 13px; }
+.spy-custom { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+
+.spy-check { display: flex; align-items: end; }
+.spy-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: #43574a; cursor: pointer; padding-bottom: 9px; }
+.spy-switch input { width: auto; }
+html[data-theme="night"] .spy-switch { color: #dce8ff; }
+
+.spy-actions { display: flex; gap: 7px; margin-right: auto; }
+.spy-actions .small-button { white-space: nowrap; }
+.spy-ai { border-color: #d6006d44; background: #fff0f7 !important; color: #a00050 !important; }
+html[data-theme="night"] .spy-ai { background: #2a1030 !important; color: #ff8fce !important; border-color: #6d2f58 !important; }
+
+.spy-count { margin: 2px 0 8px; font-size: 11px; color: var(--muted); }
+
+/* stats strip */
+.spy-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 4px 0 10px; }
+.spy-stat { border: 1px solid var(--line); border-radius: 13px; padding: 10px 8px; text-align: center; background: var(--paper); }
+.spy-stat b { display: block; color: var(--forest); font: 700 19px/1.1 Georgia, serif; }
+.spy-stat span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 750; }
+html[data-theme="night"] .spy-stat { background: #0f1a2d; border-color: #263b5d; }
+html[data-theme="night"] .spy-stat b { color: #65f5c8; }
+
+/* weekday activity chart */
+.spy-chart { margin: 2px 0 12px; padding: 10px 12px 6px; border-radius: 13px; background: #fbfdff; border: 1px solid var(--line); }
+html[data-theme="night"] .spy-chart { background: #101d33; border-color: #263b5d; }
+.spy-chart-title { margin: 0 0 8px; font-size: 11px; font-weight: 800; color: var(--muted); }
+.spy-bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; height: 74px; }
+.spy-bar { display: grid; grid-template-rows: 1fr auto; gap: 3px; height: 100%; text-align: center; }
+.spy-bar i { display: block; align-self: end; border-radius: 6px 6px 0 0; background: linear-gradient(180deg, #5b6cff, #4169ff); min-height: 3px; }
+.spy-bar i.peak { background: linear-gradient(180deg, #f07f68, #d6006d); box-shadow: 0 0 10px #d6006d44; }
+.spy-bar span { font-size: 9px; color: var(--muted); font-weight: 700; }
+
+/* posts */
+.spy-post a { color: inherit; text-decoration: none; }
+.spy-post a:hover { text-decoration: underline; }
+.spy-post.seen { opacity: .55; }
+.spy-post.seen .pin-result-title { text-decoration: line-through; text-decoration-color: #9994a866; text-decoration-thickness: 2px; }
+.spy-post-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.spy-open { text-decoration: none; display: inline-flex; align-items: center; }
+.spy-chip { background: #eef2ff; color: #39477d; border-radius: 999px; padding: 3px 8px; font-size: 10.5px; font-weight: 800; }
+html[data-theme="night"] .spy-chip { background: #1a2b4d; color: #c7d8ff; }
+
+.pin-score.v-hot { background: #ffe1dc; color: #b13324; box-shadow: 0 0 0 1px #ffb3a6 inset; }
+.pin-score.v-warm { background: #fff4d6; color: #92600f; }
+.pin-score.v-cold { background: #e8f0ff; color: #3a56a5; }
+.pin-score.v-none { background: #f0efea; color: #8a8677; }
+
+/* AI report (RTL) */
+.spy-ai-report { text-align: right; }
+.spy-ai-report h3 { margin: 0 0 6px; }
+.spy-ai-report h4 { margin: 16px 0 6px; font-size: 13px; color: #a00050; }
+.spy-ai-report p { color: var(--muted); }
+html[data-theme="night"] .spy-ai-report h4 { color: #ff8fce; }
+.spy-ai-list { margin: 0; padding-right: 20px; color: #43574a; font-size: 13px; line-height: 1.7; }
+html[data-theme="night"] .spy-ai-list { color: #dce8ff; }
+
+/* sessions card */
+.spy-session { border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-top: 10px; background: #fffdfa; }
+html[data-theme="night"] .spy-session { background: #0f1a2d; border-color: #263b5d; }
+.spy-session.on { border-color: #7fca8f; }
+.spy-session-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spy-session-head b { font-size: 15px; }
+.spy-session-form { display: grid; gap: 8px; margin-top: 10px; }
+.spy-session .remove { margin-top: 10px; }
+
+.spy-hub { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 12px; font-weight: 700; }
+.spy-hub span { padding: 5px 10px; border-radius: 999px; background: #fdf3ee; color: #8d5a3a; }
+.spy-hub span.on { background: #e5f3df; color: #397044; }
+.spy-hub em { flex-basis: 100%; color: var(--muted); font-size: 11px; font-style: normal; font-weight: 500; }
+
+@media (max-width: 520px) {
+  .spy-stats { grid-template-columns: repeat(2, 1fr); }
+  .spy-row { flex-direction: column; align-items: stretch; }
+  .spy-cell { width: 100%; }
+  .spy-actions { margin-right: 0; }
+}
+
+/* verification step (2FA / device approval) */
+.spy-verify { display: grid; gap: 8px; margin-top: 10px; padding: 12px; border: 1px dashed #efd9a7; border-radius: 13px; background: #fffaf0; }
+html[data-theme="night"] .spy-verify { background: #2a2210; border-color: #6b5a2b; }
+.spy-verify-hint { margin: 0 0 6px; font-weight: 700; color: #79521d; }
+html[data-theme="night"] .spy-verify-hint { color: #ffd98a; }
+.spy-verify input { letter-spacing: .3em; text-align: center; font-size: 17px; font-weight: 800; }
+
+.spy-viral {
+  border-color: #f0a35e !important;
+  color: #ffd9b3 !important;
+}
+.spy-toolbar .spy-actions select {
+  width: auto;
+  min-width: 56px;
+  padding: 4px 6px;
+}
+
+.spy-source {
+  text-decoration: none;
+}
+.spy-source:hover {
+  text-decoration: underline;
+}
