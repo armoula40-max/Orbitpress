@@ -139,10 +139,19 @@ router.get('/pinflux/source-pins', asyncRoute(async (req, res) => {
     return res.status(401).json({ ok: false, message: 'سجّل الدخول إلى حساب Pinterest الرئيسي من Settings أولاً.' });
   }
   const publisher = require('./scraper/pinterestPublish');
-  const username = await publisher.sessionAlive(publisher.hosts(), cookieHeader);
-  if (!username) return res.status(401).json({ ok: false, message: 'جلسة الحساب الرئيسي موجودة لكن Pinterest لم يؤكد الحساب.' });
+  const hosts = publisher.hosts();
+  let username = '';
+  try { username = await publisher.sessionAlive(hosts, cookieHeader); } catch { /* scan/list below is the functional proof */ }
+  let listed;
+  try {
+    listed = await publisher.listMyBoards(hosts, cookieHeader, username || '');
+  } catch (error) {
+    return res.status(401).json({ ok: false, message: error.message || 'رفض Pinterest جلسة الحساب الرئيسي.' });
+  }
+  const resolvedUsername = listed.username || username;
+  if (!resolvedUsername) return res.status(401).json({ ok: false, message: 'جلسة الحساب الرئيسي موجودة لكن Pinterest لم يؤكد الحساب. أعد التحقق من Settings أو استورد Cookies الجلسة.' });
   const result = await pinterest.scanPinterest({
-    url: `https://www.pinterest.com/${encodeURIComponent(username)}/_created/`,
+    url: `https://www.pinterest.com/${encodeURIComponent(resolvedUsername)}/_created/`,
     maxItems: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
     scrolls: 6,
     useSession: true,
