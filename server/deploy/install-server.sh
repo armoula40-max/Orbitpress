@@ -2,7 +2,7 @@
 # OrbitPress Server Edition — one-shot installer for a fresh Ubuntu 22.04/24.04 VPS.
 #
 # Usage on the server (as root or with sudo):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/armoula40-max/Orbitpress/arena/01a08173-orbitpress/server/deploy/install-server.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/armoula40-max/Orbitpress/feature/orbitpress-polish/server/deploy/install-server.sh)
 # or after cloning the repo:
 #   bash server/deploy/install-server.sh
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 APP_DIR="${ORBITPRESS_DIR:-/opt/orbitpress}"
 REPO_URL="${ORBITPRESS_REPO:-https://github.com/armoula40-max/Orbitpress.git}"
-BRANCH="${ORBITPRESS_BRANCH:-arena/01a08173-orbitpress}"
+BRANCH="${ORBITPRESS_BRANCH:-feature/orbitpress-polish}"
 
 log() { printf '\033[1;32m[orbitpress]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[orbitpress] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }

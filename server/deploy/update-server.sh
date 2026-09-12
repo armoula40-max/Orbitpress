@@ -3,7 +3,7 @@
 # it locally even when this deploy clone was made single-branch), rebuild.
 set -euo pipefail
 APP_DIR="${ORBITPRESS_DIR:-/opt/orbitpress}"
-BRANCH="${ORBITPRESS_BRANCH:-arena/01a08173-orbitpress}"
+BRANCH="${ORBITPRESS_BRANCH:-feature/orbitpress-polish}"
 
 cd "$APP_DIR"
 

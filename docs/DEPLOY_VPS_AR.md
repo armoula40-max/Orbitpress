@@ -24,7 +24,7 @@
 ادخل بالـ SSH إلى سيرفرك ونفّذ كـ root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/armoula40-max/Orbitpress/arena/01a08173-orbitpress/server/deploy/install-server.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/armoula40-max/Orbitpress/feature/orbitpress-polish/server/deploy/install-server.sh)
 ```
 
 السكربت يقوم آلياً بـ: تثبيت Docker ← استنساخ المشروع في `/opt/orbitpress` ←
