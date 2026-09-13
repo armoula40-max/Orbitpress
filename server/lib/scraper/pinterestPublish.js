@@ -123,8 +123,14 @@ function envelopeOf(text) {
 }
 
 function looksLikeAuthFailure(status, text) {
-  if (status === 401 || status === 403) return true;
   const parsed = envelopeOf(text);
+  const resourceError = parsed && parsed.resource_response && parsed.resource_response.error;
+  const errorCode = Number((resourceError && (resourceError.api_error_code || resourceError.code)) || (parsed && parsed.api_error_code) || 0);
+  const errorMessage = String((resourceError && (resourceError.message_detail || resourceError.message)) || (parsed && parsed.message) || '').toLowerCase();
+  // Pinterest uses HTTP 401 for both expired sessions and a valid session
+  // trying to edit a board it does not own. Code 7 is the latter.
+  if (errorCode === 7 || /not permitted to access|permission to edit|don't have permission/.test(errorMessage)) return false;
+  if (status === 401 || status === 403) return true;
   if (!parsed) return false;
   if (Number(parsed.code) === 2) return true;
   if (String(parsed.status) === 'failure' && /auth|log\s?in|logged|session|unauthor/i.test(String(parsed.message || ''))) return true;
@@ -159,6 +165,11 @@ async function postResource(hostsList, cookieHeader, resource, options, sourceUr
         throw stageError('session', `${SESSION_RELOGIN_MESSAGE} (${detailOf({ body: text }, 'authentication code 2')})`, { auth: true });
       }
       if (!parsed) throw stageError(stage, `رد غير مفهوم من Pinterest: ${String(text).slice(0, 160)}`);
+      const resourceError = parsed.resource_response && parsed.resource_response.error;
+      const errorCode = Number((resourceError && (resourceError.api_error_code || resourceError.code)) || parsed.api_error_code || 0);
+      if (errorCode === 7) {
+        throw stageError('board', 'Pinterest رفض النشر لأن الحساب المتصل لا يملك صلاحية التعديل على هذا البورد. اختر بوردًا ظاهرًا في قائمة بوردات الحساب المتصل، أو أعد تسجيل الدخول بالحساب الصحيح.');
+      }
       return parsed;
     } catch (error) {
       if (error.auth) throw error;
@@ -593,7 +604,11 @@ async function listMyBoards(hostsList, cookieHeader, knownUsername = '') {
 async function resolveBoard(cookieHeader, value, knownUsername = '', preloaded = null) {
   const raw = String(value || '').trim();
   const mirrors = hosts();
-  if (/^\d+$/.test(raw)) return { id: raw, boards: preloaded || [] };
+  if (/^\d+$/.test(raw)) {
+    const boards = preloaded || [];
+    if (boards.length && !boards.some((board) => String(board.id) === raw)) return { boards, wanted: raw };
+    return { id: raw, boards };
+  }
 
   const urlMatch = raw.match(/pinterest\.com\/([^/]+)\/([^/?#]+)/);
   const slashMatch = !urlMatch && /^[\w.-]+\/[\w.-]+$/.test(raw) ? raw.match(/^([^/]+)\/([^/]+)$/) : null;
@@ -684,9 +699,9 @@ async function sessionAlive(hostsList, cookieHeader) {
   }
 }
 
-async function publishPinWithSession({ boardId, title, description, link, image, altText }) {
+async function publishPinWithSession({ boardId, title, description, link, image, altText, accountId = 'default' }) {
   const sessions = require('./sessions');
-  const cookieHeader = await sessions.cookieHeader('pinterest').catch(() => '');
+  const cookieHeader = await sessions.cookieHeader('pinterest', accountId).catch(() => '');
   if (!cookieHeader) return { ok: false, stage: 'session', message: 'لا توجد جلسة Pinterest متصلة — اربط الحساب من الإعدادات أولاً.' };
   if (!/_pinterest_sess=/.test(cookieHeader)) {
     return { ok: false, stage: 'session', message: 'ملف جلسة Pinterest ناقص — اقطع الاتصال من البطاقة وسجّل الدخول مجدداً (أو استورد الكوكيز)، ثم أعد النشر.' };
@@ -748,6 +763,7 @@ async function publishPinWithSession({ boardId, title, description, link, image,
     return { ok: true, pinId: created.pinId, pinUrl: created.pinUrl, linkState };
   } catch (modernError) {
     if (modernError.auth) return { ok: false, stage: 'session', message: modernError.message };
+    if (modernError.stage === 'board') return { ok: false, stage: 'board', message: modernError.message };
     probe('modern-flow-failed', { stage: modernError.stage, message: String(modernError.message).slice(0, 400) });
 
     // Fallback: the older /upload-image/ + remote image_url create flow.
