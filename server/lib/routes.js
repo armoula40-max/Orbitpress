@@ -124,7 +124,7 @@ router.post('/pinflux/plan', asyncRoute(async (req, res) => {
   const groupMap = new Map(data.groups.map((g) => [g.id, g]));
   const operations = [];
   data.groups.filter((g) => g.enabled).forEach((group) => {
-    data.accounts.filter((a) => a.enabled && a.groupId === group.id).slice(0, group.maxOperations).forEach((account) => {
+    data.accounts.filter((a) => a.enabled && a.connected && a.groupId === group.id).slice(0, group.maxOperations).forEach((account) => {
       // A board is optional: PinFlux may target the connected Pinterest
       // account itself. When a board is selected, retain it as a narrower
       // destination without making it a prerequisite for planning.
