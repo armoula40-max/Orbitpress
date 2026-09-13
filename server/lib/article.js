@@ -186,7 +186,13 @@ async function generate(request) {
       internalCandidates = realPosts.map((p) => String(p.title || '').trim()).filter(Boolean).slice(0, 40);
     }
   } catch { /* no WordPress connection yet: model still suggests anchors */ }
-  const maxTokens = 12000;
+  // A roundup scales with the number of complete recipe objects. The old fixed
+  // 12k budget was routinely truncated for requests such as "10 recipes",
+  // leaving the last fields of one recipe empty and triggering a misleading
+  // Recipe 1/incomplete error on the repair pass.
+  const maxTokens = requestedRecipeCount > 0
+    ? Math.min(30000, Math.max(14000, requestedRecipeCount * 1800))
+    : 12000;
   const prompt = buildPrompt({ keyword, niche, requestedType, category, keywords, titleList, requestedRecipeCount, customizedTextPrompt, internalCandidates });
 
   const messages = [
@@ -197,26 +203,31 @@ async function generate(request) {
   const content = first.response.choices && first.response.choices[0] && first.response.choices[0].message && first.response.choices[0].message.content;
   let draft = parseArticleDraft(content, category, keyword);
   let provenance = first.provenance;
-  if (requestedRecipeCount > 0 && !LongFormCompletenessContract.validate(draft, requestedRecipeCount).valid) {
-    const issue = LongFormCompletenessContract.validate(draft, requestedRecipeCount).reason;
+  let completeness = requestedRecipeCount > 0
+    ? LongFormCompletenessContract.validate(draft, requestedRecipeCount)
+    : { valid: true, reason: '' };
+  let repairPasses = 0;
+  while (!completeness.valid && repairPasses < 2) {
+    const issue = completeness.reason;
     const repairInstruction = resolvePrompt(settings.recipeRepairPrompt, PROMPT_DEFAULTS.recipeRepairInstruction, { count: requestedRecipeCount, issue });
     const repairMessages = [
       { role: 'system', content: resolvePrompt(settings.recipeRepairSystemPrompt, PROMPT_DEFAULTS.recipeRepairSystem) },
-      { role: 'user', content: `${prompt}\n${repairInstruction}` },
+      { role: 'user', content: `${prompt}\n\n${repairInstruction}\n\nPREVIOUS JSON DRAFT TO REPAIR (preserve every valid recipe and only fill or correct incomplete fields; do not shorten the body):\n${JSON.stringify(draft)}` },
     ];
-    const repaired = await requestArticleCompletion({ settings, messages: repairMessages, temperature: 0.4, maxTokens });
+    const repaired = await requestArticleCompletion({ settings, messages: repairMessages, temperature: 0.35, maxTokens });
     const repairedContent = repaired.response.choices && repaired.response.choices[0] && repaired.response.choices[0].message && repaired.response.choices[0].message.content;
     draft = parseArticleDraft(repairedContent, category, keyword);
+    repairPasses += 1;
     provenance = {
       ...repaired.provenance,
       attempts: [...provenance.attempts, ...repaired.provenance.attempts],
-      repairPasses: 1,
+      repairPasses,
       repairReason: issue,
     };
-    const completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
-    if (!completeness.valid) {
-      throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
-    }
+    completeness = LongFormCompletenessContract.validate(draft, requestedRecipeCount);
+  }
+  if (!completeness.valid) {
+    throw new Error(`The Article API returned incomplete long-form output: ${completeness.reason}. Please retry with a provider that supports structured long-form output.`);
   }
   // Non-secret generation provenance: which provider/model actually answered,
   // structured-output mode, fallback switch and repair attempts.
