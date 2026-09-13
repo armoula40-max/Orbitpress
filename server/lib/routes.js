@@ -124,10 +124,14 @@ router.post('/pinflux/plan', asyncRoute(async (req, res) => {
   const groupMap = new Map(data.groups.map((g) => [g.id, g]));
   const operations = [];
   data.groups.filter((g) => g.enabled).forEach((group) => {
-    data.accounts.filter((a) => a.enabled && a.groupId === group.id && a.boardId).slice(0, group.maxOperations).forEach((account) => {
-      const key = `${data.sourcePinId}:${account.id}:${account.boardId}`;
+    data.accounts.filter((a) => a.enabled && a.groupId === group.id).slice(0, group.maxOperations).forEach((account) => {
+      // A board is optional: PinFlux may target the connected Pinterest
+      // account itself. When a board is selected, retain it as a narrower
+      // destination without making it a prerequisite for planning.
+      const targetType = account.boardId ? 'board' : 'account';
+      const key = `${data.sourcePinId}:${account.id}:${targetType}:${account.boardId || 'account'}`;
       if (data.completed.includes(key)) return;
-      operations.push({ key, pinId: data.sourcePinId, accountId: account.id, accountName: account.name, boardId: account.boardId, groupId: group.id, parentGroupId: group.parentId, delaySeconds: group.delaySeconds, action: 'save_or_repin' });
+      operations.push({ key, pinId: data.sourcePinId, accountId: account.id, accountName: account.name, targetType, boardId: account.boardId, groupId: group.id, parentGroupId: group.parentId, delaySeconds: group.delaySeconds, action: 'save_or_repin' });
     });
   });
   if (data.accounts.some((a) => !groupMap.has(a.groupId))) errors.push('كل حساب يجب أن يرتبط بمجموعة موجودة.');
