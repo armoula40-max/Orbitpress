@@ -2,7 +2,7 @@
 /**
  * images.js — local image storage + validation, mirroring the Android bridge:
  *  - parseImage(dataUrl | local://ref) with real byte-sniffing
- *  - Pinterest images must be an exact 2:3 portrait (JPEG/PNG/WebP)
+ *  - Pinterest images accept any readable dimensions, including long portraits
  *  - files stored per site under data/images/<siteId>/<uuid>.<ext>
  */
 const fs = require('fs');
@@ -98,12 +98,10 @@ function validateImage(bytes, mime, pinterest) {
   if (!bytes || bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) {
     throw new Error('Choose an image smaller than 12 MB.');
   }
-  if (pinterest) {
-    const dims = imageDimensions(bytes, mime);
-    if (!dims || !(dims.width > 0 && dims.height > 0 && dims.width * 3 === dims.height * 2)) {
-      throw new Error('Pinterest image must have an exact 2:3 portrait ratio, such as 1000×1500.');
-    }
-  }
+  // Pinterest supports several portrait formats. Do not force an exact 2:3
+  // ratio: long pins and user-supplied vertical images are valid inputs too.
+  // `pinterest` remains part of the signature for API compatibility.
+  void pinterest;
   return { bytes, mimeType: mime, extension: extensionFor(mime), width: undefined };
 }
 
@@ -133,7 +131,7 @@ function parseImageReference(reference, pinterest, siteId) {
 
 // --- operations exposed through the bridge --------------------------------
 
-/** Pinterest accepts pins and plain Pinterest uploads: both must be 2:3. */
+/** Pinterest accepts pins and plain Pinterest uploads in multiple portrait formats, including long images. */
 function pinterestKind(kind) {
   return kind === 'pinterest' || kind === 'pin';
 }

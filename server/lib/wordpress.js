@@ -1024,7 +1024,7 @@ async function generateImage(request) {
     ? String((settings.pinterestPrompts.find((t) => t && t.prompt) || {}).prompt || '')
     : '';
   const defaultPrompt = kind === 'pinterest'
-    ? 'Amateur editorial photograph taken with a premium smartphone camera, natural close-up of {{title}}, clearly showing {{keyword}}, authentic user-generated detail, realistic textures, soft available light, portrait 2:3 Pinterest composition, strong single focal subject, clean negative space, no text, no words, no letters, no numbers, no logos, no watermark, no collage, no artificial product render, no studio-perfect CGI.'
+    ? 'Amateur editorial photograph taken with a premium smartphone camera, natural close-up of {{title}}, clearly showing {{keyword}}, authentic user-generated detail, realistic textures, soft available light, flexible vertical Pinterest composition, including tall or long formats, strong single focal subject, clean negative space, no text, no words, no letters, no numbers, no logos, no watermark, no collage, no artificial product render, no studio-perfect CGI.'
     : 'Amateur editorial photograph taken with a premium smartphone camera, natural close-up of {{title}}, clearly showing {{keyword}}, authentic user-generated detail, realistic textures, soft available light, natural perspective, balanced editorial composition, useful practical context, no text, no words, no letters, no numbers, no logos, no watermark, no collage, no artificial product render, no studio-perfect CGI.';
   const configuredPrompt = String(
     kind === 'pinterest' ? (settings.pinterestPrompt || templateFallback || '') : (settings.imagePrompt || ''),

@@ -1016,11 +1016,9 @@ private class NativeBridge(private val activity: Activity, private val webView: 
 
   private fun validateImage(bytes: ByteArray, mime: String, pinterest: Boolean): ImagePayload {
     require(bytes.isNotEmpty() && bytes.size <= 12_000_000) { "Choose an image smaller than 12 MB." }
-    if (pinterest) {
-      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-      BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-      require(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outWidth * 3 == bounds.outHeight * 2) { "Pinterest image must have an exact 2:3 portrait ratio, such as 1000×1500." }
-    }
+    // Pinterest accepts multiple portrait formats, including long vertical images.
+    // Keep the byte/type/size validation but do not force an exact 2:3 ratio.
+    if (pinterest) require(bytes.isNotEmpty()) { "Pinterest image is empty." }
     return ImagePayload(bytes, mime, when (mime) { "image/jpeg" -> "jpg"; "image/webp" -> "webp"; else -> "png" })
   }
 

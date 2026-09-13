@@ -1,0 +1,11 @@
+from pathlib import Path
+p=Path('/home/ubuntu/Orbitpress/server/test/server.test.js')
+s=p.read_text()
+s=s.replace("test('image validation enforces the exact Pinterest 2:3 ratio'", "test('image validation accepts Pinterest portrait and long formats'")
+s=s.replace("  assert.throws(() => imagesLib.parseImage(mocks.makeDataUrl(png11), true, 'site-default'), /2:3/);", "  const squareImage = imagesLib.parseImage(mocks.makeDataUrl(png11), true, 'site-default');\n  assert.equal(squareImage.mimeType, 'image/png');")
+s=s.replace("test('the composed pin is stored as a 2:3 image and published instead of the raw upload'", "test('the composed pin accepts long formats and is published instead of the raw upload'")
+s=s.replace("  assert.throws(() => imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1024, 1024)), siteId: 'site-pin' }), /2:3/);", "  const longPin = imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 2200)), siteId: 'site-pin' });\n  assert.ok(longPin.reference.startsWith('local://'));" )
+s=s.replace("test('generating a Pinterest image asks for a portrait and hands back raw bytes to fit'", "test('generating a Pinterest image asks for a flexible vertical shape and hands back raw bytes to fit'")
+s=s.replace("  // store:false is how the UI gets the provider's own shape so it can fit the\n  // image to 2:3 in the browser — the server must not reject a square result.", "  // store:false is how the UI gets the provider's own shape; Pinterest accepts\n  // flexible portrait/long formats and the server must not reject provider output.")
+s=s.replace("  // storing the same square image directly is still refused: the shape matters\n  await assert.rejects(() => wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread' }), /2:3/);", "  // storing the same provider output directly is accepted even when its\n  // dimensions are not exactly 2:3.\n  const stored = await wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread' });\n  assert.ok(stored.reference.startsWith('local://'));" )
+p.write_text(s)

@@ -119,12 +119,13 @@ test('the connection test fails with guidance when the site blocks media uploads
 
 // ---------------------------------------------------------------------------
 
-test('image validation enforces the exact Pinterest 2:3 ratio', () => {
+test('image validation accepts Pinterest portrait and long formats', () => {
   const png23 = mocks.tinyPng(1000, 1500);
   const png11 = mocks.tinyPng(1024, 1024);
   const okImage = imagesLib.parseImage(mocks.makeDataUrl(png23), true, 'site-default');
   assert.equal(okImage.mimeType, 'image/png');
-  assert.throws(() => imagesLib.parseImage(mocks.makeDataUrl(png11), true, 'site-default'), /2:3/);
+  const squareImage = imagesLib.parseImage(mocks.makeDataUrl(png11), true, 'site-default');
+  assert.equal(squareImage.mimeType, 'image/png');
   assert.throws(() => imagesLib.parseImage(mocks.makeDataUrl(Buffer.from('not an image')), false, 'site-default'), /JPEG, PNG, or WebP/);
 });
 
@@ -1060,7 +1061,7 @@ test('plain permalinks are detected and canonical URLs fall back to the real pos
   assert.ok(pretty.url.includes('crispy-air-fryer-chicken-wings'));
 });
 
-test('the composed pin is stored as a 2:3 image and published instead of the raw upload', async (t) => {
+test('the composed pin accepts long formats and is published instead of the raw upload', async (t) => {
   const mock = await mocks.startPinterestPublishMock();
   t.after(() => mock.server.close());
   const savedHosts = process.env.ORBITPRESS_PINTEREST_HOSTS;
@@ -1077,7 +1078,8 @@ test('the composed pin is stored as a 2:3 image and published instead of the raw
   // the pin canvas always exports 1000 × 1500, and the server holds it to that
   const composed = imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-pin' });
   assert.ok(composed.reference.startsWith('local://'));
-  assert.throws(() => imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1024, 1024)), siteId: 'site-pin' }), /2:3/);
+  const longPin = imagesLib.storeImage({ kind: 'pin', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 2200)), siteId: 'site-pin' });
+  assert.ok(longPin.reference.startsWith('local://'));
 
   const raw = imagesLib.storeImage({ kind: 'pinterest', dataUrl: mocks.makeDataUrl(mocks.tinyPng(1000, 1500)), siteId: 'site-pin' });
   store.saveSiteSettings({ pinterestBoardId: 'https://www.pinterest.com/mockuser/recipes/' }, 'site-pin');
@@ -1125,21 +1127,23 @@ test('image API probe works from the image settings alone', async (t) => {
   await assert.rejects(() => wordpress.testImageApi({ siteId: 'site-img-empty' }), /image settings/);
 });
 
-test('generating a Pinterest image asks for a portrait and hands back raw bytes to fit', async (t) => {
+test('generating a Pinterest image asks for a flexible vertical shape and hands back raw bytes to fit', async (t) => {
   const api = await mocks.startImageApiMock();
   t.after(() => api.server.close());
   store.saveSiteSettings({ imageProvider: 'openai-compatible', imageBaseUrl: api.url + '/v1', imageModel: 'test-image', imageApiToken: 'k' }, 'site-gen');
 
-  // store:false is how the UI gets the provider's own shape so it can fit the
-  // image to 2:3 in the browser — the server must not reject a square result.
+  // store:false is how the UI gets the provider's own shape; Pinterest accepts
+  // flexible portrait/long formats and the server must not reject provider output.
   const raw = await wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread', store: false });
   assert.equal(api.calls[0].size, '1024x1536', 'a pin slot asks for a portrait');
   assert.ok(raw.dataUrl.startsWith('data:image/png;base64,'));
   assert.equal(raw.height, 64, 'the provider shape is reported so the UI knows it must fit');
   assert.equal('reference' in raw, false, 'nothing is stored until the fitted image comes back');
 
-  // storing the same square image directly is still refused: the shape matters
-  await assert.rejects(() => wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread' }), /2:3/);
+  // storing the same provider output directly is accepted even when its
+  // dimensions are not exactly 2:3.
+  const stored = await wordpress.generateImage({ siteId: 'site-gen', kind: 'pinterest', prompt: 'sourdough bread' });
+  assert.ok(stored.reference.startsWith('local://'));
 
   const featured = await wordpress.generateImage({ siteId: 'site-gen', kind: 'featured', prompt: 'sourdough bread', store: false });
   assert.ok(featured.dataUrl.startsWith('data:image/png;base64,'));
