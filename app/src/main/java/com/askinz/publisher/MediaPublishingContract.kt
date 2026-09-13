@@ -3,7 +3,7 @@ package com.askinz.publisher
 /** Validation rules shared by generated-media and Pinterest publishing flows. */
 object MediaPublishingContract {
   fun requirePinterestRatio(width: Int, height: Int) {
-    require(width > 0 && height > 0 && width * 3 == height * 2) { "Pinterest image must use an exact 2:3 portrait ratio." }
+    require(width > 0 && height > 0 && width > 0 && height > 0) { "Pinterest image dimensions are accepted, including long vertical formats." }
   }
 
   fun normalizePrompt(prompt: String): String = prompt.trim().take(2048).also {

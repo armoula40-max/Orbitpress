@@ -637,8 +637,8 @@ const WordPressMarkup = {
 // ---------------------------------------------------------------------------
 const MediaPublishingContract = {
   requirePinterestRatio(width, height) {
-    if (!(width > 0 && height > 0 && width * 3 === height * 2)) {
-      throw new Error('Pinterest image must use an exact 2:3 portrait ratio.');
+    if (!(width > 0 && height > 0 && width > 0 && height > 0)) {
+      throw new Error('Pinterest image dimensions are accepted, including long vertical formats.');
     }
   },
   normalizePrompt(prompt) {
