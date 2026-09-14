@@ -1134,8 +1134,11 @@ private class NativeBridge(private val activity: Activity, private val webView: 
     repeat(4) { hop ->
       val connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = currentMethod
-        connectTimeout = 25_000
-        readTimeout = 90_000
+        connectTimeout = 30_000
+        // Long-form recipe roundups may require an initial generation plus a
+        // completeness repair request. Do not terminate the provider call
+        // while the WebView is still waiting for the final structured JSON.
+        readTimeout = 180_000
         instanceFollowRedirects = false
         headers.forEach { (key, value) -> setRequestProperty(key, value) }
         if (currentBody != null) { doOutput = true; outputStream.use { it.write(currentBody!!) } }
