@@ -702,7 +702,12 @@ renderReview()}
       const select=$(selectId),status=$(statusId);
       if(!select)return;
       try{
-        const result=await api('/sessions/pinterest/boards?accountId=default');
+        // Settings and publishing must read the saved browser session. The
+        // admin console's api() helper is scoped to a later script and is
+        // unavailable here; this route also deliberately avoids Pinterest API.
+        const response=await fetch('/api/sessions/pinterest/boards?accountId=default',{credentials:'same-origin',headers:{Accept:'application/json'}});
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok||result.ok===false)throw new Error(result.message||`HTTP ${response.status}`);
         const boards=Array.isArray(result.boards)?result.boards:[];
         const saved=String(draft.pinterestBoardId||state.settingsSummary?.pinterestBoardId||'');
         select.innerHTML='<option value="">اختر البورد الذي سينشر فيه الدبوس</option>'+boards.map(board=>`<option value="${escapeHtml(board.id||'')}">${escapeHtml(board.name||board.id||'Board')}</option>`).join('');
