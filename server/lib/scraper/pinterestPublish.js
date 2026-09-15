@@ -699,7 +699,7 @@ async function sessionAlive(hostsList, cookieHeader) {
   }
 }
 
-async function publishPinWithSession({ boardId, title, description, link, image, altText, accountId = 'default' }) {
+async function publishPinWithSession({ boardId, title, description, link, image, altText, filenameBase, accountId = 'default' }) {
   const sessions = require('./sessions');
   const cookieHeader = await sessions.cookieHeader('pinterest', accountId).catch(() => '');
   if (!cookieHeader) return { ok: false, stage: 'session', message: 'لا توجد جلسة Pinterest متصلة — اربط الحساب من الإعدادات أولاً.' };
@@ -747,7 +747,13 @@ async function publishPinWithSession({ boardId, title, description, link, image,
   }
 
   const extension = String(image.mimeType || 'image/png').includes('jpeg') ? 'jpg' : 'png';
-  const filename = `orbitpress-${Date.now()}.${extension}`;
+  const safeBase = String(filenameBase || title || 'orbitpress')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90) || 'orbitpress-pin';
+  const filename = `${safeBase}-${Date.now()}.${extension}`;
 
   // Primary: the flow Pinterest's own pin builder uses today.
   try {

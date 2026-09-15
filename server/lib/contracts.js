@@ -57,6 +57,31 @@ function optArr(v) { return Array.isArray(v) ? v : []; }
 function optObj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : null; }
 function optStr(v) { return typeof v === 'string' ? v : (v == null ? '' : String(v)); }
 function take(s, n) { return String(s).slice(0, n); }
+function pinterestTag(value) {
+  const tag = optStr(value).trim().replace(/^#+/, '').replace(/[^\p{L}\p{N}_-]+/gu, '');
+  return tag ? `#${tag}` : '';
+}
+function pinterestSeoFields(source, { title, focusKeyphrase, secondaryKeywords }) {
+  const pinterest = optObj(source) || {};
+  const focus = optStr(focusKeyphrase).trim();
+  let titleText = optStr(pinterest.title).trim().slice(0, 100) || `${focus || title}`.slice(0, 100);
+  if (focus && !titleText.toLocaleLowerCase().includes(focus.toLocaleLowerCase())) titleText = `${focus} | ${titleText}`.slice(0, 100);
+  const hashtags = [...new Set(optArr(pinterest.hashtags).map(pinterestTag).filter(Boolean))].slice(0, 5);
+  const derivedTags = [focus, ...secondaryKeywords].map((value) => pinterestTag(value)).filter(Boolean);
+  const finalHashtags = [...new Set([...hashtags, ...derivedTags])].slice(0, 5);
+  let description = optStr(pinterest.description).trim().replace(/\s+/g, ' ').slice(0, 650);
+  if (!description) description = `${titleText}. Discover practical ideas, helpful steps, and useful tips for ${focus || title}. Read the full guide for details.`;
+  if (focus && !description.toLocaleLowerCase().includes(focus.toLocaleLowerCase())) description = `${focus}: ${description}`;
+  const cleanDescription = description.replace(/(?:\s+#[\p{L}\p{N}_-]+)+\s*$/gu, '').trim();
+  const withTags = `${cleanDescription} ${finalHashtags.join(' ')}`.trim().slice(0, 800);
+  return {
+    title: titleText,
+    description: withTags,
+    altText: (optStr(pinterest.altText).trim() || `${focus || title} image`).slice(0, 320),
+    hashtags: finalHashtags,
+    topics: optArr(pinterest.topics).map((value) => optStr(value).trim()).filter(Boolean).slice(0, 8),
+  };
+}
 
 const DraftContract = {
   cleanSlug,
@@ -87,13 +112,11 @@ const DraftContract = {
         throw new Error(`Recipe ${index + 1} was incomplete.`);
       }
     });
-    const pinterestSource = optObj(raw.pinterest);
-    let pinterestTitle = (pinterestSource ? optStr(pinterestSource.title).trim().slice(0, 100) : '') || title.slice(0, 100);
-    let pinterestAltText = (pinterestSource ? optStr(pinterestSource.altText).trim().slice(0, 320) : '') || title.slice(0, 320);
     const category = (String(selectedCategory || '').trim() || optStr(raw.categoryName).trim()).slice(0, 120);
 
     const seoDescription = optStr(raw.seoDescription || raw.metaDescription).trim().slice(0, 200);
     const secondaryKeywords = optArr(raw.secondaryKeywords).map((k) => optStr(k).trim()).filter(Boolean).slice(0, 8);
+    const pinterestSeo = pinterestSeoFields(raw.pinterest, { title, focusKeyphrase: optStr(raw.focusKeyphrase).trim(), secondaryKeywords });
     const externalReferences = optArr(raw.externalReferences).map((item) => ({
       anchor: optStr(item && item.anchor).trim().slice(0, 160),
       topic: optStr(item && item.topic).trim().slice(0, 200),
@@ -115,9 +138,15 @@ const DraftContract = {
       internalLinks: normalizeInternalLinks(raw.internalLinks),
       recipe,
       recipes,
-      pinterest: { title: pinterestTitle, altText: pinterestAltText },
-      pinterestTitle,
-      pinterestAltText,
+      pinterest: pinterestSeo,
+      pinterestTitle: pinterestSeo.title,
+      pinterestDescription: pinterestSeo.description,
+      pinterestAltText: pinterestSeo.altText,
+      pinTitle: pinterestSeo.title,
+      pinDescription: pinterestSeo.description,
+      pinAltText: pinterestSeo.altText,
+      pinterestHashtags: pinterestSeo.hashtags,
+      pinterestTopics: pinterestSeo.topics,
       generationStatus: 'ready',
       createdAt: Date.now(),
     };

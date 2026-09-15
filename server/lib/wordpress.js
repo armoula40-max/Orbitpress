@@ -926,6 +926,7 @@ async function publishPinterest(request) {
     const publisher = require('./scraper/pinterestPublish');
     const viaSession = await publisher.publishPinWithSession({
       boardId, title, description, link: String(request.link || ''), image, altText,
+      filenameBase: draft.focusKeyphrase || draft.keyword || title,
       accountId: String(request.pinterestAccountId || 'default'),
     });
     if (viaSession.ok) return { ok: true, method: 'session', id: viaSession.pinId, pinUrl: viaSession.pinUrl };
