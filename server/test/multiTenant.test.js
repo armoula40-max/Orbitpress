@@ -228,6 +228,31 @@ test('multi-tenant: issued codes, data isolation, oversight, blocking and reset'
   const userDebug = await json(base + `/api/admin/users/${userId}/debug`, { headers: { Cookie: freshUserCookie } });
   assert.equal(userDebug.res.status, 403);
 
+  // 13c) Owner cleanup removes this tenant's drafts and stored images only.
+  await json(base + '/api/workspace', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: freshUserCookie },
+    body: JSON.stringify({ workspace: { drafts: [{ id: 'd1', title: 'وصفة الكسكس الحصرية' }], reviewQueue: [], siteProfiles: [{ id: 'site-cleanup', name: 'Cleanup site' }] } }),
+  });
+  const imageRoot = path.join(dataDir, 'users', userId, 'images');
+  fs.mkdirSync(path.join(imageRoot, 'site-cleanup'), { recursive: true });
+  fs.writeFileSync(path.join(imageRoot, 'stored-featured.png'), Buffer.from('image-one'));
+  fs.writeFileSync(path.join(imageRoot, 'site-cleanup', 'stored-pin.jpg'), Buffer.from('image-two'));
+  const cleanup = await json(base + `/api/admin/users/${userId}/cleanup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: ownerCook },
+    body: JSON.stringify({ drafts: true, images: true }),
+  });
+  assert.equal(cleanup.res.status, 200);
+  assert.equal(cleanup.json.drafts, 1);
+  assert.equal(cleanup.json.images, 2);
+  assert.ok(cleanup.json.imageBytes > 0);
+  assert.equal(JSON.parse(fs.readFileSync(tenantFile, 'utf8')).drafts.length, 0);
+  assert.ok(!fs.existsSync(path.join(imageRoot, 'stored-featured.png')));
+  assert.ok(!fs.existsSync(path.join(imageRoot, 'site-cleanup', 'stored-pin.jpg')));
+  const cleanupAudit = await json(base + '/api/admin/audit?limit=200', { headers: { Cookie: ownerCook } });
+  assert.ok(cleanupAudit.json.entries.some((e) => e.action === 'admin.tenant_cleanup'));
+
   // 14) Served UI carries the role: the user gets role:"user", owner "owner"
   const userPage = await fetch(base + '/', { headers: { Cookie: cookieOf(newLogin.res) } });
   const userHtml = await userPage.text();

@@ -976,7 +976,7 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
     function api(path,opts){opts=opts||{};opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});if(opts.body&&typeof opts.body!=='string')opts.body=JSON.stringify(opts.body);return fetch(path,opts).then(function(r){return r.json().catch(function(){return{};}).then(function(j){if(!r.ok||j.ok===false)throw new Error(j.message||('HTTP '+r.status));return j;});});}
     function actionLabel(a){return{
       'user.created':'إنشاء مستخدم','user.blocked':'حظر مستخدم','user.activated':'تفعيل مستخدم','user.code_reset':'تجديد كود الدخول',
-      'auth.invalid_code':'رمز دخول مرفوض','auth.blocked_attempt':'محاولة دخول بحساب محظور','admin.workspace_viewed':'فتح مساحة مستخدم للمراجعة'
+      'auth.invalid_code':'رمز دخول مرفوض','auth.blocked_attempt':'محاولة دخول بحساب محظور','admin.workspace_viewed':'فتح مساحة مستخدم للمراجعة','admin.tenant_cleanup':'تنظيف بيانات مستخدم'
     }[a]||a;}
     function showCode(user,code){var box=$('newCodeBox');$('newCodeText').textContent=code;box.style.display='block';if(box.scrollIntoView)box.scrollIntoView({behavior:'smooth',block:'center'});}
     function renderUsers(entry){
@@ -990,6 +990,9 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
           +'<span class="admin-badge '+(blocked?'blocked':'active')+'">'+(blocked?'محظور':'نشط')+'</span></div>'
           +'<div class="admin-user-actions">'
           +'<button class="small-button" type="button" data-view="'+u.id+'">عرض المحتوى</button>'
+          +'<button class="small-button plain" type="button" data-clean-drafts="'+u.id+'">حذف المسودات</button>'
+          +'<button class="small-button plain" type="button" data-clean-images="'+u.id+'">حذف الصور</button>'
+          +'<button class="small-button remove" type="button" data-clean-all="'+u.id+'">تنظيف الكل</button>'
           +'<button class="small-button plain" type="button" data-reset="'+u.id+'">كود جديد</button>'
           +(blocked?'<button class="small-button" type="button" data-activate="'+u.id+'">تفعيل</button>':'<button class="small-button remove" type="button" data-block="'+u.id+'">حظر</button>')
           +'</div></div>';
@@ -998,6 +1001,9 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
       $('adminUsersList').querySelectorAll('[data-block]').forEach(function(b){b.onclick=function(){setStatus(b.dataset.block,'blocked');};});
       $('adminUsersList').querySelectorAll('[data-activate]').forEach(function(b){b.onclick=function(){setStatus(b.dataset.activate,'active');};});
       $('adminUsersList').querySelectorAll('[data-reset]').forEach(function(b){b.onclick=function(){resetCode(b.dataset.reset);};});
+      $('adminUsersList').querySelectorAll('[data-clean-drafts]').forEach(function(b){b.onclick=function(){cleanupTenant(b.dataset.cleanDrafts,{drafts:true,images:false},'المسودات');};});
+      $('adminUsersList').querySelectorAll('[data-clean-images]').forEach(function(b){b.onclick=function(){cleanupTenant(b.dataset.cleanImages,{drafts:false,images:true},'الصور المخزنة');};});
+      $('adminUsersList').querySelectorAll('[data-clean-all]').forEach(function(b){b.onclick=function(){cleanupTenant(b.dataset.cleanAll,{drafts:true,images:true},'المسودات والصور');};});
     }
     function renderAudit(entries){
       entries=(entries||[]).slice().reverse();
@@ -1021,6 +1027,15 @@ notice(error.message||'The diagnostic could not run.','bad')}finally{if(button)b
       if(!window.confirm('توليد كود جديد؟ يُلغى الكود القديم فوراً ولن يمكن استرجاعه.'))return;
       api('/api/admin/users/'+id+'/reset-code',{method:'POST',body:{}}).then(function(j){showCode(j.user,j.code);window.renderAdmin();})
         .catch(function(e){notice(e.message||'فشل توليد الكود','bad');});
+    }
+    function cleanupTenant(id,options,label){
+      if(!window.confirm('سيتم حذف '+label+' نهائياً لهذا المستخدم فقط. لن تتأثر إعداداته أو مقالات WordPress. هل تريد المتابعة؟'))return;
+      api('/api/admin/users/'+encodeURIComponent(id)+'/cleanup',{method:'POST',body:options}).then(function(j){
+        var msg='تم حذف '+label+'.';
+        if(options.images)msg+=' الصور: '+(j.images||0)+' ('+fmtBytes(j.imageBytes||0)+').';
+        if(options.drafts)msg+=' المسودات: '+(j.drafts||0)+'.';
+        notice(msg,'good');window.renderAdmin();
+      }).catch(function(e){notice(e.message||'فشل تنظيف بيانات المستخدم.','bad');});
     }
     // Strip anything executable before showing a tenant's stored HTML.
     function safeHtml(html,userId){

@@ -231,6 +231,49 @@ router.get('/admin/users/:id/workspace', requireOwner, asyncRoute(async (req, re
   res.json({ ok: true, user: target, ...result, debug });
 }));
 
+// Owner-only cleanup for one tenant. Drafts are removed from both the normal
+// draft library and review queue; stored image bytes are removed from every
+// site image directory belonging to that tenant. Settings, sessions, logs,
+// PinFlux plans, and WordPress posts are deliberately preserved.
+router.post('/admin/users/:id/cleanup', requireOwner, asyncRoute(async (req, res) => {
+  const target = users.listUsers().find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ ok: false, message: 'المستخدم غير موجود.' });
+  const body = req.body || {};
+  const removeDrafts = body.drafts !== false;
+  const removeImages = body.images !== false;
+  const result = reqContext.runAs(target.id, () => {
+    const workspace = store.loadWorkspace() || {};
+    const profiles = Array.isArray(workspace.siteProfiles) ? workspace.siteProfiles : [];
+    const siteIds = [...new Set(['site-default', ...profiles.map((p) => String(p && p.id || '').trim()).filter(Boolean)])];
+    const summary = { drafts: 0, images: 0, imageBytes: 0, sites: siteIds.length };
+    if (removeDrafts) {
+      summary.drafts = (Array.isArray(workspace.drafts) ? workspace.drafts.length : 0)
+        + (Array.isArray(workspace.reviewQueue) ? workspace.reviewQueue.length : 0);
+      workspace.drafts = [];
+      workspace.reviewQueue = [];
+      store.saveWorkspace(workspace);
+    }
+    if (removeImages) {
+      const allowed = /\.(png|jpe?g|webp)$/i;
+      siteIds.forEach((siteId) => {
+        const dir = images.imageDirectory(siteId);
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir).forEach((name) => {
+          if (!allowed.test(name)) return;
+          const file = path.join(dir, name);
+          let stat;
+          try { stat = fs.statSync(file); } catch { return; }
+          if (!stat.isFile()) return;
+          try { fs.rmSync(file, { force: true }); summary.images += 1; summary.imageBytes += stat.size; } catch { /* retain an undeletable file */ }
+        });
+      });
+    }
+    return summary;
+  });
+  users.audit('admin.tenant_cleanup', { id: target.id, name: target.name, ...result, removeDrafts, removeImages });
+  res.json({ ok: true, user: target, ...result });
+}));
+
 // Owner-only view of a tenant's stored images so draft previews render
 // during a legal/compliance review (the regular /images route is scoped
 // to the caller's own data directory).
