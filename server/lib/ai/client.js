@@ -160,6 +160,12 @@ async function geminiChat(cfg, req) {
 function explain(error) {
   if (error && error.providerExplained) return error;
   const status = error && error.status ? ` (HTTP ${error.status})` : '';
+  if (Number(error && error.status) === 429) {
+    const limited = new Error(`Article API error (HTTP 429): تم تجاوز معدل الطلب أو حد النموذج المجاني. انتظر قليلًا ثم أعد المحاولة، أو اختر نموذجًا ثابتًا/مزودًا بديلًا.`);
+    limited.providerExplained = true;
+    limited.status = 429;
+    return limited;
+  }
   const raw = String((error && error.message) || error || '').trim();
   const snippet = raw.replace(/^Request failed \(\d+\):\s*/i, '').slice(0, 400);
   const explained = new Error(`Article API error${status}: ${snippet || 'لا يوجد رد من المزوّد'}`);

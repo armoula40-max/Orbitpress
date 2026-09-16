@@ -222,8 +222,39 @@ async function generate(request) {
   ];
   const first = await requestArticleCompletion({ settings, messages, temperature: 0.7, maxTokens });
   const content = first.response.choices && first.response.choices[0] && first.response.choices[0].message && first.response.choices[0].message.content;
-  let draft = parseArticleDraft(content, category, keyword);
   let provenance = first.provenance;
+  let draft;
+  let recoveryPasses = 0;
+  try {
+    draft = parseArticleDraft(content, category, keyword);
+  } catch (error) {
+    // Some OpenAI-compatible gateways accept the request but the routed model
+    // still emits prose, Markdown fences, or a truncated object. Give the
+    // same configured provider one focused repair pass before declaring the
+    // whole generation failed. This is especially useful with free routers
+    // whose underlying model can change between requests.
+    const rawPreview = String(content || '').slice(0, 60000);
+    const recoveryMessages = [
+      { role: 'system', content: 'You are a JSON recovery service. Return exactly one complete valid JSON object matching the article schema. No Markdown, no commentary, and do not omit required fields.' },
+      { role: 'user', content: `${prompt}\n\nThe previous model response was not valid JSON. Reconstruct or repair it now. Preserve valid content, complete missing required fields, and return only the final JSON object.\n\nPREVIOUS RESPONSE:\n${rawPreview || '(empty response)'}` },
+    ];
+    try {
+      const recovered = await requestArticleCompletion({ settings, messages: recoveryMessages, temperature: 0.1, maxTokens: repairMaxTokens });
+      const recoveredContent = recovered.response.choices && recovered.response.choices[0] && recovered.response.choices[0].message && recovered.response.choices[0].message.content;
+      draft = parseArticleDraft(recoveredContent, category, keyword);
+      recoveryPasses = 1;
+      provenance = {
+        ...recovered.provenance,
+        attempts: [...provenance.attempts, ...recovered.provenance.attempts],
+        recoveryPasses,
+        recoveryReason: String(error.message || error).slice(0, 300),
+      };
+    } catch (recoveryError) {
+      const original = String(error.message || error);
+      const retry = String(recoveryError.message || recoveryError);
+      throw new Error(`${original} Automatic JSON recovery also failed: ${retry}`);
+    }
+  }
   let completeness = requestedRecipeCount > 0
     ? LongFormCompletenessContract.validate(draft, requestedRecipeCount)
     : { valid: true, reason: '' };
@@ -257,6 +288,7 @@ async function generate(request) {
     fallbackUsed: !!provenance.fallbackUsed,
     fallbackReason: provenance.fallbackReason || '',
     repairPasses: provenance.repairPasses || 0,
+    recoveryPasses: provenance.recoveryPasses || recoveryPasses,
     attempts: provenance.attempts.map((a) => ({ ...a, reason: a.reason ? String(a.reason).slice(0, 220) : undefined })),
     at: provenance.startedAt,
   };

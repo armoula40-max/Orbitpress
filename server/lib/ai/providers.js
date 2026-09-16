@@ -32,6 +32,15 @@ const PRESETS = [
     headers: { 'HTTP-Referer': 'https://orbitpress.local', 'X-Title': 'OrbitPress' },
   },
   {
+    id: 'orcarouter', kind: 'openai',
+    label: 'OrcaRouter (Free)',
+    baseUrl: 'https://api.orcarouter.ai/v1',
+    keyLabel: 'OrcaRouter API key',
+    models: ['orcarouter/free', 'orcarouter/fusion-flash', 'orcarouter/fusion-mini'],
+    structured: 'json_schema', vision: false,
+    note: 'الموديل orcarouter/free مجاني وموجّه تلقائياً، لكن له حدود معدل الطلب وحجم الطلب؛ يمكن اختيار موديل ثابت عند الحاجة.',
+  },
+  {
     id: 'deepseek', kind: 'openai',
     label: 'DeepSeek الرسمي',
     baseUrl: 'https://api.deepseek.com',

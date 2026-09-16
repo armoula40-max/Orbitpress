@@ -8,6 +8,7 @@
   var PRESETS = [
     { id: '', label: '— اختاري المزوّد —', baseUrl: '', models: [], manualUrl: true },
     { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', models: ['deepseek/deepseek-chat', 'google/gemini-2.5-flash', 'openai/gpt-4o-mini', 'meta-llama/llama-3.3-70b-instruct'], keyLabel: 'OpenRouter API key' },
+    { id: 'orcarouter', label: 'OrcaRouter (Free)', baseUrl: 'https://api.orcarouter.ai/v1', models: ['orcarouter/free', 'orcarouter/fusion-flash', 'orcarouter/fusion-mini'], keyLabel: 'OrcaRouter API key' },
     { id: 'deepseek', label: 'DeepSeek الرسمي', baseUrl: 'https://api.deepseek.com', models: ['deepseek-chat', 'deepseek-reasoner'], keyLabel: 'DeepSeek API key' },
     { id: 'gemini', label: 'Google Gemini (الواجهة الأصلية)', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-8b'], keyLabel: 'Gemini API key (aistudio.google.com/apikey)' },
     { id: 'nvidia', label: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', models: ['deepseek-ai/deepseek-r1', 'meta/llama-3.3-70b-instruct', 'mistralai/mistral-small-24b-instruct'], keyLabel: 'NVIDIA API key' },
@@ -23,6 +24,7 @@
     'cloudflare-llm': 'يستخدم نفس Account ID والـToken في قسم الصور، لكن النصوص والصور يبقيان قسماً مستقلين.',
     ollama: 'يجب أن يصل خادم Orbitpress إلى مضيف Ollama (نفس الـVPS أو عنوان داخلي). لا يحتاج مفتاحًا.',
     openrouter: 'يدعم موديلات كثيرة جداً من مزوّد واحد؛ اختر اسم الموديل كاملًا مثل deepseek/deepseek-chat.',
+    orcarouter: 'الموديل orcarouter/free مجاني وموجّه تلقائياً حسب صعوبة الطلب. قد يرجع 429 عند تجاوز معدل الطلب أو حجم الطبقة المجانية.',
   };
   window.OrbitPressProviders = { list: PRESETS, byId: function (id) { return PRESETS.find(function (p) { return p.id === id; }) || PRESETS[0]; }, note: function (id) { return NOTES[id] || ''; } };
 })();

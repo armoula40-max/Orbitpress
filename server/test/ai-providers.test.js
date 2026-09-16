@@ -20,7 +20,7 @@ const mocks = require('./mockServers');
 
 test('provider registry carries every documented preset', () => {
   const ids = AiProviders.PRESETS.map((p) => p.id);
-  for (const id of ['gemini', 'openrouter', 'deepseek', 'nvidia', 'groq', 'together', 'openai', 'cloudflare-llm', 'ollama', 'custom']) {
+  for (const id of ['gemini', 'openrouter', 'orcarouter', 'deepseek', 'nvidia', 'groq', 'together', 'openai', 'cloudflare-llm', 'ollama', 'custom']) {
     assert.ok(ids.includes(id), `registry must ship ${id}`);
   }
   assert.equal(AiProviders.PRESET_MAP.gemini.kind, 'gemini');
