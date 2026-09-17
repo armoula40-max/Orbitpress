@@ -96,6 +96,7 @@ function pinfluxNormalize(input) {
   const accounts = (Array.isArray(source.accounts) ? source.accounts : []).map((a, index) => ({
     id: String(a && a.id || `account-${index + 1}`).trim().slice(0, 120),
     name: String(a && a.name || a && a.id || `Account ${index + 1}`).trim().slice(0, 120),
+    niche: String(a && a.niche || '').trim().slice(0, 120),
     boardId: String(a && a.boardId || '').trim().slice(0, 240),
     groupId: String(a && a.groupId || '').trim().slice(0, 80),
     enabled: a && a.enabled !== false,
@@ -110,6 +111,17 @@ function pinfluxNormalize(input) {
   return { sourcePinId: String(source.sourcePinId || '').trim().slice(0, 120), groups, accounts, completed: Array.isArray(source.completed) ? source.completed.map(String).slice(0, 5000) : [] };
 }
 router.get('/pinflux/state', (req, res) => res.json({ ok: true, ...pinfluxState() }));
+router.get('/pinflux/publish-accounts', asyncRoute(async (req, res) => {
+  const wantedNiche = String(req.query.niche || '').trim().toLocaleLowerCase();
+  const state = pinfluxState();
+  const accounts = state.accounts
+    .filter((account) => account.enabled !== false && (!wantedNiche || !account.niche || account.niche.toLocaleLowerCase() === wantedNiche))
+    .map((account) => ({
+      id: account.id, name: account.name, niche: account.niche, connected: account.connected,
+      boardsLoaded: account.boardsLoaded, boards: account.boards,
+    }));
+  res.json({ ok: true, niche: wantedNiche, accounts });
+}));
 router.put('/pinflux/state', asyncRoute(async (req, res) => {
   const workspace = store.loadWorkspace() || {};
   workspace.pinflux = pinfluxNormalize(req.body || {});
